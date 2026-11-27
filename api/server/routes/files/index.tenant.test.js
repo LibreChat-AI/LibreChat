@@ -21,6 +21,7 @@ jest.mock('~/server/middleware', () => ({
     fileUploadIpLimiter: (req, res, next) => next(),
     fileUploadUserLimiter: (req, res, next) => next(),
   })),
+  createFileUsageLimiter: jest.fn(() => (req, res, next) => next()),
   configMiddleware: (req, res, next) => {
     req.config = {
       fileStrategy: 'local',

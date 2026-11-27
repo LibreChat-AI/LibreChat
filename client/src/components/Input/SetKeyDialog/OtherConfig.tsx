@@ -1,6 +1,6 @@
 import React from 'react';
-import InputWithLabel from './InputWithLabel';
 import type { TConfigProps } from '~/common';
+import InputWithLabel from './InputWithLabel';
 import { useLocalize } from '~/hooks';
 
 const OtherConfig = ({ userKey, setUserKey, endpoint }: TConfigProps) => {
@@ -11,6 +11,7 @@ const OtherConfig = ({ userKey, setUserKey, endpoint }: TConfigProps) => {
       value={userKey ?? ''}
       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUserKey(e.target.value ?? '')}
       label={localize('com_endpoint_config_key_name')}
+      secret
     />
   );
 };

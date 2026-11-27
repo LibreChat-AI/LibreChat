@@ -1,6 +1,7 @@
 import { memo, useState, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import { ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import type { SourceData } from '~/components/Web/SourceHovercard';
 import type { CitationProps } from './types';
 import { SourceHovercard, FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
@@ -10,6 +11,7 @@ import { useLocalize } from '~/hooks';
 interface FileCitationMetadata {
   fileBytes?: number;
   fileType?: string;
+  storageType?: string;
 }
 
 interface FileCitationSource {
@@ -37,6 +39,15 @@ function getFileCitationData(source?: FileCitationSource) {
     filePages: isFileType ? source.pages : undefined,
     fileRelevance: isFileType ? source.relevance : undefined,
     filePageRelevance: isFileType ? source.pageRelevance : undefined,
+  };
+}
+
+function toSourceData(source: FileCitationSource): SourceData {
+  return {
+    link: source.link ?? '',
+    title: source.title,
+    attribution: source.attribution,
+    snippet: source.snippet,
   };
 }
 
@@ -107,7 +118,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
   return (
     <>
       <SourceHovercard
-        source={currentSource}
+        source={toSourceData(currentSource)}
         label={getCitationLabel()}
         onMouseEnter={() => setHoveredCitationId(citationId || null)}
         onMouseLeave={() => setHoveredCitationId(null)}
@@ -119,10 +130,10 @@ export function CompositeCitation(props: CompositeCitationProps) {
         {isFileType ? (
           <>
             <div className="flex items-center gap-2">
-              <FileText className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+              <FileText className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
               <button
                 onClick={handleFileClick}
-                className="min-w-0 truncate text-sm font-medium text-text-primary hover:underline"
+                className="text-text-primary min-w-0 truncate text-sm font-medium hover:underline"
               >
                 {fileName || currentSource.title || localize('com_file_source')}
               </button>
@@ -130,33 +141,33 @@ export function CompositeCitation(props: CompositeCitationProps) {
             {(fileRelevance != null || (filePages && filePages.length > 0)) && (
               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
                 {fileRelevance != null && fileRelevance > 0 && (
-                  <span className="text-xs text-text-secondary">
+                  <span className="text-text-secondary text-xs">
                     {localize('com_ui_relevance')}: {Math.round(fileRelevance * 100)}%
                   </span>
                 )}
                 {filePages && filePages.length > 0 && (
-                  <span className="text-xs text-text-secondary">
+                  <span className="text-text-secondary text-xs">
                     {localize('com_file_pages', { pages: filePages.join(', ') })}
                   </span>
                 )}
               </div>
             )}
             {currentSource.snippet && (
-              <p className="mt-1.5 line-clamp-3 break-words text-xs leading-relaxed text-text-secondary">
+              <p className="text-text-secondary mt-1.5 line-clamp-3 text-xs leading-relaxed break-words">
                 {currentSource.snippet}
               </p>
             )}
             {totalPages > 1 && (
-              <div className="mt-2 flex items-center gap-1 border-t border-border-light pt-2">
+              <div className="border-border-light mt-2 flex items-center gap-1 border-t pt-2">
                 <Button
                   size="icon"
                   variant="ghost"
                   onClick={handlePrevPage}
                   disabled={currentPage === 0}
                   className="size-7"
-                  aria-label="Previous source"
+                  aria-label={localize('com_sources_previous')}
                 >
-                  <ChevronLeft className="size-3.5" aria-hidden="true" />
+                  <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
                 {sources.map((source, i) => (
                   <button
@@ -169,10 +180,10 @@ export function CompositeCitation(props: CompositeCitationProps) {
                     }}
                     className={`flex size-6 items-center justify-center rounded text-xs transition-colors ${
                       i === currentPage
-                        ? 'bg-surface-hover font-medium text-text-primary'
+                        ? 'bg-surface-hover text-text-primary font-medium'
                         : 'text-text-secondary hover:bg-surface-hover'
                     }`}
-                    aria-label={`Source ${i + 1}`}
+                    aria-label={localize('com_sources_number', { number: i + 1 })}
                     aria-current={i === currentPage ? 'true' : undefined}
                   >
                     {i + 1}
@@ -184,9 +195,9 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   onClick={handleNextPage}
                   disabled={currentPage === totalPages - 1}
                   className="size-7"
-                  aria-label="Next source"
+                  aria-label={localize('com_sources_next')}
                 >
-                  <ChevronRight className="size-3.5" aria-hidden="true" />
+                  <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
               </div>
             )}
@@ -196,36 +207,36 @@ export function CompositeCitation(props: CompositeCitationProps) {
             <div className="mb-1.5 overflow-hidden text-sm">
               <FaviconImage
                 domain={getCleanDomain(currentSource.link || '')}
-                className="float-left mr-2 mt-0.5"
+                className="float-start me-2 mt-0.5"
               />
-              <span className="float-right ml-2 max-w-[40%] truncate text-xs text-text-secondary">
+              <span className="text-text-secondary float-end ms-2 max-w-[40%] truncate text-xs">
                 {getCleanDomain(currentSource.link || '')}
               </span>
               <a
                 href={currentSource.link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-medium text-text-primary hover:underline"
+                className="text-text-primary font-medium hover:underline"
               >
                 {currentSource.title}
               </a>
             </div>
             {currentSource.snippet && (
-              <p className="line-clamp-4 break-words text-xs text-text-secondary md:text-sm">
+              <p className="text-text-secondary line-clamp-4 text-xs break-words md:text-sm">
                 {currentSource.snippet}
               </p>
             )}
             {totalPages > 1 && (
-              <div className="flex items-center gap-1 border-t border-border-light pt-2">
+              <div className="border-border-light flex items-center gap-1 border-t pt-2">
                 <Button
                   size="icon"
                   variant="ghost"
                   onClick={handlePrevPage}
                   disabled={currentPage === 0}
                   className="size-7"
-                  aria-label="Previous source"
+                  aria-label={localize('com_sources_previous')}
                 >
-                  <ChevronLeft className="size-3.5" aria-hidden="true" />
+                  <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
                 {sources.map((source, i) => (
                   <button
@@ -238,10 +249,10 @@ export function CompositeCitation(props: CompositeCitationProps) {
                     }}
                     className={`flex size-6 items-center justify-center rounded text-xs transition-colors ${
                       i === currentPage
-                        ? 'bg-surface-hover font-medium text-text-primary'
+                        ? 'bg-surface-hover text-text-primary font-medium'
                         : 'text-text-secondary hover:bg-surface-hover'
                     }`}
-                    aria-label={`Source ${i + 1}`}
+                    aria-label={localize('com_sources_number', { number: i + 1 })}
                     aria-current={i === currentPage ? 'true' : undefined}
                   >
                     {i + 1}
@@ -253,9 +264,9 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   onClick={handleNextPage}
                   disabled={currentPage === totalPages - 1}
                   className="size-7"
-                  aria-label="Next source"
+                  aria-label={localize('com_sources_next')}
                 >
-                  <ChevronRight className="size-3.5" aria-hidden="true" />
+                  <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
               </div>
             )}
@@ -272,6 +283,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
           pages={filePages}
           pageRelevance={filePageRelevance}
           fileType={fileMeta?.fileType}
+          fileSource={fileMeta?.storageType}
           fileSize={fileMeta?.fileBytes}
         />
       )}
@@ -329,7 +341,7 @@ export function Citation(props: CitationComponentProps) {
   return (
     <>
       <SourceHovercard
-        source={refData}
+        source={toSourceData(refData)}
         label={getCitationLabel()}
         onMouseEnter={() => setHoveredCitationId(citationId || null)}
         onMouseLeave={() => setHoveredCitationId(null)}
@@ -348,6 +360,7 @@ export function Citation(props: CitationComponentProps) {
           pages={filePages}
           pageRelevance={filePageRelevance}
           fileType={fileMeta?.fileType}
+          fileSource={fileMeta?.storageType}
           fileSize={fileMeta?.fileBytes}
         />
       )}
@@ -373,7 +386,7 @@ export const HighlightedText = memo(function HighlightedText({
 
   return (
     <span
-      className={`rounded px-0 py-0.5 transition-colors ${isHighlighted ? 'bg-amber-300/20' : ''}`}
+      className={`rounded px-0 py-0.5 transition-colors ${isHighlighted ? 'bg-surface-active' : ''}`}
     >
       {children}
     </span>

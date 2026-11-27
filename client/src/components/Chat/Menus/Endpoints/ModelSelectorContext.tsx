@@ -1,6 +1,6 @@
-import debounce from 'lodash/debounce';
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
-import { EModelEndpoint, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
+import debounce from 'lodash/debounce';
+import { PermissionBits, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { Endpoint, SelectedValues } from '~/common';
 import {
@@ -14,6 +14,8 @@ import { useAgentsMapContext, useAssistantsMapContext, useLiveAnnouncer } from '
 import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
 import useSelectMention from '~/hooks/Input/useSelectMention';
+import { useCatalogReady } from '~/hooks/useCatalogWarmup';
+import useModelSpecs from '~/hooks/Agents/specs';
 import { filterItems } from './utils';
 
 type ModelSelectorContextType = {
@@ -55,6 +57,7 @@ interface ModelSelectorProviderProps {
 }
 
 export function ModelSelectorProvider({ children, startupConfig }: ModelSelectorProviderProps) {
+  const agentsReady = useCatalogReady('agents');
   const agentsMap = useAgentsMapContext();
   const assistantsMap = useAssistantsMapContext();
   const { data: endpointsConfig } = useGetEndpointsQuery();
@@ -62,35 +65,35 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
     useModelSelectorChatContext();
   const localize = useLocalize();
   const { announcePolite } = useLiveAnnouncer();
-  const modelSpecs = useMemo(() => {
-    const specs = startupConfig?.modelSpecs?.list ?? [];
-    if (!agentsMap) {
-      return specs;
-    }
-
-    /**
-     * Filter modelSpecs to only include agents the user has access to.
-     * Use agentsMap which already contains permission-filtered agents (consistent with other components).
-     */
-    return specs.filter((spec) => {
-      if (spec.preset?.endpoint === EModelEndpoint.agents && spec.preset?.agent_id) {
-        return spec.preset.agent_id in agentsMap;
-      }
-      /** Keep non-agent modelSpecs */
-      return true;
-    });
-  }, [startupConfig, agentsMap]);
+  const modelSpecs = useModelSpecs(startupConfig);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
-  const { data: agents = null } = useListAgentsQuery(
-    { requiredPermission: permissionLevel },
-    {
-      select: (data) => data?.data,
+  /**
+   * Always query the VIEW scope so this shares one cache entry (and one paginated walk)
+   * with `useAgentsMap` and `useMentions`. Asking for EDIT here spawned a second full
+   * fetch under its own key, holding a duplicate copy of the whole agent list. The
+   * marketplace's "my agents" framing is preserved by filtering on `isEditable`, which
+   * the list endpoint resolves from the same ACL read it already performs.
+   */
+  const wantsEditableOnly = permissionLevel === PermissionBits.EDIT;
+  const selectAgents = useCallback(
+    (data: t.AgentListResponse) => {
+      const list = data?.data;
+      if (!wantsEditableOnly) {
+        return list;
+      }
+      return list?.filter((agent) => agent.isEditable !== false);
     },
+    [wantsEditableOnly],
+  );
+  const agentsQuery = useListAgentsQuery(
+    { requiredPermission: PermissionBits.VIEW },
+    { select: selectAgents, enabled: agentsReady },
   );
 
   const { mappedEndpoints, endpointRequiresUserKey } = useEndpoints({
-    agents,
+    agents: agentsQuery.data ?? null,
+    agentsQuery,
     assistantsMap,
     startupConfig,
     endpointsConfig,
@@ -161,8 +164,8 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       return null;
     }
     const allItems = [...modelSpecs, ...mappedEndpoints];
-    return filterItems(allItems, searchValue, agentsMap, assistantsMap || {});
-  }, [searchValue, modelSpecs, mappedEndpoints, agentsMap, assistantsMap]);
+    return filterItems(allItems, searchValue, agentsMap, assistantsMap || {}, localize);
+  }, [searchValue, modelSpecs, mappedEndpoints, agentsMap, assistantsMap, localize]);
 
   const setDebouncedSearchValue = useMemo(
     () =>
@@ -182,13 +185,15 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
     (spec: t.TModelSpec) => {
       let model = spec.preset.model ?? null;
       onSelectSpec?.(spec);
-      if (isAgentsEndpoint(spec.preset.endpoint)) {
+      /** Specs arrive with `preset.endpoint` materialized at config load. */
+      const endpoint = spec.preset.endpoint ?? null;
+      if (isAgentsEndpoint(endpoint)) {
         model = spec.preset.agent_id ?? '';
-      } else if (isAssistantsEndpoint(spec.preset.endpoint)) {
+      } else if (isAssistantsEndpoint(endpoint)) {
         model = spec.preset.assistant_id ?? '';
       }
       setSelectedValues({
-        endpoint: spec.preset.endpoint,
+        endpoint,
         model,
         modelSpec: spec.name,
       });

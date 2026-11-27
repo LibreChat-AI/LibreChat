@@ -3,7 +3,7 @@ import { PrincipalType, PrincipalModel, ResourceType } from 'librechat-data-prov
 import type { IAclEntry } from '~/types';
 import { MAX_PERM_BITS } from '~/common/permissions';
 
-const aclEntrySchema = new Schema<IAclEntry>(
+const aclEntrySchema: Schema<IAclEntry> = new Schema<IAclEntry>(
   {
     principalType: {
       type: String,
@@ -62,6 +62,9 @@ const aclEntrySchema = new Schema<IAclEntry>(
       type: Date,
       default: Date.now,
     },
+    expiredAt: {
+      type: Date,
+    },
     tenantId: {
       type: String,
       index: true,
@@ -79,5 +82,8 @@ aclEntrySchema.index({
 });
 aclEntrySchema.index({ resourceId: 1, principalType: 1, principalId: 1, tenantId: 1 });
 aclEntrySchema.index({ principalId: 1, permBits: 1, resourceType: 1, tenantId: 1 });
+/** Covers `findPublicResourceIds` and the public branch of `findAccessibleResources`. */
+aclEntrySchema.index({ principalType: 1, resourceType: 1, permBits: 1, resourceId: 1 });
+aclEntrySchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 
 export default aclEntrySchema;

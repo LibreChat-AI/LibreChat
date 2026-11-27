@@ -7,6 +7,7 @@ const {
   uploadFileToS3,
   saveBufferToS3,
   getS3FileStream,
+  resolveStoredS3Key,
   getS3DownloadURL,
   deleteFileFromS3,
   getCloudFrontURL,
@@ -72,7 +73,7 @@ const {
   processAzureAvatar,
 } = require('./Azure');
 const { uploadOpenAIFile, deleteOpenAIFile, getOpenAIFileStream } = require('./OpenAI');
-const { getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./Code');
+const { deleteCodeEnvFile, getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./Code');
 const { uploadVectors, deleteVectors } = require('./VectorDB');
 
 /**
@@ -121,6 +122,7 @@ const s3Strategy = () => ({
   processAvatar: processS3Avatar,
   handleImageUpload: uploadImageToS3,
   getDownloadStream: getS3FileStream,
+  getStorageKey: resolveStoredS3Key,
   getDownloadURL: getS3DownloadURL,
 });
 
@@ -138,6 +140,7 @@ const cloudfrontStrategy = () => ({
   processAvatar: processCloudFrontAvatar,
   handleImageUpload: uploadImageToCloudFront,
   getDownloadStream: getCloudFrontFileStream,
+  getStorageKey: resolveStoredS3Key,
   getDownloadURL: getCloudFrontDownloadURL,
 });
 
@@ -221,8 +224,7 @@ const codeOutputStrategy = () => ({
   handleImageUpload: null,
   /** @type {typeof prepareImagesLocal | null} */
   prepareImagePayload: null,
-  /** @type {typeof deleteLocalFile | null} */
-  deleteFile: null,
+  deleteFile: deleteCodeEnvFile,
   handleFileUpload: uploadCodeEnvFile,
   getDownloadStream: getCodeOutputDownloadStream,
 });

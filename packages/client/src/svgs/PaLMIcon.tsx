@@ -1,10 +1,12 @@
+import { JSX } from 'react/jsx-runtime';
+
 export default function PaLMIcon({
   size = 25,
   className = '',
 }: {
   size?: number;
   className?: string;
-}) {
+}): JSX.Element {
   return (
     <svg
       // width="100%"

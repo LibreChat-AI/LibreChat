@@ -1,25 +1,54 @@
 import {
+  AuthType,
+  CODE_APPROVAL_MODES,
+  DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
   EModelEndpoint,
   isAgentsEndpoint,
   orderEndpointsConfig,
   defaultAgentCapabilities,
 } from 'librechat-data-provider';
+import type {
+  TConfig,
+  TAzureGroupMap,
+  TEndpointsConfig,
+  AgentCapabilities,
+} from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import type { AgentCapabilities, TEndpointsConfig, TConfig } from 'librechat-data-provider';
 import type { ServerRequest, TCustomEndpointsConfig } from '~/types';
+import type { GetAppConfigOptions } from '~/app/service';
 import { loadCustomEndpointsConfig as defaultLoadCustomEndpoints } from '~/endpoints/custom';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
+import { getAppConfigOptionsFromUser } from '~/app/service';
+import { getResponsesApiRouting } from './responses';
 
-type PartialEndpointEntry = Partial<TConfig>;
+type PartialEndpointEntry = Partial<TConfig> & Record<string, unknown>;
 type DefaultEndpointsResult = Record<string, PartialEndpointEntry | false | null>;
 type MutableEndpointsConfig = Record<string, PartialEndpointEntry | false | null | undefined>;
 
 export interface EndpointsConfigDeps {
-  getAppConfig: (params: { role?: string | null; tenantId?: string }) => Promise<AppConfig>;
+  getAppConfig: (params: GetAppConfigOptions) => Promise<AppConfig>;
   loadDefaultEndpointsConfig: (appConfig: AppConfig) => Promise<DefaultEndpointsResult>;
   loadCustomEndpointsConfig?: (custom: unknown) => TCustomEndpointsConfig | undefined;
 }
 
-export function createEndpointsConfigService(deps: EndpointsConfigDeps) {
+/** Only the model names and efforts reach the client; deployment details stay server-side. */
+function getAzureModelReasoningEfforts(
+  groupMap: TAzureGroupMap = {},
+): Pick<TConfig, 'modelReasoningEfforts'> {
+  const declared = Object.values(groupMap).flatMap((group) =>
+    Object.entries(group?.models ?? {}).flatMap(([model, config]) =>
+      typeof config === 'object' && config.reasoningEfforts != null
+        ? [[model, config.reasoningEfforts] as const]
+        : [],
+    ),
+  );
+  return declared.length > 0 ? { modelReasoningEfforts: Object.fromEntries(declared) } : {};
+}
+
+export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
+  getEndpointsConfig: (req: ServerRequest) => Promise<TEndpointsConfig>;
+  checkCapability: (req: ServerRequest, capability: AgentCapabilities) => Promise<boolean>;
+} {
   const {
     getAppConfig,
     loadDefaultEndpointsConfig,
@@ -27,8 +56,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps) {
   } = deps;
 
   async function getEndpointsConfig(req: ServerRequest): Promise<TEndpointsConfig> {
-    const appConfig =
-      req.config ?? (await getAppConfig({ role: req.user?.role, tenantId: req.user?.tenantId }));
+    const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     const defaultEndpointsConfig = await loadDefaultEndpointsConfig(appConfig);
     const customEndpointsConfig = loadCustomEndpointsConfig(appConfig?.endpoints?.custom);
 
@@ -38,7 +66,19 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps) {
     };
 
     if (appConfig.endpoints?.[EModelEndpoint.azureOpenAI]) {
-      mergedConfig[EModelEndpoint.azureOpenAI] = { userProvide: false };
+      mergedConfig[EModelEndpoint.azureOpenAI] = {
+        userProvide: false,
+        ...getAzureModelReasoningEfforts(appConfig.endpoints[EModelEndpoint.azureOpenAI].groupMap),
+      };
+    }
+
+    for (const endpoint of [EModelEndpoint.openAI, EModelEndpoint.azureOpenAI] as const) {
+      const entry = mergedConfig[endpoint];
+      if (entry)
+        mergedConfig[endpoint] = {
+          ...entry,
+          responsesApiRouting: getResponsesApiRouting(appConfig, endpoint),
+        };
     }
 
     if (appConfig.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig?.enabled) {
@@ -65,13 +105,79 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps) {
     }
 
     if (mergedConfig[EModelEndpoint.agents] && appConfig?.endpoints?.[EModelEndpoint.agents]) {
-      const { disableBuilder, capabilities, allowedProviders } =
-        appConfig.endpoints[EModelEndpoint.agents];
+      const {
+        channels,
+        disableBuilder,
+        capabilities,
+        allowedProviders,
+        statefulCodeSessions,
+        maxSubagents,
+        fileSharing,
+        linkedInstructions,
+      } = appConfig.endpoints[EModelEndpoint.agents];
+      const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
+      /** Only advertise Accept edits when the endpoint fallback cannot force every
+       * unmatched tool back to Ask/Deny. Explicit rules and hooks remain free to
+       * tighten individual actions after the user selects the broader mode. */
+      let approvalModes = [...CODE_APPROVAL_MODES];
+      if (toolApproval?.enabled === false) {
+        approvalModes = [];
+      } else if (toolApproval?.enabled === true && toolApproval.mode !== 'bypass') {
+        approvalModes = ['ask'];
+      }
+      const clientStatefulCodeSessions = statefulCodeSessions
+        ? {
+            allowedEnvironments: statefulCodeSessions.allowedEnvironments,
+            ...(isCodeEnvironmentSelectionEnabled(statefulCodeSessions.allowEnvironmentSelection)
+              ? {
+                  allowEnvironmentSelection: true,
+                  maxEnvironmentChoices:
+                    statefulCodeSessions.maxEnvironmentChoices ??
+                    DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
+                }
+              : {}),
+            approvalsEnabled: toolApproval?.enabled !== false,
+            approvalModes,
+            environments: statefulCodeSessions.environments
+              ?.filter(
+                (environment) =>
+                  !(
+                    environment.pairing?.allowPrincipalWorkers === true &&
+                    environment.pairing.workerId == null &&
+                    environment.workerId == null
+                  ),
+              )
+              .map(({ id, name, type, default: isDefault, configSchema, settings }) => ({
+                id,
+                name,
+                type,
+                default: isDefault,
+                configSchema,
+                settings,
+              })),
+          }
+        : undefined;
       mergedConfig[EModelEndpoint.agents] = {
         ...mergedConfig[EModelEndpoint.agents],
+        channels: { enabled: channels?.enabled === true },
         allowedProviders,
         disableBuilder,
         capabilities,
+        statefulCodeSessions: clientStatefulCodeSessions,
+        maxSubagents,
+        fileSharing,
+        /** Only the switch reaches the client; the budget/cache fields stay server-side. */
+        linkedInstructions: {
+          langfuse: { enabled: linkedInstructions?.langfuse?.enabled === true },
+        },
+        toolApproval: {
+          enabled: toolApproval?.enabled === true,
+          agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,
+          mode: toolApproval?.mode,
+          allow: toolApproval?.allow,
+          deny: toolApproval?.deny,
+          ask: toolApproval?.ask,
+        },
       };
     }
 
@@ -97,6 +203,17 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps) {
       mergedConfig[EModelEndpoint.bedrock] = {
         ...mergedConfig[EModelEndpoint.bedrock],
         availableRegions,
+      };
+    }
+
+    if (mergedConfig[EModelEndpoint.bedrock]) {
+      mergedConfig[EModelEndpoint.bedrock] = {
+        ...mergedConfig[EModelEndpoint.bedrock],
+        userProvideAccessKeyId: process.env.BEDROCK_AWS_ACCESS_KEY_ID === AuthType.USER_PROVIDED,
+        userProvideSecretAccessKey:
+          process.env.BEDROCK_AWS_SECRET_ACCESS_KEY === AuthType.USER_PROVIDED,
+        userProvideSessionToken: process.env.BEDROCK_AWS_SESSION_TOKEN === AuthType.USER_PROVIDED,
+        userProvideBearerToken: process.env.BEDROCK_AWS_BEARER_TOKEN === AuthType.USER_PROVIDED,
       };
     }
 

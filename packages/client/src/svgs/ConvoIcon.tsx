@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function ConvoIcon() {
+export default function ConvoIcon(): JSX.Element {
   return (
     <svg
       data-testid="convo-icon"

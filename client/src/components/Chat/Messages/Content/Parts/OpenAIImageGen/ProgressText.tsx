@@ -1,21 +1,42 @@
 import { AGENT_STYLE_TOOLS } from '.';
+import { Shimmer } from '@librechat/client';
+import { useToolPreparation } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 export default function ProgressText({
   progress,
   error,
+  cancelled,
   toolName = '',
+  intent,
 }: {
   progress: number;
   error?: boolean;
+  /** Stopped rather than failed — kept separate from `error` so a generation
+   *  the user cancelled is not labelled a failure. */
+  cancelled?: boolean;
   toolName?: string;
+  /** Model-authored label; wins over the phase texts (error state excepted). */
+  intent?: string;
 }) {
   const localize = useLocalize();
+  const preparationText = useToolPreparation();
 
   const getText = () => {
+    /** Failure outranks cancellation: the legacy inference folds errors into
+     *  its cancellation signal, so checking `cancelled` first would relabel a
+     *  genuine failure as a user stop. */
     if (error) {
       return localize('com_ui_image_gen_failed');
+    }
+    if (cancelled) {
+      return localize('com_ui_cancelled');
+    }
+    if (progress < 1 && preparationText != null) {
+      return preparationText;
+    }
+    if (intent != null) {
+      return intent;
     }
 
     if (toolName === 'image_edit_oai') {
@@ -75,13 +96,8 @@ export default function ProgressText({
   const text = getText();
 
   return (
-    <span
-      className={cn(
-        'progress-text-content tool-status-text whitespace-nowrap font-medium',
-        progress < 1 && 'shimmer',
-      )}
-    >
+    <Shimmer active={progress < 1} className="tool-status-text min-w-0 truncate font-medium">
       {text}
-    </span>
+    </Shimmer>
   );
 }

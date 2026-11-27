@@ -1,5 +1,9 @@
 import axios from 'axios';
+import Anthropic from '@anthropic-ai/sdk';
+import { logger } from '@librechat/data-schemas';
 import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
+import type { FetchModelsParams } from './models';
+import type { ServerRequest } from '~/types';
 import {
   fetchModels,
   splitAndTrim,
@@ -8,15 +12,38 @@ import {
   getBedrockModels,
   getAnthropicModels,
 } from './models';
+import { createLoadConfigModels } from './config/models';
+import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from './keys';
 
 jest.mock('axios');
 
+const mockValidateEndpointURL = jest.fn().mockResolvedValue(undefined);
+const mockHttpAgent = { type: 'ssrf-http-agent' };
+const mockHttpsAgent = { type: 'ssrf-https-agent' };
+const mockCreateSSRFSafeAgents = jest.fn((_allowedAddresses?: string[] | null) => ({
+  httpAgent: mockHttpAgent,
+  httpsAgent: mockHttpsAgent,
+}));
+jest.mock('~/auth', () => ({
+  validateEndpointURL: (
+    ...args: [url: string, endpoint: string, allowedAddresses?: string[] | null]
+  ) => mockValidateEndpointURL(...args),
+  createSSRFSafeAgents: (...args: [allowedAddresses?: string[] | null]) =>
+    mockCreateSSRFSafeAgents(...args),
+}));
+
 const mockCacheGet = jest.fn().mockResolvedValue(undefined);
 const mockCacheSet = jest.fn().mockResolvedValue(true);
+const mockTokenConfigGet = jest.fn().mockResolvedValue(undefined);
+const mockTokenConfigSet = jest.fn().mockResolvedValue(true);
 jest.mock('~/cache', () => ({
   standardCache: jest.fn().mockImplementation(() => ({
     get: mockCacheGet,
     set: mockCacheSet,
+  })),
+  tokenConfigCache: jest.fn().mockImplementation(() => ({
+    get: mockTokenConfigGet,
+    set: mockTokenConfigSet,
   })),
 }));
 
@@ -51,6 +78,202 @@ mockedAxios.get.mockResolvedValue({
 beforeEach(() => {
   mockCacheGet.mockReset().mockResolvedValue(undefined);
   mockCacheSet.mockReset().mockResolvedValue(true);
+  mockTokenConfigGet.mockReset().mockResolvedValue(undefined);
+  mockTokenConfigSet.mockReset().mockResolvedValue(true);
+  mockValidateEndpointURL.mockReset().mockResolvedValue(undefined);
+  mockCreateSSRFSafeAgents.mockClear();
+});
+
+describe('custom Anthropic discovery', () => {
+  afterAll(() => {
+    mockedAxios.get.mockResolvedValue({ data: { data: [{ id: 'model-1' }, { id: 'model-2' }] } });
+  });
+  beforeEach(() => {
+    mockedAxios.get.mockClear().mockResolvedValue({ data: { data: [{ id: 'claude-test' }] } });
+  });
+
+  it.each([
+    ['https://api.anthropic.com', false, 'MyClaude'],
+    ['https://api.anthropic.com/', false, 'MyClaude'],
+    ['https://gateway.example.com/proxy/anthropic', false, 'MyClaude'],
+    ['https://gateway.example.com/v1/account/gateway/anthropic', true, 'MyClaude'],
+    ['https://api.anthropic.com', false, 'OllamaClaude'],
+  ])('uses the sending base URL %s (direct=%s, name=%s)', async (baseURL, direct, name) => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            {
+              name,
+              provider: EModelEndpoint.anthropic,
+              baseURL,
+              apiKey: 'test-key',
+              directEndpoint: direct,
+              headers: { 'X-Gateway': 'test' },
+              models: { fetch: true, default: ['fallback'] },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+    });
+    const result = await loadConfigModels({ user: { id: 'user-1' } } as ServerRequest);
+    const prefix = baseURL.replace(/\/+$/, '');
+    expect(result[name]).toEqual(['claude-test']);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      `${prefix}/v1/models`,
+      expect.objectContaining({
+        headers: {
+          'X-Gateway': 'test',
+          'x-api-key': 'test-key',
+          'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+        },
+      }),
+    );
+    const send = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'msg-test',
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          model: 'claude-test',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const client = new Anthropic({ apiKey: 'test-key', baseURL, fetch: send, maxRetries: 0 });
+    await client.messages.create({
+      model: 'claude-test',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'Hi' }],
+    });
+    expect(String(send.mock.calls[0][0])).toBe(`${prefix}/v1/messages`);
+    const sentHeaders = new Headers(send.mock.calls[0][1]?.headers);
+    expect(sentHeaders.get('x-api-key')).toBe('test-key');
+    expect(sentHeaders.get('anthropic-version')).toBe('2023-06-01');
+  });
+
+  it.each([false, true])(
+    'uses Anthropic discovery with user credentials (user URL=%s)',
+    async (userURL) => {
+      const loadConfigModels = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: [
+              {
+                name: 'MyClaude',
+                provider: EModelEndpoint.anthropic,
+                baseURL: userURL ? AuthType.USER_PROVIDED : 'https://api.anthropic.com',
+                apiKey: AuthType.USER_PROVIDED,
+                models: { fetch: true, default: ['fallback'] },
+                headers: { 'X-Gateway': 'test' },
+              },
+            ],
+          },
+        }),
+        getUserKeyValues: jest
+          .fn()
+          .mockResolvedValue({ apiKey: 'user-key', baseURL: 'https://api.anthropic.com' }),
+      });
+      expect(await loadConfigModels({ user: { id: 'user-1' } } as ServerRequest)).toEqual({
+        MyClaude: ['claude-test'],
+      });
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        'https://api.anthropic.com/v1/models',
+        expect.objectContaining({
+          headers: {
+            ...(userURL ? {} : { 'X-Gateway': 'test' }),
+            'x-api-key': 'user-key',
+            'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+          },
+        }),
+      );
+    },
+  );
+
+  it('separates cached discovery when the same models URL uses different providers', async () => {
+    await fetchModels({
+      apiKey: 'test-key',
+      baseURL: 'https://gateway.example.com/v1',
+      name: 'OpenAIProxy',
+    });
+    await fetchModels({
+      apiKey: 'test-key',
+      baseURL: 'https://gateway.example.com',
+      name: 'ClaudeProxy',
+      provider: EModelEndpoint.anthropic,
+    });
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(new Set(mockCacheGet.mock.calls.map(([key]) => key)).size).toBe(2);
+  });
+
+  it('keeps OpenAI-compatible and Anthropic discovery separate for a shared URL and key', async () => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            {
+              name: 'OpenAIProxy',
+              baseURL: 'https://gateway.example.com',
+              apiKey: 'test-key',
+              models: { fetch: true },
+            },
+            {
+              name: 'ClaudeProxy',
+              provider: EModelEndpoint.anthropic,
+              baseURL: 'https://gateway.example.com',
+              apiKey: 'test-key',
+              models: { fetch: true },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+    });
+    await loadConfigModels({ user: { id: 'user-1' } } as ServerRequest);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://gateway.example.com/models',
+      expect.objectContaining({ headers: { Authorization: 'Bearer test-key' } }),
+    );
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://gateway.example.com/v1/models',
+      expect.objectContaining({
+        headers: {
+          'x-api-key': 'test-key',
+          'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+        },
+      }),
+    );
+    expect(new Set(mockCacheGet.mock.calls.map(([key]) => key)).size).toBe(2);
+  });
+
+  it('does not collide when an apiKey containing a colon mimics the provider-suffixed cache key', async () => {
+    // Without an unambiguous serialization, `${baseURL}:${apiKey}:${provider}` for
+    // (baseURL, apiKey='secret', provider='anthropic') collides with
+    // `${baseURL}:${apiKey}` for (baseURL, apiKey='secret:anthropic', no provider),
+    // since both produce the same joined string. These two distinct configs must
+    // use different cache keys.
+    await fetchModels({
+      apiKey: 'secret',
+      baseURL: 'https://gateway.example.com',
+      name: 'ClaudeProxy',
+      provider: EModelEndpoint.anthropic,
+    });
+    await fetchModels({
+      apiKey: 'secret:anthropic',
+      baseURL: 'https://gateway.example.com/v1',
+      name: 'OpenAIProxy',
+    });
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(new Set(mockCacheGet.mock.calls.map(([key]) => key)).size).toBe(2);
+  });
 });
 
 describe('fetchModels', () => {
@@ -149,6 +372,155 @@ describe('fetchModels', () => {
     );
   });
 
+  it('should resolve template variables in custom headers on the OpenAI-compatible path', async () => {
+    const customHeaders = {
+      Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}',
+      'X-User-Email': '{{LIBRECHAT_USER_EMAIL}}',
+    };
+    const userObject = { id: 'user123', email: 'user@example.com' };
+
+    (resolveHeaders as jest.Mock).mockReturnValueOnce({
+      Authorization: 'Bearer resolved-jwt',
+      'X-User-Email': 'user@example.com',
+    });
+
+    await fetchModels({
+      user: 'user123',
+      apiKey: 'testApiKey',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      headers: customHeaders,
+      userObject,
+    });
+
+    expect(resolveHeaders).toHaveBeenCalledWith({
+      headers: customHeaders,
+      user: userObject,
+      stripUnresolved: true,
+    });
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.test.com/models'),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer resolved-jwt',
+          'X-User-Email': 'user@example.com',
+        }),
+      }),
+    );
+  });
+
+  it('should preserve a config-supplied Authorization header instead of overwriting with the apiKey default', async () => {
+    const customHeaders = {
+      Authorization: 'Bearer user-jwt-token',
+    };
+
+    await fetchModels({
+      user: 'user123',
+      apiKey: 'testApiKey',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      headers: customHeaders,
+    });
+
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.test.com/models'),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer user-jwt-token',
+        }),
+      }),
+    );
+    expect(mockedAxios.get).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer testApiKey',
+        }),
+      }),
+    );
+  });
+
+  it('should treat Authorization header case-insensitively when skipping the apiKey default', async () => {
+    const customHeaders = {
+      authorization: 'Bearer lower-case-user-jwt',
+    };
+
+    await fetchModels({
+      user: 'user123',
+      apiKey: 'testApiKey',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      headers: customHeaders,
+    });
+
+    const lastCall = mockedAxios.get.mock.calls[mockedAxios.get.mock.calls.length - 1];
+    const sentHeaders = lastCall[1]?.headers ?? {};
+    expect(sentHeaders.authorization).toBe('Bearer lower-case-user-jwt');
+    expect(sentHeaders.Authorization).toBeUndefined();
+  });
+
+  it('validates and hardens user-provided base URL model fetches', async () => {
+    const savedEnv = {
+      PROXY: process.env.PROXY,
+      HTTP_PROXY: process.env.HTTP_PROXY,
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+      NO_PROXY: process.env.NO_PROXY,
+    };
+    delete process.env.PROXY;
+    delete process.env.HTTP_PROXY;
+    delete process.env.HTTPS_PROXY;
+    delete process.env.NO_PROXY;
+
+    try {
+      await fetchModels({
+        user: 'user123',
+        apiKey: 'testApiKey',
+        baseURL: 'https://api.test.com',
+        baseURLIsUserProvided: true,
+        allowedAddresses: ['10.0.0.5:443'],
+        name: 'TestAPI',
+      });
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
+
+    expect(mockValidateEndpointURL).toHaveBeenCalledWith('https://api.test.com', 'TestAPI', [
+      '10.0.0.5:443',
+    ]);
+    expect(mockCreateSSRFSafeAgents).toHaveBeenCalledWith(['10.0.0.5:443']);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://api.test.com/models',
+      expect.objectContaining({
+        httpAgent: mockHttpAgent,
+        httpsAgent: mockHttpsAgent,
+        maxRedirects: 0,
+        proxy: false,
+      }),
+    );
+  });
+
+  it('rejects a blocked user-provided base URL before any model fetch request', async () => {
+    mockValidateEndpointURL.mockRejectedValueOnce(new Error('blocked SSRF target'));
+
+    await expect(
+      fetchModels({
+        user: 'user123',
+        apiKey: 'testApiKey',
+        baseURL: 'http://127.0.0.1:11434/v1',
+        baseURLIsUserProvided: true,
+        name: 'TestAPI',
+      }),
+    ).rejects.toThrow('blocked SSRF target');
+
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     jest.clearAllMocks();
   });
@@ -177,6 +549,7 @@ describe('fetchModels with createTokenConfig true', () => {
   };
 
   beforeEach(() => {
+    mockedAxios.get.mockClear();
     mockedAxios.get.mockResolvedValue({ data });
   });
 
@@ -191,6 +564,59 @@ describe('fetchModels with createTokenConfig true', () => {
     const { processModelData } = jest.requireMock('~/utils');
     expect(processModelData).toHaveBeenCalled();
     expect(processModelData).toHaveBeenCalledWith(data);
+  });
+
+  it('backfills requested token config when model cache hits', async () => {
+    const endpointTokenConfig = {
+      'model-1': { prompt: 2000, completion: 1000, context: 1024 },
+    };
+    mockCacheGet.mockResolvedValue(['model-1']);
+    mockTokenConfigGet.mockResolvedValue(endpointTokenConfig);
+
+    const models = await fetchModels({
+      apiKey: 'testApiKey',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      tokenKey: `${SCOPED_TOKEN_CONFIG_KEY_PREFIX}tenant\u0000abc123`,
+    });
+
+    expect(models).toEqual(['model-1']);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+    expect(
+      mockTokenConfigGet.mock.calls[0][0].startsWith(`${SCOPED_TOKEN_CONFIG_KEY_PREFIX}models`),
+    ).toBe(true);
+    expect(mockTokenConfigSet).toHaveBeenCalledWith(
+      `${SCOPED_TOKEN_CONFIG_KEY_PREFIX}tenant\u0000abc123`,
+      endpointTokenConfig,
+    );
+  });
+
+  it('fetches and writes token config when scoped token key is missing on model cache hit', async () => {
+    mockCacheGet.mockResolvedValue(['cached-model']);
+    mockTokenConfigGet.mockResolvedValue(undefined);
+
+    const models = await fetchModels({
+      apiKey: 'testApiKey',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      tokenKey: `${SCOPED_TOKEN_CONFIG_KEY_PREFIX}tenant\u0000def456`,
+    });
+
+    expect(models).toEqual(['model-1', 'model-2']);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.test.com/models'),
+      expect.any(Object),
+    );
+    expect(mockTokenConfigSet).toHaveBeenCalledWith(
+      `${SCOPED_TOKEN_CONFIG_KEY_PREFIX}tenant\u0000def456`,
+      expect.objectContaining({
+        'model-1': expect.objectContaining({ context: 1024 }),
+      }),
+    );
+    const sourceSetCall = mockTokenConfigSet.mock.calls.find(([key]) =>
+      key.startsWith(`${SCOPED_TOKEN_CONFIG_KEY_PREFIX}models`),
+    );
+    expect(sourceSetCall).toBeDefined();
   });
 });
 
@@ -209,7 +635,7 @@ describe('getOpenAIModels', () => {
 
   it('returns default models when no environment configurations are provided (and fetch fails)', async () => {
     const models = await getOpenAIModels({ user: 'user456' });
-    expect(models).toContain('gpt-4');
+    expect(models).toContain('gpt-5.5');
   });
 
   it('returns default models when OpenAI API key is user provided', async () => {
@@ -220,7 +646,7 @@ describe('getOpenAIModels', () => {
 
     expect(mockedAxios.get).not.toHaveBeenCalled();
     expect(models).not.toContain('should-not-appear');
-    expect(models).toContain('gpt-4');
+    expect(models).toContain('gpt-5.5');
   });
 
   it('fetches models when OpenAI API key is provided through options', async () => {
@@ -255,6 +681,24 @@ describe('getOpenAIModels', () => {
       }),
     );
     expect(models).toEqual(['gpt-env-key']);
+  });
+
+  it('forwards configured custom headers to the OpenAI model fetch', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { data: [{ id: 'gpt-x' }] } });
+    process.env.OPENAI_API_KEY = 'sk-env';
+
+    await getOpenAIModels({
+      user: 'user456',
+      headers: { 'cf-aig-token': 'tok' },
+      userObject: { id: 'user456' },
+    });
+
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.openai.com/v1/models'),
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'cf-aig-token': 'tok' }),
+      }),
+    );
   });
 
   it('returns `AZURE_OPENAI_MODELS` with `azure` flag (and fetch fails)', async () => {
@@ -335,6 +779,62 @@ describe('getOpenAIModels sorting behavior', () => {
     ];
     expect(models).toEqual(expectedOrder);
   });
+
+  it('keeps chat-latest when filtering official OpenAI results', async () => {
+    mockedAxios.get.mockResolvedValue({
+      data: {
+        data: [
+          { id: 'chat-latest' },
+          { id: 'gpt-5.5' },
+          { id: 'dall-e-3' },
+          { id: 'gpt-image-2.6-sunburst' },
+          { id: 'gpt-image-2.6-flare' },
+          { id: 'chatgpt-image-latest' },
+          { id: 'gpt-realtime-2' },
+        ],
+      },
+    });
+
+    const models = await getOpenAIModels({ user: 'user456' });
+
+    expect(models).toContain('chat-latest');
+    expect(models).toContain('gpt-5.5');
+    expect(models).not.toContain('dall-e-3');
+    expect(models).not.toContain('gpt-image-2.6-sunburst');
+    expect(models).not.toContain('gpt-image-2.6-flare');
+    expect(models).not.toContain('chatgpt-image-latest');
+    expect(models).not.toContain('gpt-realtime-2');
+  });
+
+  it('preserves image aliases returned by a custom gateway', async () => {
+    const imageModels = ['chatgpt-image-latest', 'gpt-image-2.5-flare'];
+    process.env.OPENAI_REVERSE_PROXY = 'https://gateway.example.com/v1';
+    mockedAxios.get.mockResolvedValue({ data: { data: imageModels.map((id) => ({ id })) } });
+
+    expect(await getOpenAIModels()).toEqual(imageModels);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://gateway.example.com/v1/models',
+      expect.any(Object),
+    );
+  });
+
+  it('preserves explicitly configured image aliases without discovery', async () => {
+    const configuredModels = ['chatgpt-image-latest', 'gpt-image-2.5-flare'];
+
+    expect(await getOpenAIModels({ configuredModels })).toEqual(configuredModels);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'preserves image aliases configured through the environment (azure=%s)',
+    async (azure) => {
+      const imageModels = ['chatgpt-image-latest', 'gpt-image-2.5-flare'];
+      process.env[azure ? 'AZURE_OPENAI_MODELS' : 'OPENAI_MODELS'] = imageModels.join(',');
+
+      expect(await getOpenAIModels({ azure })).toEqual(imageModels);
+      expect(mockedAxios.get).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('fetchModels with Ollama specific logic', () => {
@@ -392,6 +892,7 @@ describe('fetchModels with Ollama specific logic', () => {
     expect(resolveHeaders).toHaveBeenCalledWith({
       headers: customHeaders,
       user: userObject,
+      stripUnresolved: true,
     });
     expect(mockedAxios.get).toHaveBeenCalledWith('https://api.ollama.test.com/api/tags', {
       headers: customHeaders,
@@ -621,7 +1122,7 @@ describe('getAnthropicModels', () => {
     });
 
     expect(mockedAxios.get).toHaveBeenCalledWith(
-      expect.any(String),
+      'https://api.anthropic.com/v1/models',
       expect.objectContaining({
         headers: {
           'x-api-key': 'test-anthropic-key',
@@ -631,7 +1132,7 @@ describe('getAnthropicModels', () => {
     );
   });
 
-  it('should pass custom headers for Anthropic endpoint', async () => {
+  it('forwards custom headers for the Anthropic endpoint alongside managed auth', async () => {
     const customHeaders = {
       'X-Custom-Header': 'custom-value',
     };
@@ -654,9 +1155,29 @@ describe('getAnthropicModels', () => {
       expect.any(String),
       expect.objectContaining({
         headers: {
+          'X-Custom-Header': 'custom-value',
           'x-api-key': 'test-anthropic-key',
           'anthropic-version': expect.any(String),
         },
+      }),
+    );
+  });
+
+  it('threads configured headers through getAnthropicModels to the fetch', async () => {
+    delete process.env.ANTHROPIC_MODELS;
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    mockedAxios.get.mockResolvedValue({ data: { data: [{ id: 'claude-3' }] } });
+
+    await getAnthropicModels({
+      user: 'user123',
+      headers: { 'cf-aig-token': 'tok' },
+      userObject: { id: 'user123' },
+    });
+
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'cf-aig-token': 'tok' }),
       }),
     );
   });
@@ -737,6 +1258,57 @@ describe('fetchModels caching behavior', () => {
     );
   });
 
+  it.each(['read', 'write', 'token read', 'token write', 'ollama write'])(
+    'returns provider models after a cache %s failure',
+    async (operation) => {
+      const secret = 'sk-CANARY-cache-error';
+      const failure = Object.assign(new Error(`Redis unavailable: ${secret}`), {
+        status: 503,
+        config: { headers: { Authorization: secret } },
+      });
+      const warn = jest.spyOn(logger, 'warn');
+      if (operation === 'read') mockCacheGet.mockRejectedValue(failure);
+      if (operation === 'write' || operation === 'ollama write')
+        mockCacheSet.mockRejectedValue(failure);
+      if (operation === 'token read') {
+        mockCacheGet.mockResolvedValue(['stale-model']);
+        mockTokenConfigGet.mockRejectedValue(failure);
+      }
+      if (operation === 'token write') {
+        mockTokenConfigSet.mockRejectedValue(failure);
+        mockedAxios.get.mockResolvedValue({
+          data: {
+            data: ['cached-model-1', 'cached-model-2'].map((id) => ({
+              id,
+              pricing: { prompt: '0.002', completion: '0.001' },
+              context_length: 1024,
+            })),
+          },
+        });
+      }
+      const ollama = operation === 'ollama write';
+      if (ollama) {
+        mockedAxios.get.mockResolvedValue({ data: { models: [{ name: 'ollama-model' }] } });
+      }
+
+      await expect(
+        fetchModels({
+          apiKey: secret,
+          baseURL: 'https://api.test.com',
+          name: ollama ? 'Ollama' : 'TestAPI',
+          tokenKey: 'test-token-key',
+        }),
+      ).resolves.toEqual(ollama ? ['ollama-model'] : ['cached-model-1', 'cached-model-2']);
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[fetchModels]'), {
+        type: 'Error',
+        status: 503,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+      expect(logAxiosError).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns cached result without making HTTP request', async () => {
     mockCacheGet.mockResolvedValue(['from-cache']);
 
@@ -776,6 +1348,244 @@ describe('fetchModels caching behavior', () => {
       expect.any(String),
       expect.any(Array),
       expect.any(Number),
+    );
+  });
+
+  it('skips MODEL_QUERIES cache when both headers and userObject are supplied (user-scoped response)', async () => {
+    await fetchModels({
+      apiKey: 'key',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      headers: { Authorization: 'Bearer some-user-token' },
+      userObject: { id: 'user-1' },
+    });
+
+    expect(mockCacheGet).not.toHaveBeenCalled();
+    expect(mockCacheSet).not.toHaveBeenCalled();
+  });
+
+  it('still uses cache when headers are supplied without a userObject (no per-user resolution)', async () => {
+    await fetchModels({
+      apiKey: 'key',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      headers: { 'X-Static-Header': 'static-value' },
+    });
+
+    expect(mockCacheGet).toHaveBeenCalled();
+    expect(mockCacheSet).toHaveBeenCalled();
+  });
+
+  it('still uses cache when userObject is supplied without headers', async () => {
+    await fetchModels({
+      apiKey: 'key',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      userObject: { id: 'user-1' },
+    });
+
+    expect(mockCacheGet).toHaveBeenCalled();
+    expect(mockCacheSet).toHaveBeenCalled();
+  });
+});
+
+describe('configured model lists skip provider discovery', () => {
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    originalEnv = { ...process.env };
+    delete process.env.OPENAI_MODELS;
+    delete process.env.ANTHROPIC_MODELS;
+    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockedAxios.get.mockReset();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('returns the configured OpenAI list without requesting /models', async () => {
+    const models = await getOpenAIModels({ user: 'user-1', configuredModels: ['gpt-a', 'gpt-b'] });
+    expect(models).toEqual(['gpt-a', 'gpt-b']);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('returns the configured Anthropic list without requesting /models', async () => {
+    const models = await getAnthropicModels({ user: 'user-1', configuredModels: ['claude-a'] });
+    expect(models).toEqual(['claude-a']);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('still discovers models when no list is configured', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { data: [{ id: 'gpt-discovered' }] } });
+    await getOpenAIModels({ user: 'user-1' });
+    expect(mockedAxios.get).toHaveBeenCalled();
+  });
+});
+
+describe('fetchModels in-flight sharing', () => {
+  type ModelsResponse = { data: { data: Array<Record<string, unknown>> } };
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /** Lets every caller pass its cache lookup and reach the provider request. */
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const listing = (...ids: string[]): ModelsResponse => ({
+    data: { data: ids.map((id) => ({ id })) },
+  });
+
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+  });
+
+  afterAll(() => {
+    mockedAxios.get.mockReset().mockResolvedValue(listing('model-1', 'model-2'));
+  });
+
+  it('sends one provider request for concurrent callers that miss the shared cache', async () => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://shared.test/v1', name: 'Shared' };
+
+    const calls = Array.from({ length: 5 }, () => fetchModels(params));
+    await flush();
+    gate.resolve(listing('model-a', 'model-b'));
+    const results = await Promise.all(calls);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(results).toEqual(Array.from({ length: 5 }, () => ['model-a', 'model-b']));
+  });
+
+  it('keeps each caller storing the token config under its own key', async () => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://pricing.test/v1', name: 'Pricing' };
+    const priced = {
+      id: 'model-a',
+      pricing: { prompt: '0.002', completion: '0.001' },
+      context_length: 1024,
+    };
+
+    const calls = ['token-a', 'token-b'].map((tokenKey) => fetchModels({ ...params, tokenKey }));
+    await flush();
+    gate.resolve({ data: { data: [priced] } });
+    await expect(Promise.all(calls)).resolves.toEqual([['model-a'], ['model-a']]);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    for (const tokenKey of ['token-a', 'token-b']) {
+      expect(mockTokenConfigSet).toHaveBeenCalledWith(
+        tokenKey,
+        expect.objectContaining({ 'model-a': expect.objectContaining({ context: 1024 }) }),
+      );
+    }
+  });
+
+  it.each<[string, Partial<FetchModelsParams>]>([
+    ['another base URL', { baseURL: 'https://other.test/v1' }],
+    ['another API key', { apiKey: 'other-key' }],
+    ['another native provider', { provider: EModelEndpoint.anthropic }],
+  ])('does not share requests that differ by %s', async (_label, other) => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://keyed.test/v1', name: 'Keyed' };
+
+    const calls = [fetchModels(params), fetchModels({ ...params, ...other })];
+    await flush();
+    gate.resolve(listing('model-a'));
+    await Promise.all(calls);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      'headers resolved for a user',
+      { headers: { Authorization: 'Bearer user-token' }, userObject: { id: 'user-1' } },
+    ],
+    ['a user query parameter', { userIdQuery: true, user: 'user-1' }],
+    ['a skipped cache', { skipCache: true }],
+  ])('never shares a request made with %s', async (_label, scoped) => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://scoped.test/v1', name: 'Scoped', ...scoped };
+
+    const calls = [fetchModels(params), fetchModels(params)];
+    await flush();
+    gate.resolve(listing('model-a'));
+    await Promise.all(calls);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not remember a failed request for later callers', async () => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValueOnce(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://failing.test/v1', name: 'Failing' };
+
+    const calls = Array.from({ length: 3 }, () => fetchModels(params));
+    await flush();
+    gate.reject(new Error('provider unavailable'));
+    await expect(Promise.all(calls)).resolves.toEqual([[], [], []]);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+
+    mockedAxios.get.mockResolvedValueOnce(listing('recovered'));
+    await expect(fetchModels(params)).resolves.toEqual(['recovered']);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not keep a finished request for later callers', async () => {
+    mockedAxios.get.mockResolvedValue(listing('model-a'));
+    const params = { apiKey: 'key', baseURL: 'https://settled.test/v1', name: 'Settled' };
+
+    await fetchModels(params);
+    await fetchModels(params);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares one Ollama request, and one fallback request when it fails', async () => {
+    const tags = deferred<{ data: { models: Array<{ name: string }> } }>();
+    const models = deferred<ModelsResponse>();
+    mockedAxios.get.mockImplementation((url: string) =>
+      url.endsWith('/api/tags') ? tags.promise : models.promise,
+    );
+    const params = { apiKey: 'key', baseURL: 'https://ollama.test/v1', name: 'ollama' };
+
+    const calls = [fetchModels(params), fetchModels(params), fetchModels(params)];
+    await flush();
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    tags.reject(new Error('no tags endpoint'));
+    await flush();
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    models.resolve(listing('llama3'));
+
+    await expect(Promise.all(calls)).resolves.toEqual([['llama3'], ['llama3'], ['llama3']]);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares a successful Ollama request between concurrent callers', async () => {
+    const tags = deferred<{ data: { models: Array<{ name: string }> } }>();
+    mockedAxios.get.mockReturnValue(tags.promise);
+    const params = { apiKey: 'key', baseURL: 'https://ollama-ok.test/v1', name: 'ollama-local' };
+
+    const calls = [fetchModels(params), fetchModels(params)];
+    await flush();
+    tags.resolve({ data: { models: [{ name: 'llama3' }] } });
+
+    await expect(Promise.all(calls)).resolves.toEqual([['llama3'], ['llama3']]);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://ollama-ok.test/api/tags',
+      expect.any(Object),
     );
   });
 });

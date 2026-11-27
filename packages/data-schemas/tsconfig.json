@@ -3,7 +3,8 @@
     "target": "ES2019",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "declaration": false,
+    "declaration": true,
+    "isolatedDeclarations": true,
     "noEmit": true,
     "strict": true,
     "esModuleInterop": true,
@@ -12,6 +13,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "sourceMap": true,
+    "types": ["node", "jest"],
     "paths": {
       "~/*": ["./src/*"]
     }

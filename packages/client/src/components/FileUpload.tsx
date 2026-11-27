@@ -7,22 +7,16 @@ type FileUploadProps = {
   handleFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
 };
 
-const FileUpload = forwardRef<HTMLInputElement, FileUploadProps>(
-  ({ children, handleFileChange }, ref) => {
-    return (
-      <>
-        {children}
-        <input
-          ref={ref}
-          multiple
-          type="file"
-          style={{ display: 'none' }}
-          onChange={handleFileChange}
-        />
-      </>
-    );
-  },
-);
+const FileUpload: React.ForwardRefExoticComponent<
+  FileUploadProps & React.RefAttributes<HTMLInputElement>
+> = forwardRef<HTMLInputElement, FileUploadProps>(({ children, handleFileChange }, ref) => {
+  return (
+    <>
+      {children}
+      <input ref={ref} multiple type="file" className="hidden" onChange={handleFileChange} />
+    </>
+  );
+});
 
 FileUpload.displayName = 'FileUpload';
 

@@ -109,4 +109,17 @@ describe('useAgentCapabilities', () => {
     expect(result.current.deferredToolsEnabled).toBe(true);
     expect(result.current.programmaticToolsEnabled).toBe(true);
   });
+
+  it('should return toolIntentsEnabled as true when tool_intents is in capabilities', () => {
+    const { result } = renderHook(() => useAgentCapabilities([AgentCapabilities.tool_intents]));
+
+    expect(result.current.toolIntentsEnabled).toBe(true);
+    expect(result.current.backgroundToolsEnabled).toBe(false);
+  });
+
+  it('should return toolIntentsEnabled as false when absent', () => {
+    const { result } = renderHook(() => useAgentCapabilities([]));
+
+    expect(result.current.toolIntentsEnabled).toBe(false);
+  });
 });

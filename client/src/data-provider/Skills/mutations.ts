@@ -1,9 +1,9 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, dataService } from 'librechat-data-provider';
-import type { InfiniteData, QueryKey, UseMutationResult } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
   TSkill,
   TSkillFile,
+  TSkillImportFailedResponse,
   TCreateSkill,
   TUpdateSkillVariables,
   TUpdateSkillResponse,
@@ -21,6 +21,7 @@ import type {
   ImportSkillOptions,
   DeleteSkillFileOptions,
 } from 'librechat-data-provider';
+import type { InfiniteData, QueryKey, UseMutationResult } from '@tanstack/react-query';
 
 function isInfiniteSkillData(
   data: TSkillListResponse | InfiniteData<TSkillListResponse>,
@@ -49,14 +50,21 @@ function addSkillToCachedLists(
   queryClient.setQueriesData<TSkillCacheEntry>([QueryKeys.skills], (data) => {
     if (!data) return data;
     if (isInfiniteSkillData(data)) {
+      const pages = data.pages.map((page) => ({
+        ...page,
+        skills: page.skills.filter((existing) => existing._id !== skill._id),
+      }));
       return {
         ...data,
-        pages: data.pages.map((page, i) =>
+        pages: pages.map((page, i) =>
           i === 0 ? { ...page, skills: [skill, ...page.skills] } : page,
         ),
       };
     }
-    return { ...data, skills: [skill, ...data.skills] };
+    return {
+      ...data,
+      skills: [skill, ...data.skills.filter((existing) => existing._id !== skill._id)],
+    };
   });
 }
 
@@ -119,9 +127,16 @@ export const useCreateSkillMutation = (
   return useMutation({
     mutationFn: (payload: TCreateSkill) => dataService.createSkill(payload),
     ...rest,
-    onSuccess: (skill, variables, context) => {
+    onSuccess: async (skill, variables, context) => {
+      /**
+       * An infinite skill query may have captured its pre-create pages before
+       * this mutation completed. Cancel it before the cache write so a late
+       * cursor response cannot replace the newly-created row.
+       */
+      await queryClient.cancelQueries([QueryKeys.skills]);
       queryClient.setQueryData<TSkill>([QueryKeys.skill, skill._id], skill);
       addSkillToCachedLists(queryClient, skill);
+      void queryClient.invalidateQueries([QueryKeys.skills]);
       if (onSuccess) onSuccess(skill, variables, context);
     },
   });
@@ -135,14 +150,29 @@ export const useImportSkillMutation = (
   options?: ImportSkillOptions,
 ): UseMutationResult<TSkill, unknown, FormData> => {
   const queryClient = useQueryClient();
-  const { onSuccess, ...rest } = options ?? {};
+  const { onError, onSuccess, ...rest } = options ?? {};
   return useMutation({
     mutationFn: (formData: FormData) => dataService.importSkill(formData),
     ...rest,
-    onSuccess: (skill, variables, context) => {
+    onSuccess: async (skill, variables, context) => {
+      await queryClient.cancelQueries([QueryKeys.skills]);
       queryClient.setQueryData<TSkill>([QueryKeys.skill, skill._id], skill);
       addSkillToCachedLists(queryClient, skill);
+      void queryClient.invalidateQueries([QueryKeys.skills]);
       if (onSuccess) onSuccess(skill, variables, context);
+    },
+    onError: (error, variables, context) => {
+      const body = (error as { response?: { data?: Partial<TSkillImportFailedResponse> } })
+        ?.response?.data;
+      if (
+        body?.error === 'skill_import_incomplete' ||
+        body?.error === 'skill_import_rollback_failed' ||
+        body?.error === 'skill_import_cleanup_incomplete'
+      ) {
+        queryClient.removeQueries([QueryKeys.skills], { type: 'inactive' });
+        void queryClient.invalidateQueries([QueryKeys.skills]);
+      }
+      if (onError) onError(error, variables, context);
     },
   });
 };
@@ -228,10 +258,7 @@ export const useDeleteSkillMutation = (
   });
 };
 
-/**
- * Upload a file into a skill. Stubbed in phase 1 — the backend responds 501.
- * The hook is wired now so the frontend can call it once the backend is ready.
- */
+/** Upload or replace a file in a skill and refresh its cached contents. */
 export const useUploadSkillFileMutation = (
   options?: UploadSkillFileOptions,
 ): UseMutationResult<TSkillFile, unknown, TUploadSkillFileVariables> => {
@@ -241,17 +268,31 @@ export const useUploadSkillFileMutation = (
     mutationFn: ({ skillId, formData }: TUploadSkillFileVariables) =>
       dataService.uploadSkillFile(skillId, formData),
     ...rest,
-    onSuccess: (skillFile, variables, context) => {
+    onSuccess: async (skillFile, variables, context) => {
+      await Promise.all([
+        queryClient.cancelQueries([QueryKeys.skillFiles, variables.skillId]),
+        queryClient.cancelQueries([
+          QueryKeys.skillFileContent,
+          variables.skillId,
+          skillFile.relativePath,
+        ]),
+      ]);
       queryClient.setQueryData<TListSkillFilesResponse>(
         [QueryKeys.skillFiles, variables.skillId],
         (prev) => {
-          if (!prev) return { files: [skillFile] };
+          if (!prev) return prev;
           const filtered = prev.files.filter((f) => f.relativePath !== skillFile.relativePath);
           return { files: [...filtered, skillFile] };
         },
       );
       queryClient.invalidateQueries([QueryKeys.skill, variables.skillId]);
       if (onSuccess) onSuccess(skillFile, variables, context);
+      queryClient.invalidateQueries([QueryKeys.skillFiles, variables.skillId]);
+      queryClient.invalidateQueries([
+        QueryKeys.skillFileContent,
+        variables.skillId,
+        skillFile.relativePath,
+      ]);
     },
   });
 };

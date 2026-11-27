@@ -4,21 +4,31 @@ export interface TenantContext {
   tenantId?: string;
   userId?: string;
   requestId?: string;
+  requestMethod?: string;
+  requestPath?: string;
 }
 
 /** Sentinel value for deliberate cross-tenant system operations */
 export const SYSTEM_TENANT_ID = '__SYSTEM__';
+
+/** Reserved for persisted tenantless channel partitions; never an authenticated tenant. */
+export function isReservedTenantId(tenantId: string | undefined): boolean {
+  return tenantId === '_';
+}
 
 /**
  * AsyncLocalStorage instance for propagating tenant context.
  * Callbacks passed to `tenantStorage.run()` must be `async` for the context to propagate
  * through Mongoose query execution. Sync callbacks returning a Mongoose thenable will lose context.
  */
-export const tenantStorage = new AsyncLocalStorage<TenantContext>();
+export const tenantStorage: AsyncLocalStorage<TenantContext> =
+  new AsyncLocalStorage<TenantContext>();
 
 /** Returns the current tenant ID from async context, or undefined if none is set */
 export function getTenantId(): string | undefined {
-  return tenantStorage.getStore()?.tenantId;
+  const tenantId = tenantStorage.getStore()?.tenantId;
+  if (isReservedTenantId(tenantId)) throw new TypeError('Reserved tenant identifier');
+  return tenantId;
 }
 
 /** Returns the current user ID from async context, or undefined if none is set */
@@ -31,13 +41,26 @@ export function getRequestId(): string | undefined {
   return tenantStorage.getStore()?.requestId;
 }
 
+/** Returns the safe request method from async context, or undefined if none is set */
+export function getRequestMethod(): string | undefined {
+  return tenantStorage.getStore()?.requestMethod;
+}
+
+/** Returns the safe request path from async context, or undefined if none is set */
+export function getRequestPath(): string | undefined {
+  return tenantStorage.getStore()?.requestPath;
+}
+
 /**
  * Runs a function in an explicit cross-tenant system context (bypasses tenant filtering).
  * The callback MUST be async — sync callbacks returning Mongoose thenables will lose context.
  */
 export function runAsSystem<T>(fn: () => Promise<T>): Promise<T> {
-  const { requestId, userId } = tenantStorage.getStore() ?? {};
-  return tenantStorage.run({ tenantId: SYSTEM_TENANT_ID, requestId, userId }, fn);
+  const { requestId, userId, requestMethod, requestPath } = tenantStorage.getStore() ?? {};
+  return tenantStorage.run(
+    { tenantId: SYSTEM_TENANT_ID, requestId, userId, requestMethod, requestPath },
+    fn,
+  );
 }
 
 /**

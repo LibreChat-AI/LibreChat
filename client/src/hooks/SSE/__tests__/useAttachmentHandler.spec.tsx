@@ -14,33 +14,50 @@
  * unrelated citations both show up.
  */
 
-import { renderHook, act } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue } from 'recoil';
-import { QueryClient } from '@tanstack/react-query';
+import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
+import { QueryClient } from '@tanstack/react-query';
+import { renderHook, act } from '@testing-library/react';
+import { Provider as JotaiProvider, useAtomValue } from 'jotai';
+import type {
+  TFile,
+  TAttachment,
+  EventSubmission,
+  TAttachmentMetadata,
+} from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { TAttachment, EventSubmission } from 'librechat-data-provider';
+import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 import useAttachmentHandler from '../useAttachmentHandler';
-import store from '~/store';
 
-const wrapper = ({ children }: { children: ReactNode }) => <RecoilRoot>{children}</RecoilRoot>;
+type AttachmentFixture = TFile & TAttachmentMetadata;
+
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <RecoilRoot>
+    <JotaiProvider>{children}</JotaiProvider>
+  </RecoilRoot>
+);
 
 const submission = {} as EventSubmission;
 const messageId = 'msg-1';
 
-function makeAttachment(overrides: Partial<TAttachment>): TAttachment {
+function makeAttachment(overrides: Partial<AttachmentFixture>): AttachmentFixture {
   return {
+    user: 'user-1',
+    object: 'file',
+    bytes: 1024,
+    embedded: false,
+    usage: 0,
     file_id: 'fid-1',
     filename: 'data.xlsx',
     filepath: '/uploads/data.xlsx',
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    type: Tools.execute_code,
     messageId,
     toolCallId: 'tc-1',
-    text: null,
-    textFormat: null,
+    text: undefined,
+    textFormat: undefined,
     status: 'pending',
     ...overrides,
-  } as unknown as TAttachment;
+  };
 }
 
 /* Co-mount the handler and a reader of the messageAttachmentsMap atom in
@@ -58,7 +75,7 @@ function setup() {
   const { result } = renderHook(
     () => {
       const handler = useAttachmentHandler(queryClient);
-      const map = useRecoilValue(store.messageAttachmentsMap);
+      const map = useAtomValue(messageAttachmentsMapAtom);
       ref.current = map;
       return handler;
     },
@@ -115,21 +132,113 @@ describe('useAttachmentHandler upsert-by-file_id', () => {
     ]);
   });
 
-  it('appends (does NOT merge) attachments with no file_id', () => {
-    /* Lightweight attachments like file_search citations and web_search
-     * results don't carry file_id. The handler must keep its legacy
-     * append behavior for them — merging would lose distinct citations
-     * and is unnecessary because they're never the target of a
-     * deferred preview update. */
+  it('appends (does NOT merge) citation attachments with no file_id', () => {
+    /* Lightweight attachments like file_search citations don't carry file_id.
+     * The handler must keep its legacy append behavior for them: merging
+     * would lose distinct citations and is unnecessary because they're never
+     * the target of a deferred preview update. */
     const ctx = setup();
     const noFileId = {
       messageId,
       toolCallId: 'tc-1',
-      type: Tools.web_search,
+      type: Tools.file_search,
     } as unknown as TAttachment;
     ctx.handle(noFileId);
     ctx.handle(noFileId);
     expect(ctx.list).toHaveLength(2);
+  });
+
+  it('replaces a re-emitted web-search snapshot instead of stacking it', () => {
+    /* The search helper rewrites and re-emits the WHOLE payload after every
+     * highlight update, keeping the same toolCallId and turn. Appending those
+     * stacked one copy of every image, product and place per update. */
+    const ctx = setup();
+    const snapshot = (processed: boolean) =>
+      ({
+        messageId,
+        toolCallId: 'tc-1',
+        type: Tools.web_search,
+        [Tools.web_search]: { turn: 0, organic: [{ link: 'https://example.com', processed }] },
+      }) as unknown as TAttachment;
+
+    ctx.handle(snapshot(false));
+    ctx.handle(snapshot(true));
+
+    expect(ctx.list).toHaveLength(1);
+    expect(
+      (ctx.list[0] as unknown as { web_search: { organic: Array<{ processed: boolean }> } })
+        .web_search.organic[0].processed,
+    ).toBe(true);
+  });
+
+  it('keeps web-search snapshots from distinct tool calls separate', () => {
+    const ctx = setup();
+    const snapshot = (toolCallId: string) =>
+      ({
+        messageId,
+        toolCallId,
+        type: Tools.web_search,
+        [Tools.web_search]: { turn: 0 },
+      }) as unknown as TAttachment;
+
+    ctx.handle(snapshot('tc-1'));
+    ctx.handle(snapshot('tc-2'));
+
+    expect(ctx.list).toHaveLength(2);
+  });
+
+  it('keeps same-agent executions separate when provider id and turn repeat', () => {
+    const ctx = setup();
+    const snapshot = (stepId: string, link: string) =>
+      ({
+        messageId,
+        toolCallId: 'call_0',
+        agentId: 'agent-a',
+        stepId,
+        type: Tools.web_search,
+        [Tools.web_search]: { turn: 0, organic: [{ link }] },
+      }) as unknown as TAttachment;
+
+    ctx.handle(snapshot('step-1', 'https://first.example'));
+    ctx.handle(snapshot('step-2', 'https://second.example'));
+    ctx.handle(snapshot('step-1', 'https://first-updated.example'));
+
+    expect(ctx.list).toHaveLength(2);
+    expect(ctx.list.map((attachment) => attachment[Tools.web_search]?.organic?.[0]?.link)).toEqual([
+      'https://first-updated.example',
+      'https://second.example',
+    ]);
+  });
+
+  it('keeps sibling tool calls separate when they share a file_id (distinct toolCallIds)', () => {
+    /* Two background code calls regenerated the same filename — same
+     * claimed file_id, different toolCallId. Each card anchors its own
+     * attachment, so the second emit must append, not replace. A bare
+     * update (no toolCallId) still merges by file key (wildcard). */
+    const ctx = setup();
+    ctx.handle(makeAttachment({ status: 'ready' }));
+    ctx.handle(makeAttachment({ status: 'ready', toolCallId: 'tc-2' }));
+    expect(ctx.list).toHaveLength(2);
+  });
+
+  it('keeps handoff agents separate when file_id AND toolCallId collide (distinct agentIds)', () => {
+    /* Two handoff agents both emitted `call_0` and wrote the same
+     * filename — same claimed file_id, same provider toolCallId,
+     * different agentId. Merging would overwrite the first agent's
+     * agentId and leave ContentParts one attachment short. A record
+     * with no agentId still merges (wildcard, single-agent runs). */
+    const ctx = setup();
+    ctx.handle({ ...makeAttachment({ status: 'ready' }), agentId: 'agent_a' } as TAttachment);
+    ctx.handle({ ...makeAttachment({ status: 'ready' }), agentId: 'agent_b' } as TAttachment);
+    expect(ctx.list).toHaveLength(2);
+    expect(ctx.list.map((a) => (a as { agentId?: string }).agentId).sort()).toEqual([
+      'agent_a',
+      'agent_b',
+    ]);
+    ctx.handle(makeAttachment({ status: 'failed', previewError: 'timeout' }));
+    /* Bare-agent update merged into the FIRST compatible entry, not appended. */
+    expect(ctx.list).toHaveLength(2);
+    expect((ctx.list[0] as { previewError?: string }).previewError).toBe('timeout');
   });
 
   it('preserves fields from the first event when the second omits them', () => {
@@ -162,7 +271,7 @@ describe('useAttachmentHandler upsert-by-file_id', () => {
      * downgrade it. Otherwise the chip flickers back to "pending" and
      * polling restarts until the lazy sweep catches up. (Codex P1.) */
     const ctx = setup();
-    ctx.handle(makeAttachment({ status: 'pending', text: null }));
+    ctx.handle(makeAttachment({ status: 'pending', text: undefined }));
     ctx.handle({
       file_id: 'fid-1',
       messageId,
@@ -171,7 +280,7 @@ describe('useAttachmentHandler upsert-by-file_id', () => {
       textFormat: 'html',
     } as unknown as TAttachment);
     /* Phase-1 replay arrives last (finalHandler at stream end). */
-    ctx.handle(makeAttachment({ status: 'pending', text: null }));
+    ctx.handle(makeAttachment({ status: 'pending', text: undefined }));
     expect(ctx.list).toHaveLength(1);
     expect(ctx.list[0]).toMatchObject({
       status: 'ready',
@@ -259,7 +368,7 @@ describe('useAttachmentHandler upsert-by-file_id', () => {
       const { result } = renderHook(
         () => {
           const handler = useAttachmentHandler(queryClient);
-          const map = useRecoilValue(store.messageAttachmentsMap);
+          const map = useAtomValue(messageAttachmentsMapAtom);
           ref.current = map;
           return handler;
         },

@@ -1,4 +1,6 @@
-export default function MCPIcon({ className }: { className?: string }) {
+import { JSX } from 'react/jsx-runtime';
+
+export default function MCPIcon({ className }: { className?: string }): JSX.Element {
   return (
     <svg
       width="195"

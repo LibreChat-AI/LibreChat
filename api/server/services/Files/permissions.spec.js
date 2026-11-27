@@ -4,6 +4,7 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('~/server/services/PermissionService', () => ({
   checkPermission: jest.fn(),
+  getEffectivePermissions: jest.fn(),
 }));
 
 jest.mock('~/models', () => ({
@@ -13,7 +14,7 @@ jest.mock('~/models', () => ({
 
 const { logger } = require('@librechat/data-schemas');
 const { Constants, PermissionBits, ResourceType } = require('librechat-data-provider');
-const { checkPermission } = require('~/server/services/PermissionService');
+const { checkPermission, getEffectivePermissions } = require('~/server/services/PermissionService');
 const { getAgent, getFiles } = require('~/models');
 const { filterFilesByAgentAccess, hasAccessToFilesViaAgent } = require('./permissions');
 
@@ -41,6 +42,7 @@ function makeAgent(overrides = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  getEffectivePermissions.mockResolvedValue(0);
   getFiles.mockResolvedValue([
     makeFile('attached-1', AUTHOR_ID),
     makeFile('attached-2', AUTHOR_ID),
@@ -158,7 +160,7 @@ describe('filterFilesByAgentAccess', () => {
       expect(result.map((f) => f.file_id)).not.toContain('not-attached');
     });
 
-    it('should not return a file referenced from an agent that is not authored by the file owner', async () => {
+    it('should return an attached file even when the file owner is not the agent author', async () => {
       getAgent.mockResolvedValue(makeAgent({ author: USER_ID }));
       checkPermission.mockResolvedValue(true);
 
@@ -169,7 +171,7 @@ describe('filterFilesByAgentAccess', () => {
         agentId: AGENT_ID,
       });
 
-      expect(result).toEqual([]);
+      expect(result).toEqual([sharedFile]);
     });
 
     it('should return only owned files when user lacks VIEW permission', async () => {
@@ -184,6 +186,57 @@ describe('filterFilesByAgentAccess', () => {
       });
 
       expect(result).toEqual([ownedFile]);
+    });
+
+    it('should grant explicit REMOTE_AGENT VIEW without direct AGENT VIEW', async () => {
+      getAgent.mockResolvedValue(makeAgent());
+      getEffectivePermissions.mockResolvedValueOnce(0).mockResolvedValueOnce(PermissionBits.VIEW);
+
+      const result = await filterFilesByAgentAccess({
+        files: [sharedFile],
+        userId: USER_ID,
+        role: 'USER',
+        agentId: AGENT_ID,
+        resourceType: ResourceType.REMOTE_AGENT,
+      });
+
+      expect(result).toEqual([sharedFile]);
+      expect(getEffectivePermissions).toHaveBeenNthCalledWith(1, {
+        userId: USER_ID,
+        role: 'USER',
+        resourceType: ResourceType.AGENT,
+        resourceId: AGENT_MONGO_ID,
+      });
+      expect(getEffectivePermissions).toHaveBeenNthCalledWith(2, {
+        userId: USER_ID,
+        role: 'USER',
+        resourceType: ResourceType.REMOTE_AGENT,
+        resourceId: AGENT_MONGO_ID,
+      });
+      expect(checkPermission).not.toHaveBeenCalled();
+    });
+
+    it('should grant AGENT SHARE without an explicit REMOTE_AGENT ACL', async () => {
+      getAgent.mockResolvedValue(makeAgent());
+      getEffectivePermissions.mockResolvedValueOnce(PermissionBits.SHARE);
+
+      const result = await filterFilesByAgentAccess({
+        files: [sharedFile],
+        userId: USER_ID,
+        role: 'USER',
+        agentId: AGENT_ID,
+        resourceType: ResourceType.REMOTE_AGENT,
+      });
+
+      expect(result).toEqual([sharedFile]);
+      expect(getEffectivePermissions).toHaveBeenCalledTimes(1);
+      expect(getEffectivePermissions).toHaveBeenCalledWith({
+        userId: USER_ID,
+        role: 'USER',
+        resourceType: ResourceType.AGENT,
+        resourceId: AGENT_MONGO_ID,
+      });
+      expect(checkPermission).not.toHaveBeenCalled();
     });
 
     it('should return only owned files when agent is not found', async () => {
@@ -321,7 +374,7 @@ describe('hasAccessToFilesViaAgent', () => {
       expect(checkPermission).not.toHaveBeenCalled();
     });
 
-    it('should deny attached files not owned by the agent author', async () => {
+    it('should grant attached files not owned by the agent author', async () => {
       getAgent.mockResolvedValue(makeAgent({ author: USER_ID }));
       getFiles.mockResolvedValue([makeFile('attached-1', AUTHOR_ID)]);
 
@@ -331,7 +384,7 @@ describe('hasAccessToFilesViaAgent', () => {
         agentId: AGENT_ID,
       });
 
-      expect(result.get('attached-1')).toBe(false);
+      expect(result.get('attached-1')).toBe(true);
     });
   });
 
@@ -358,6 +411,22 @@ describe('hasAccessToFilesViaAgent', () => {
         resourceId: AGENT_MONGO_ID,
         requiredPermission: PermissionBits.VIEW,
       });
+    });
+
+    it('should grant access to attached files owned by another collaborator', async () => {
+      const collaboratorFile = makeFile('attached-2', 'editor-user-id');
+      getAgent.mockResolvedValue(makeAgent());
+      checkPermission.mockResolvedValue(true);
+
+      const result = await hasAccessToFilesViaAgent({
+        userId: USER_ID,
+        role: 'USER',
+        fileIds: ['attached-2'],
+        agentId: AGENT_ID,
+        files: [collaboratorFile],
+      });
+
+      expect(result.get('attached-2')).toBe(true);
     });
 
     it('should deny all when VIEW permission is missing', async () => {

@@ -1,32 +1,44 @@
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { useState, ReactNode } from 'react';
-import { Spinner, Button } from '@librechat/client';
 import { useOutletContext } from 'react-router-dom';
-import { useRequestPasswordResetMutation } from 'librechat-data-provider/react-query';
 import { loginPage } from 'librechat-data-provider';
-import type { TRequestPasswordReset, TRequestPasswordResetResponse } from 'librechat-data-provider';
+import { Spinner, Button, Alert, Input } from '@librechat/client';
+import { useRequestPasswordResetMutation } from 'librechat-data-provider/react-query';
+import type { TRequestPasswordReset } from 'librechat-data-provider';
+import type { FC, ReactNode } from 'react';
 import type { TLoginLayoutContext } from '~/common';
-import type { FC } from 'react';
 import { useLocalize } from '~/hooks';
 
-const BodyTextWrapper: FC<{ children: ReactNode }> = ({ children }) => {
+const BodyTextWrapper: FC<{ children: ReactNode; unavailable?: boolean }> = ({
+  children,
+  unavailable,
+}) => {
   return (
-    <div
-      className="relative mt-6 rounded-xl border border-green-500/20 bg-green-50/50 px-6 py-4 text-green-700 shadow-sm transition-all dark:bg-green-950/30 dark:text-green-100"
-      role="alert"
+    <Alert
+      variant={unavailable ? 'info' : 'success'}
+      icon={false}
+      elevation="raised"
+      size="roomy"
+      className="mt-6"
     >
       {children}
-    </div>
+    </Alert>
   );
 };
 
-const ResetPasswordBodyText = () => {
+const ResetPasswordBodyText = ({ unavailable = false }: { unavailable?: boolean }) => {
   const localize = useLocalize();
   return (
     <div className="flex flex-col space-y-4">
-      <p>{localize('com_auth_reset_password_if_email_exists')}</p>
+      <p>
+        {localize(
+          unavailable
+            ? 'com_auth_reset_password_unavailable'
+            : 'com_auth_reset_password_if_email_exists',
+        )}
+      </p>
       <a
-        className="inline-flex text-sm font-medium text-green-600 transition-colors hover:text-green-700 dark:text-green-400 dark:hover:text-green-300"
+        className="text-accent-primary hover:text-accent-primary-hover inline-flex text-sm font-medium transition-colors"
         href={loginPage()}
       >
         {localize('com_auth_back_to_login')}
@@ -50,22 +62,9 @@ function RequestPasswordReset() {
 
   const onSubmit = (data: TRequestPasswordReset) => {
     requestPasswordReset.mutate(data, {
-      onSuccess: (data: TRequestPasswordResetResponse) => {
-        if (data.link && !startupConfig?.emailEnabled) {
-          setHeaderText('com_auth_reset_password');
-          setBodyText(
-            <span>
-              {localize('com_auth_click')}{' '}
-              <a className="text-green-500 hover:underline" href={data.link}>
-                {localize('com_auth_here')}
-              </a>{' '}
-              {localize('com_auth_to_reset_your_password')}
-            </span>,
-          );
-        } else {
-          setHeaderText('com_auth_reset_password_link_sent');
-          setBodyText(<ResetPasswordBodyText />);
-        }
+      onSuccess: () => {
+        setHeaderText('com_auth_reset_password_link_sent');
+        setBodyText(<ResetPasswordBodyText />);
       },
       onError: () => {
         setHeaderText('com_auth_reset_password_link_sent');
@@ -73,6 +72,18 @@ function RequestPasswordReset() {
       },
     });
   };
+
+  if (!startupConfig) {
+    return null;
+  }
+
+  if (!startupConfig.emailEnabled) {
+    return (
+      <BodyTextWrapper unavailable>
+        <ResetPasswordBodyText unavailable />
+      </BodyTextWrapper>
+    );
+  }
 
   if (bodyText) {
     return <BodyTextWrapper>{bodyText}</BodyTextWrapper>;
@@ -87,7 +98,8 @@ function RequestPasswordReset() {
     >
       <div className="space-y-2">
         <div className="relative">
-          <input
+          <Input
+            colorTransition
             type="email"
             id="email"
             autoComplete="off"
@@ -108,18 +120,18 @@ function RequestPasswordReset() {
               },
             })}
             aria-invalid={!!errors.email}
-            className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+            variant="floating"
             placeholder=" "
           />
           <label
             htmlFor="email"
-            className="absolute -top-2 left-2 z-10 bg-white px-2 text-sm text-gray-600 transition-all peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-placeholder-shown:text-gray-500 peer-focus:-top-2 peer-focus:text-sm peer-focus:text-green-600 dark:bg-gray-900 dark:text-gray-400 dark:peer-focus:text-green-500"
+            className="bg-surface-primary theme-field-fill:bg-transparent theme-field-fill:bg-linear-to-b theme-field-fill:from-transparent theme-field-fill:from-38% theme-field-fill:to-field-fill theme-field-fill:to-38% text-text-secondary peer-placeholder-shown:text-text-tertiary peer-focus:text-accent-primary peer-placeholder-shown:top-theme-auth-label-rest absolute inset-s-2 -top-2 z-10 px-2 text-sm transition-all peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:text-sm"
           >
             {localize('com_auth_email_address')}
           </label>
         </div>
         {errors.email && (
-          <p role="alert" className="text-sm font-medium text-red-600 dark:text-red-400">
+          <p role="alert" className="text-text-destructive text-sm font-medium">
             {errors.email.message}
           </p>
         )}
@@ -130,13 +142,15 @@ function RequestPasswordReset() {
           type="submit"
           disabled={!!errors.email || isLoading}
           variant="submit"
-          className="h-12 w-full rounded-2xl"
+          shape="soft"
+          size="auth"
+          className="w-full"
         >
           {isLoading ? <Spinner /> : localize('com_auth_continue')}
         </Button>
         <a
           href={loginPage()}
-          className="block text-center text-sm font-medium text-green-600 transition-colors hover:text-green-700 dark:text-green-400 dark:hover:text-green-300"
+          className="text-accent-primary hover:text-accent-primary-hover block text-center text-sm font-medium transition-colors"
         >
           {localize('com_auth_back_to_login')}
         </a>

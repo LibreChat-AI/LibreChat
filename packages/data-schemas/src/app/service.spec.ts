@@ -1,6 +1,22 @@
+import {
+  EModelEndpoint,
+  AgentCapabilities,
+  defaultAssistantsVersion,
+  setPiiRegexProgramSizer,
+} from 'librechat-data-provider';
 import type { DeepPartial, TCustomConfig } from 'librechat-data-provider';
-import { loadSummarizationConfig } from './service';
+import { AppService, loadFiltersConfig, loadSummarizationConfig } from './service';
 import logger from '~/config/winston';
+
+/** The server registers RE2; these specs exercise config loading, so any compilable pattern sizes. */
+setPiiRegexProgramSizer((pattern) => {
+  try {
+    new RegExp(pattern);
+    return pattern.length;
+  } catch {
+    return null;
+  }
+});
 
 jest.mock('~/config/winston', () => ({
   __esModule: true,
@@ -76,5 +92,418 @@ describe('loadSummarizationConfig', () => {
     expect(result).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(String(warnSpy.mock.calls[0][0])).toContain('Invalid summarization config');
+  });
+});
+
+describe('loadFiltersConfig', () => {
+  it('treats omission and zero-rule source configs as disabled', () => {
+    expect(loadFiltersConfig({})).toBeUndefined();
+    expect(loadFiltersConfig({ filters: {} })).toBeUndefined();
+    expect(loadFiltersConfig({ filters: { messages: {} } })).toBeUndefined();
+    expect(
+      loadFiltersConfig({
+        filters: {
+          skills: {
+            pii: {
+              fields: ['file_text'],
+              starterPatterns: [],
+            },
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('retains strict legacy attribution without source-aware PII patterns', () => {
+    expect(
+      loadFiltersConfig({
+        filters: {
+          messages: { unattributedAssistantContent: 'inspect' },
+        },
+      }),
+    ).toEqual({ messages: { unattributedAssistantContent: 'inspect' } });
+    expect(
+      loadFiltersConfig({
+        filters: {
+          messages: { unattributedAssistantContent: 'model_output' },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('returns a validated source-aware filter config', () => {
+    const result = loadFiltersConfig({
+      filters: {
+        agentInstructions: {
+          pii: {
+            fields: ['instructions'],
+            customPatterns: [
+              {
+                id: 'organization-identifier',
+                label: 'Organization identifier',
+                regex: 'ORG-[A-Z0-9]+',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      agentInstructions: {
+        pii: {
+          fields: ['instructions'],
+          customPatterns: [
+            {
+              id: 'organization-identifier',
+              label: 'Organization identifier',
+              regex: 'ORG-[A-Z0-9]+',
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it('retains an explicit file fail-close policy without text matchers', () => {
+    expect(
+      loadFiltersConfig({
+        filters: {
+          files: {
+            pii: {
+              fields: ['content'],
+              starterPatterns: [],
+              uninspectable: 'block',
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      files: {
+        pii: {
+          fields: ['content'],
+          starterPatterns: [],
+          uninspectable: 'block',
+        },
+      },
+    });
+  });
+
+  it('rejects structurally partial filter patterns instead of disabling policy', () => {
+    expect(() =>
+      loadFiltersConfig({
+        filters: {
+          messages: {
+            pii: {
+              customPatterns: [{ regex: 'ORG-[A-Z0-9]+' }],
+            },
+          },
+        },
+      }),
+    ).toThrow('Invalid filters config');
+  });
+
+  it.each([null, false, 0, 'messages'])(
+    'rejects a configured non-object value (%p) instead of disabling policy',
+    (filters) => {
+      expect(() =>
+        loadFiltersConfig({
+          filters,
+        } as unknown as DeepPartial<TCustomConfig>),
+      ).toThrow('Invalid filters config');
+    },
+  );
+
+  it('rejects app config construction when configured filters are invalid', async () => {
+    await expect(
+      AppService({
+        config: {
+          filters: {
+            messages: {
+              pii: {
+                customPatterns: [{ regex: '(' }],
+              },
+            },
+          },
+        } as DeepPartial<TCustomConfig>,
+      }),
+    ).rejects.toThrow('Invalid filters config');
+  });
+});
+
+describe('AppService assistants config', () => {
+  it('exposes default Skill deletion worker settings when the block is omitted', async () => {
+    const result = await AppService({ config: {} });
+    expect(result.skillDeletion).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 120_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+  });
+
+  it('fills omitted Skill deletion settings around an explicit override', async () => {
+    const config = {
+      skillDeletion: { claimLeaseMs: 180_000 },
+    } as unknown as DeepPartial<TCustomConfig>;
+    const result = await AppService({ config });
+    expect(result.skillDeletion).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 180_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+  });
+
+  it('preserves configured Assistants API versions', async () => {
+    const config = {
+      endpoints: {
+        [EModelEndpoint.assistants]: {
+          version: 'v3',
+        },
+        [EModelEndpoint.azureOpenAI]: {
+          assistants: true,
+          groups: [
+            {
+              group: 'azure-assistants-test',
+              apiKey: 'test-key',
+              instanceName: 'azure-assistants-test',
+              assistants: true,
+              version: '2024-02-15-preview',
+              models: {
+                'gpt-4': {
+                  deploymentName: 'gpt-4',
+                },
+              },
+            },
+          ],
+        },
+        [EModelEndpoint.azureAssistants]: {
+          version: 4,
+        },
+      },
+    } as DeepPartial<TCustomConfig>;
+
+    const result = await AppService({ config });
+
+    expect(result.endpoints?.[EModelEndpoint.assistants]?.version).toBe('v3');
+    expect(result.endpoints?.[EModelEndpoint.azureAssistants]?.version).toBe(4);
+  });
+
+  it('keeps Azure Assistants default version when only Azure OpenAI enables assistants', async () => {
+    const config = {
+      endpoints: {
+        [EModelEndpoint.azureOpenAI]: {
+          assistants: true,
+          groups: [
+            {
+              group: 'azure-assistants-test',
+              apiKey: 'test-key',
+              instanceName: 'azure-assistants-test',
+              assistants: true,
+              version: '2024-02-15-preview',
+              models: {
+                'gpt-4': {
+                  deploymentName: 'gpt-4',
+                },
+              },
+            },
+          ],
+        },
+      },
+    } as DeepPartial<TCustomConfig>;
+
+    const result = await AppService({ config });
+
+    expect(result.endpoints?.[EModelEndpoint.azureAssistants]?.version).toBe(
+      defaultAssistantsVersion.azureAssistants,
+    );
+  });
+});
+
+describe('AppService MCP App sandbox configuration', () => {
+  it('preserves deployment-owned MCP App sandbox limits', async () => {
+    const result = await AppService({
+      config: {
+        mcpAppSandbox: {
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+          maxSourcesPerDirective: 64,
+          maxSerializedLength: 8192,
+          maxAdmissionRequestsPerMinute: 480,
+        },
+      } as DeepPartial<TCustomConfig>,
+    });
+
+    expect(result.mcpAppSandbox).toEqual({
+      url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+      maxSourcesPerDirective: 64,
+      maxSerializedLength: 8192,
+      maxAdmissionRequestsPerMinute: 480,
+    });
+  });
+});
+
+describe('AppService credential write format', () => {
+  it('defaults stored credential writes to v3', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.credentials).toEqual({ writeFormat: 'v3' });
+  });
+
+  it('carries a configured legacy write format onto the app config', async () => {
+    const result = await AppService({
+      config: { credentials: { writeFormat: 'legacy' } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.credentials).toEqual({ writeFormat: 'legacy' });
+  });
+});
+
+describe('AppService admin catalog model-list lifetime', () => {
+  it('carries a configured lifetime onto the app config, zero included', async () => {
+    for (const catalogModelsTtlMs of [0, 600_000]) {
+      const result = await AppService({
+        config: { endpoints: { catalogModelsTtlMs } } as DeepPartial<TCustomConfig>,
+      });
+      expect(result.endpoints?.catalogModelsTtlMs).toBe(catalogModelsTtlMs);
+    }
+  });
+
+  it('leaves it unset when librechat.yaml does not set it', async () => {
+    const result = await AppService({ config: { endpoints: {} } as DeepPartial<TCustomConfig> });
+    expect(result.endpoints).not.toHaveProperty('catalogModelsTtlMs');
+  });
+});
+
+describe('AppService file list limit', () => {
+  it('carries the configured limit onto the app config the file list route reads', async () => {
+    const result = await AppService({
+      config: { fileListLimit: 250 } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.fileListLimit).toBe(250);
+  });
+
+  it('leaves it unset when librechat.yaml does not set it, so the route keeps its default', async () => {
+    for (const config of [{}, { version: '1.3.0' }]) {
+      const result = await AppService({ config: config as DeepPartial<TCustomConfig> });
+      expect(result.fileListLimit).toBeUndefined();
+    }
+  });
+});
+
+describe('AppService conversation list limits', () => {
+  it('carries the configured filter limits onto the app config', async () => {
+    const result = await AppService({
+      config: {
+        conversationList: { maxEndpointFilters: 200, maxEndpointNameLength: 256 },
+      } as DeepPartial<TCustomConfig>,
+    });
+
+    expect(result.conversationList).toEqual({
+      maxEndpointFilters: 200,
+      maxEndpointNameLength: 256,
+    });
+  });
+
+  it('fills the schema defaults when the deployment configures none', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+  });
+
+  it('keeps the defaults when the configured block is invalid', async () => {
+    const result = await AppService({
+      config: { conversationList: { maxEndpointFilters: 0 } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+  });
+
+  it('keeps the default for a limit the deployment leaves out', async () => {
+    const result = await AppService({
+      config: { conversationList: { maxEndpointFilters: 10 } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 10, maxEndpointNameLength: 128 });
+  });
+});
+
+describe('AppService memory capability', () => {
+  it('strips the memory capability when no memory config is present', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.endpoints?.[EModelEndpoint.agents]?.capabilities).not.toContain(
+      AgentCapabilities.memory,
+    );
+  });
+
+  it('keeps the memory capability when memory is configured and enabled', async () => {
+    const config = { memory: { tokenLimit: 10000 } } as DeepPartial<TCustomConfig>;
+    const result = await AppService({ config });
+    expect(result.endpoints?.[EModelEndpoint.agents]?.capabilities).toContain(
+      AgentCapabilities.memory,
+    );
+  });
+
+  it('strips the memory capability when memory is explicitly disabled', async () => {
+    const config = { memory: { disabled: true } } as DeepPartial<TCustomConfig>;
+    const result = await AppService({ config });
+    expect(result.endpoints?.[EModelEndpoint.agents]?.capabilities).not.toContain(
+      AgentCapabilities.memory,
+    );
+  });
+
+  it('strips the memory capability even when an agents endpoint block is configured', async () => {
+    const config = {
+      endpoints: { [EModelEndpoint.agents]: { disableBuilder: true } },
+    } as DeepPartial<TCustomConfig>;
+    const result = await AppService({ config });
+    expect(result.endpoints?.[EModelEndpoint.agents]?.capabilities).not.toContain(
+      AgentCapabilities.memory,
+    );
+  });
+});
+
+describe('AppService custom endpoint parameters', () => {
+  const gateway = {
+    name: 'Gateway',
+    apiKey: 'gateway-key',
+    baseURL: 'https://gateway.example.com/v1',
+    models: { default: ['m1'] },
+    customParams: {
+      defaultParamsEndpoint: 'anthropic',
+      paramDefinitions: [{ key: 'temperature' }],
+    },
+  };
+  const config = { endpoints: { custom: [gateway] } } as DeepPartial<TCustomConfig>;
+
+  it('serves the custom endpoints as librechat.yaml writes them without an expander', async () => {
+    const appConfig = await AppService({ config: structuredClone(config) });
+
+    expect(appConfig.endpoints?.custom).toEqual([gateway]);
+    expect(appConfig.config.endpoints?.custom).toEqual([gateway]);
+  });
+
+  it('serves expanded copies and keeps the config as librechat.yaml writes it', async () => {
+    const written = structuredClone(config);
+    const appConfig = await AppService({
+      config: written,
+      expandCustomEndpoint: (endpoint) => ({
+        ...endpoint,
+        customParams: { defaultParamsEndpoint: 'anthropic', paramDefinitions: [] },
+      }),
+    });
+
+    expect(appConfig.endpoints?.custom?.[0]?.customParams).toEqual({
+      defaultParamsEndpoint: 'anthropic',
+      paramDefinitions: [],
+    });
+    expect(appConfig.config.endpoints?.custom?.[0]).toEqual(gateway);
+    expect(written.endpoints?.custom?.[0]).toEqual(gateway);
+  });
+});
+
+describe('AppService spreadsheet parsing policy', () => {
+  it('carries bounded deployment policy into request configuration', async () => {
+    const spreadsheetParsing = { timeoutMs: 30_000, maxConcurrent: 4 };
+    const result = await AppService({ config: { spreadsheetParsing } });
+    expect(result.spreadsheetParsing).toEqual(spreadsheetParsing);
+    expect((await AppService({ config: {} })).spreadsheetParsing).toBeUndefined();
   });
 });

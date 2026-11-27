@@ -32,6 +32,7 @@ jest.mock('@librechat/api', () => ({
 }));
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
+  updateUser: jest.fn(),
 }));
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn().mockResolvedValue({
@@ -55,7 +56,7 @@ describe('Apple Login Strategy', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
     process.env = OLD_ENV;
   });
 

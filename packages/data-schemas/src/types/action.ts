@@ -1,4 +1,5 @@
 import mongoose, { Document } from 'mongoose';
+import type { OneOrMany } from './query';
 
 export interface IAction extends Document {
   user: mongoose.Types.ObjectId;
@@ -26,4 +27,16 @@ export interface IAction extends Document {
     oauth_client_secret?: string;
   };
   tenantId?: string;
+}
+
+/**
+ * Domain criteria for locating actions. Fields are combined with AND; an array
+ * value matches any of its entries. Deliberately storage-agnostic — it names
+ * domain concepts, not stored field names or query operators.
+ */
+export interface ActionQuery {
+  actionId?: OneOrMany<string>;
+  agentId?: OneOrMany<string>;
+  assistantId?: OneOrMany<string>;
+  user?: string;
 }

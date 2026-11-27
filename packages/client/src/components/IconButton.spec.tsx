@@ -1,0 +1,85 @@
+import '@testing-library/jest-dom';
+import { render, screen } from '@testing-library/react';
+import { IconButton } from './IconButton';
+
+describe('IconButton', () => {
+  it('provides an accessible name and a safe default button type', () => {
+    render(<IconButton label="Open menu">menu</IconButton>);
+
+    expect(screen.getByRole('button', { name: 'Open menu' })).toHaveAttribute('type', 'button');
+  });
+
+  it('allows semantic variants and consumer class names', () => {
+    render(
+      <IconButton label="Delete" variant="destructive" size="sm" className="custom-class">
+        delete
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Delete' });
+    expect(button).toHaveClass('bg-surface-destructive', 'size-8', 'custom-class');
+  });
+
+  it('exposes theme-owned shape and control sizing', () => {
+    render(
+      <IconButton label="Theme control" size="theme" shape="theme">
+        menu
+      </IconButton>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Theme control' })).toHaveClass(
+      'size-theme-control',
+      'rounded-theme-control-round',
+    );
+  });
+
+  it('offers the theme control corner between square and round', () => {
+    render(
+      <IconButton label="Soft" size="lg" shape="control">
+        soft
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Soft' });
+    expect(button).toHaveClass('size-10', 'rounded-theme-control');
+    expect(button).not.toHaveClass('rounded-full');
+  });
+
+  it('keeps submit glyphs contrasted against the theme fill', () => {
+    render(
+      <IconButton label="Stop" variant="submit" size="theme" shape="composer">
+        stop
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Stop' });
+    expect(button).toHaveClass('bg-surface-inverted', 'text-text-inverted');
+    expect(button).not.toHaveClass('text-text-primary', 'bg-text-primary');
+  });
+
+  it('takes the composer action corner for the submit slot, not the round control corner', () => {
+    render(
+      <IconButton label="Send" variant="submit" size="theme" shape="composer">
+        send
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Send' });
+    expect(button).toHaveClass('rounded-theme-composer-action');
+    expect(button).not.toHaveClass('rounded-theme-control-round');
+  });
+
+  it('provides a theme-aware primary action', () => {
+    render(
+      <IconButton label="Send" variant="primary">
+        send
+      </IconButton>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveClass(
+      'bg-surface-inverted',
+      'text-text-inverted',
+      'hover:bg-surface-inverted-hover',
+    );
+  });
+});

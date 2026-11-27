@@ -1,6 +1,7 @@
+const { ATTACHMENT_ONLY_TEXT } = require('@librechat/api');
 const { Constants } = require('librechat-data-provider');
 const { HumanMessage, AIMessage, SystemMessage } = require('@librechat/agents/langchain/messages');
-const { formatMessage, formatLangChainMessages, formatFromLangChain } = require('./formatMessages');
+const { formatMessage } = require('./formatMessages');
 
 describe('formatMessage', () => {
   it('formats user message', () => {
@@ -184,93 +185,61 @@ describe('formatMessage', () => {
       content: 'Hello',
     });
   });
-});
 
-describe('formatLangChainMessages', () => {
-  it('formats an array of messages for LangChain', () => {
-    const messages = [
-      {
-        role: 'system',
-        content: 'This is a system message',
-      },
-      {
-        sender: 'user',
-        text: 'Hello',
-      },
-      {
-        sender: 'assistant',
-        text: 'Hi there',
-      },
-    ];
-    const formatOptions = {
-      userName: 'John',
-      assistantName: 'Assistant',
-    };
-    const result = formatLangChainMessages(messages, formatOptions);
-    expect(result).toHaveLength(3);
-    expect(result[0]).toBeInstanceOf(SystemMessage);
-    expect(result[1]).toBeInstanceOf(HumanMessage);
-    expect(result[2]).toBeInstanceOf(AIMessage);
-
-    expect(result[0].lc_kwargs.content).toEqual(messages[0].content);
-    expect(result[1].lc_kwargs.content).toEqual(messages[1].text);
-    expect(result[2].lc_kwargs.content).toEqual(messages[2].text);
-
-    expect(result[1].lc_kwargs.name).toEqual(formatOptions.userName);
-    expect(result[2].lc_kwargs.name).toEqual(formatOptions.assistantName);
+  it('includes the text part for vision messages that have text', () => {
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } };
+    const result = formatMessage({
+      message: { role: 'user', text: 'Describe this', image_urls: [image] },
+      endpoint: 'anthropic',
+    });
+    expect(result.content).toEqual([image, { type: 'text', text: 'Describe this' }]);
   });
 
-  describe('formatFromLangChain', () => {
-    it('should merge kwargs and additional_kwargs', () => {
-      const message = {
-        kwargs: {
-          content: 'some content',
-          name: 'dan',
-          additional_kwargs: {
-            function_call: {
-              name: 'dall-e',
-              arguments: '{\n  "input": "Subject: hedgehog, Style: cute"\n}',
-            },
-          },
-        },
-      };
-
-      const expected = {
-        content: 'some content',
-        name: 'dan',
-        function_call: {
-          name: 'dall-e',
-          arguments: '{\n  "input": "Subject: hedgehog, Style: cute"\n}',
-        },
-      };
-
-      expect(formatFromLangChain(message)).toEqual(expected);
+  it('omits the empty text part for image-only Anthropic messages', () => {
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } };
+    const result = formatMessage({
+      message: { role: 'user', text: '', image_urls: [image] },
+      endpoint: 'anthropic',
     });
+    // No empty { type: 'text', text: '' } block; Anthropic rejects those with HTTP 400.
+    expect(result.content).toEqual([image]);
+  });
 
-    it('should handle messages without additional_kwargs', () => {
-      const message = {
-        kwargs: {
-          content: 'some content',
-          name: 'dan',
-        },
-      };
-
-      const expected = {
-        content: 'some content',
-        name: 'dan',
-      };
-
-      expect(formatFromLangChain(message)).toEqual(expected);
+  it('omits the empty text part for image-only messages on other endpoints', () => {
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } };
+    const result = formatMessage({
+      message: { role: 'user', text: '   ', image_urls: [image] },
+      endpoint: 'openAI',
     });
+    expect(result.content).toEqual([image]);
+  });
 
-    it('should handle empty messages', () => {
-      const message = {
-        kwargs: {},
-      };
-
-      const expected = {};
-
-      expect(formatFromLangChain(message)).toEqual(expected);
+  it('substitutes text for an attachment-only turn with no inline content', () => {
+    const result = formatMessage({
+      message: { role: 'user', text: '', files: [{ file_id: 'f1', embedded: true }] },
+      endpoint: 'anthropic',
     });
+    expect(result.content).toBe(ATTACHMENT_ONLY_TEXT);
+  });
+
+  it('keeps the user text when an attachment-only turn also has text', () => {
+    const result = formatMessage({
+      message: { role: 'user', text: 'Summarize it', files: [{ file_id: 'f1', embedded: true }] },
+      endpoint: 'anthropic',
+    });
+    expect(result.content).toBe('Summarize it');
+  });
+
+  it('leaves empty content alone when the turn carries no files', () => {
+    const result = formatMessage({ message: { role: 'user', text: '' }, endpoint: 'anthropic' });
+    expect(result.content).toBe('');
+  });
+
+  it('does not substitute text for an assistant turn', () => {
+    const result = formatMessage({
+      message: { role: 'assistant', text: '', files: [{ file_id: 'f1' }] },
+      endpoint: 'anthropic',
+    });
+    expect(result.content).toBe('');
   });
 });

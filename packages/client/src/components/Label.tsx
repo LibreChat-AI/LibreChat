@@ -1,19 +1,62 @@
 import * as React from 'react';
 import * as LabelPrimitive from '@radix-ui/react-label';
-import { cn } from '~/utils';
+import { ClassProp } from 'class-variance-authority/types';
+import { cva, type VariantProps } from 'class-variance-authority';
+import { cn, peerDisabledInkClasses } from '~/utils';
 
-const Label = React.forwardRef<
+type LabelVariantOptions =
+  | ({ variant?: 'default' | 'secondary' | 'option' | 'section' | null | undefined } & ClassProp)
+  | undefined;
+
+/**
+ * Typography only, so a non-label element that heads a settings row can reuse a
+ * variant without inheriting the label's block layout. Each variant carries its
+ * own size, leading and color rather than overriding a shared base: the raw
+ * recipe output is not merged for those consumers, and a font size declared
+ * after `leading-none` would drop it.
+ */
+const labelVariants: (props?: LabelVariantOptions) => string = cva('', {
+  variants: {
+    variant: {
+      /** Size, leading and weight are the theme's label roles: `text-sm`, leading 1 and the
+       *  surrounding weight by default. */
+      default:
+        'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-primary',
+      /** The default metrics in the secondary ink, for a label that annotates rather than names. */
+      secondary:
+        'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-secondary',
+      /** The secondary metrics rising to the primary ink under the pointer, for the label of a
+       *  checkbox or radio that is itself a click target for its control. */
+      option:
+        'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-secondary hover:text-text-primary',
+      /** Eyebrow above a field or settings group. */
+      section: 'text-[11px] font-medium uppercase tracking-wide text-text-secondary',
+    },
+  },
+  defaultVariants: {
+    variant: 'default',
+  },
+});
+
+const Label: React.ForwardRefExoticComponent<
+  Omit<LabelPrimitive.LabelProps & React.RefAttributes<HTMLLabelElement>, 'ref'> & {
+    className?: string;
+  } & VariantProps<typeof labelVariants> &
+    React.RefAttributes<HTMLLabelElement>
+> = React.forwardRef<
   React.ElementRef<typeof LabelPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof LabelPrimitive.Root> & {
     className?: string;
-  }
->(({ className = '', ...props }, ref) => (
+  } & VariantProps<typeof labelVariants>
+>(({ className = '', variant, ...props }, ref) => (
   <LabelPrimitive.Root
     ref={ref}
     {...props}
     {...{
       className: cn(
-        'block w-full break-all text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 dark:text-gray-200',
+        'block w-full wrap-anywhere peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+        peerDisabledInkClasses,
+        labelVariants({ variant }),
         className,
       ),
     }}
@@ -21,4 +64,4 @@ const Label = React.forwardRef<
 ));
 Label.displayName = LabelPrimitive.Root.displayName;
 
-export { Label };
+export { Label, labelVariants };

@@ -1,4 +1,4 @@
-import type { ExtendedJsonSchema } from '../registry/definitions';
+import type { ExtendedJsonSchema } from '../registry/schema';
 
 /** Default description for Gemini image generation tool */
 const DEFAULT_GEMINI_IMAGE_GEN_DESCRIPTION =
@@ -75,7 +75,15 @@ const geminiImageGenJsonSchema: ExtendedJsonSchema = {
   required: ['prompt'],
 };
 
-export const geminiToolkit = {
+export const geminiToolkit: {
+  readonly gemini_image_gen: {
+    readonly name: 'gemini_image_gen';
+    readonly description: string;
+    readonly description_for_model: 'Use this tool to generate images from text descriptions using Vertex AI Gemini.\n1. Prompts should be detailed and specific for best results.\n2. One image per function call. Create only 1 image per request.\n3. IMPORTANT: When user asks to "edit", "modify", "change", or "swap" elements in an existing image:\n   - ALWAYS include the original image ID in the image_ids array\n   - Describe the desired changes clearly in the prompt\n   - The tool will generate a new image based on the original image context + your prompt\n4. IMPORTANT: For editing requests, use DIRECT editing instructions:\n   - User says "remove the gun" → prompt should be "remove the gun from this image"\n   - User says "make it blue" → prompt should be "make this image blue"\n   - User says "add sunglasses" → prompt should be "add sunglasses to this image"\n   - DO NOT reconstruct or modify the original prompt - use the user\'s editing instruction directly\n   - ALWAYS include the image being edited in image_ids array\n5. OPTIONAL: Use image_ids to provide context images that will influence the generation:\n   - Include any relevant image IDs from the conversation in the image_ids array\n   - These images will be used as visual context/inspiration for the new generation\n   - For "editing" requests, always include the image being "edited"\n6. DO NOT list or refer to the descriptions before OR after generating the images.\n7. Always mention the image type (photo, oil painting, watercolor painting, illustration, cartoon, drawing, vector, render, etc.) at the beginning of the prompt.\n8. Use aspectRatio to control the shape of the image:\n   - 16:9 or 3:2 for landscape/wide images\n   - 9:16 or 2:3 for portrait/tall images\n   - 21:9 for ultra-wide/cinematic images\n   - 1:1 for square images (default)\n9. Use imageSize to control the resolution: 1K (standard), 2K (high), 4K (maximum quality).\n\nThe prompt should be a detailed paragraph describing every part of the image in concrete, objective detail.';
+    readonly schema: ExtendedJsonSchema;
+    readonly responseFormat: 'content_and_artifact';
+  };
+} = {
   gemini_image_gen: {
     name: 'gemini_image_gen' as const,
     description: getGeminiImageGenDescription(),

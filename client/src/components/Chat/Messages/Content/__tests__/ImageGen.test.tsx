@@ -17,6 +17,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 

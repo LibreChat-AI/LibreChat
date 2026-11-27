@@ -1,15 +1,27 @@
-import React from 'react';
+import React, { useId, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
+import { matchSorter } from 'match-sorter';
 import * as Select from '@ariakit/react/select';
+import * as Combobox from '@ariakit/react/combobox';
 import type { Option } from '~/common';
-import { cn } from '~/utils/';
+import { useDialogDepth, usePopoverZIndex } from './OriginalDialog';
+import { fieldControl, fieldInvalid } from './Field';
+import { cn, disabledFillClasses } from '~/utils';
+import { focusOutlineRole } from './Focus';
 import './Dropdown.css';
+
+type DropdownShape = 'default' | 'theme' | 'round';
 
 interface DropdownProps {
   value?: string;
   label?: string;
   onChange: (value: string) => void;
   options: (string | Option | { divider: true })[];
+  /** Applied to the positioning wrapper */
   className?: string;
+  /** Applied to the trigger button */
+  triggerClassName?: string;
+  /** Applied to the popover */
   sizeClasses?: string;
   testId?: string;
   icon?: React.ReactNode;
@@ -17,8 +29,42 @@ interface DropdownProps {
   renderValue?: (option: Option) => React.ReactNode;
   ariaLabel?: string;
   'aria-labelledby'?: string;
+  'aria-describedby'?: string;
+  /** Marks the field invalid; a `field` trigger then draws its border in the destructive role. */
+  'aria-invalid'?: boolean;
+  /** Portals the list out of the trigger's parent. Defaults to `true`, and to `false` inside a
+   *  dialog, whose focus trap and `aria-hidden` pass would cut a portaled list off. */
   portal?: boolean;
+  /** `field` matches Input; `compact` supplies the small toolbar-control recipe. */
+  variant?: 'default' | 'field' | 'compact';
+  /**
+   * The trigger's corner, in `Button`'s vocabulary: `default` is `Button`'s own
+   * `rounded-lg`, `theme` the theme's control radius, `round` its pill. Omitted,
+   * the trigger takes the control radius, which is what it drew before the prop
+   * existed in the default theme. A `field` trigger keeps the field's corner.
+   */
+  shape?: DropdownShape;
+  /** Renders the popover into this element instead of document.body */
+  portalElement?: ((element: HTMLElement) => HTMLElement | null) | HTMLElement | null;
+  disabled?: boolean;
+  searchable?: boolean;
+  searchPlaceholder?: string;
+  searchEmptyText?: string;
+  /** Shown in the secondary tone while no option is chosen. */
+  placeholder?: string;
+  /** Draws the list exactly as wide as the trigger, as `DropdownPopup` does. */
+  sameWidth?: boolean;
+  /** Preferred CSS minimum width for the list, capped to the space available to it. */
+  minWidth?: string;
+  /** Space between the trigger and the list, in pixels. */
+  gutter?: number;
 }
+
+const shapeClasses: Record<DropdownShape, string> = {
+  default: 'rounded-lg',
+  theme: 'rounded-theme-control',
+  round: 'rounded-theme-control-round',
+};
 
 const isDivider = (item: string | Option | { divider: true }): item is { divider: true } =>
   typeof item === 'object' && 'divider' in item;
@@ -26,12 +72,16 @@ const isDivider = (item: string | Option | { divider: true }): item is { divider
 const isOption = (item: string | Option | { divider: true }): item is Option =>
   typeof item === 'object' && 'value' in item && 'label' in item;
 
+const normalizeOption = (item: string | Option): Option =>
+  typeof item === 'string' ? { value: item, label: item } : item;
+
 const Dropdown: React.FC<DropdownProps> = ({
   value: selectedValue,
   label = '',
   onChange,
   options,
   className = '',
+  triggerClassName,
   sizeClasses,
   testId = 'dropdown-menu',
   icon,
@@ -39,13 +89,38 @@ const Dropdown: React.FC<DropdownProps> = ({
   renderValue,
   ariaLabel,
   'aria-labelledby': ariaLabelledBy,
-  portal = true,
+  'aria-describedby': ariaDescribedBy,
+  'aria-invalid': ariaInvalid,
+  portal,
+  variant = 'default',
+  shape = 'theme',
+  portalElement,
+  disabled = false,
+  searchable = false,
+  searchPlaceholder,
+  searchEmptyText,
+  placeholder,
+  sameWidth,
+  minWidth,
+  gutter,
 }) => {
+  const valueId = `${useId()}value`;
+  const inDialog = useDialogDepth() > 0;
+  const popoverZIndex = usePopoverZIndex();
+  const [searchValue, setSearchValue] = useState('');
+
   const handleChange = (value: string) => {
     onChange(value);
   };
 
+  const comboboxStore = Combobox.useComboboxStore({
+    resetValueOnHide: true,
+    value: searchValue,
+    setValue: setSearchValue,
+  });
+
   const selectProps = Select.useSelectStore({
+    combobox: searchable ? comboboxStore : undefined,
     value: selectedValue,
     setValue: handleChange,
   });
@@ -56,8 +131,8 @@ const Dropdown: React.FC<DropdownProps> = ({
     }
     return options
       .filter((o) => !isDivider(o))
-      .map((o) => (typeof o === 'string' ? { value: o, label: o } : o))
-      .find((o) => isOption(o) && o.value === val) as Option | undefined;
+      .map((o) => normalizeOption(o as string | Option))
+      .find((o) => o.value === val);
   };
 
   const getOptionLabel = (currentValue: string | undefined) => {
@@ -68,90 +143,231 @@ const Dropdown: React.FC<DropdownProps> = ({
     return option ? option.label : currentValue;
   };
 
+  const matches = useMemo(() => {
+    if (!searchable) {
+      return [];
+    }
+    const optionItems = options
+      .filter((o) => !isDivider(o))
+      .map((o) => normalizeOption(o as string | Option));
+    return matchSorter(optionItems, searchValue, {
+      keys: ['label', 'value'],
+      baseSort: (a, b) => (a.index < b.index ? -1 : 1),
+    });
+  }, [searchable, options, searchValue]);
+
+  const renderOptionContent = (option: Option) => (
+    <div className="flex w-full items-center gap-2">
+      {option.icon != null && <span>{option.icon as React.ReactNode}</span>}
+      <span className="block truncate">{option.label}</span>
+      {selectedValue === option.value && (
+        <span className="ms-auto shrink-0 ps-2">
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+            /* A field list's check follows the theme's icon size role, as the form select did. */
+            className={cn(
+              'block group-hover:hidden',
+              variant === 'field' ? 'size-theme-icon' : 'icon-md',
+            )}
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              clipRule="evenodd"
+              d="M2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12ZM16.0755 7.93219C16.5272 8.25003 16.6356 8.87383 16.3178 9.32549L11.5678 16.0755C11.3931 16.3237 11.1152 16.4792 10.8123 16.4981C10.5093 16.517 10.2142 16.3973 10.0101 16.1727L7.51006 13.4227C7.13855 13.014 7.16867 12.3816 7.57733 12.0101C7.98598 11.6386 8.61843 11.6687 8.98994 12.0773L10.6504 13.9039L14.6822 8.17451C15 7.72284 15.6238 7.61436 16.0755 7.93219Z"
+              fill="currentColor"
+            />
+          </svg>
+        </span>
+      )}
+    </div>
+  );
+
+  const isOpen = selectProps.useState('open');
+
   return (
-    <div className={cn('relative', className)}>
+    <div
+      className={cn(
+        'relative max-w-full min-w-0',
+        variant === 'field' && 'w-full',
+        className,
+        /* A caller's `z-50` makes every dropdown its own stacking context at one level, where a
+           later sibling's trigger paints over an earlier one's open list. The open one lifts above. */
+        isOpen && 'z-[60]',
+      )}
+    >
       <Select.Select
         store={selectProps}
+        disabled={disabled}
         className={cn(
-          'focus:ring-offset-ring-offset relative inline-flex items-center justify-between rounded-xl border border-input bg-background px-3 py-2 text-sm text-text-primary transition-all duration-200 ease-in-out hover:bg-accent hover:text-accent-foreground focus:ring-ring-primary',
-          iconOnly ? 'size-10' : 'w-fit gap-2',
-          className,
+          'border-border-control text-text-primary hover:bg-surface-hover relative inline-flex items-center justify-between border bg-transparent py-2 text-sm transition-all duration-200 ease-in-out',
+          /** A field-variant trigger keeps the field ink from `fieldControl` in every state. */
+          variant !== 'field' && [
+            shapeClasses[shape],
+            'hover:text-text-primary disabled:hover:text-text-primary',
+            focusOutlineRole,
+          ],
+          'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
+          disabledFillClasses,
+          /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */
+          iconOnly
+            ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
+            : 'w-fit max-w-full gap-2 px-3',
+          variant === 'field' && [fieldControl, fieldInvalid],
+          variant === 'compact' && 'h-theme-button-compact px-2.5 py-0 text-xs transition-none',
+          triggerClassName,
         )}
         data-testid={testId}
         aria-label={ariaLabel}
-        aria-labelledby={ariaLabelledBy}
+        // `aria-labelledby` REPLACES the trigger's child text, and that text is the
+        // selected option: pointing it at the field label alone announced "Clock
+        // Format" with no way to hear which format is selected. Naming the value span
+        // alongside the caller's label keeps both. Not in `iconOnly` mode, where the
+        // span does not render and the id would dangle.
+        aria-labelledby={
+          ariaLabelledBy == null || iconOnly ? ariaLabelledBy : `${ariaLabelledBy} ${valueId}`
+        }
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
       >
-        <div className="flex w-full items-center gap-2">
+        <div className={cn('flex min-w-0 items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
           {icon}
           {!iconOnly && (
-            <span className="block truncate">
+            <span id={valueId} className="block truncate">
               {label}
               {(() => {
                 const matchedOption = getOptionObject(selectedValue);
                 if (matchedOption && renderValue) {
                   return renderValue(matchedOption);
                 }
-                return getOptionLabel(selectedValue);
+                const optionLabel = getOptionLabel(selectedValue);
+                if (!optionLabel && placeholder) {
+                  return <span className="text-text-secondary">{placeholder}</span>;
+                }
+                return optionLabel;
               })()}
             </span>
           )}
         </div>
-        {!iconOnly && <Select.SelectArrow />}
+        {!iconOnly && <Select.SelectArrow className="shrink-0" />}
       </Select.Select>
       <Select.SelectPopover
-        portal={portal}
+        /* A modal dialog traps focus inside its own DOM and hides every other body
+           child from assistive technology, so a list portaled out of it can be
+           neither reached by keyboard nor read. Inside a dialog the list renders in
+           place, as Ariakit menus already do, unless the caller asks otherwise. */
+        portal={portal ?? (portalElement != null || !inDialog)}
+        portalElement={portalElement}
         store={selectProps}
+        /* Escape belongs to the list while it is open. Marking it handled is how a container
+           that also closes on Escape, such as a Headless UI dialog, knows to stay open. A list
+           still animating closed after a pick is no longer open, so that Escape is left for
+           the container. */
+        hideOnEscape={(event) => {
+          if (!selectProps.getState().open) {
+            return false;
+          }
+          event.preventDefault();
+          return true;
+        }}
+        /* Inside a dialog the list layers over it; elsewhere `z-40` applies. Pointer
+           events are already re-enabled by the class below. */
+        style={{
+          zIndex: inDialog ? popoverZIndex : undefined,
+          minWidth:
+            minWidth == null
+              ? undefined
+              : `min(${minWidth}, calc(100vw - 1rem), var(--popover-available-width, 100vw))`,
+        }}
+        sameWidth={sameWidth}
+        gutter={gutter}
+        data-variant={variant}
+        wrapperProps={variant === 'field' ? { className: 'popover-field-wrapper' } : undefined}
         className={cn(
+          // `className` sizes the TRIGGER only (applied above on Select.Select).
+          // Forwarding it here too meant a caller's trigger height (a fixed height utility)
+          // became the popover's height as well, clipping every option below the
+          // first out of view. `sizeClasses` is the popover's own sizing prop; the
+          // shared `.popover-ui` class already caps height to the viewport via
+          // `--popover-available-height` and scrolls, so nothing else is needed here.
           'popover-ui z-40 text-sm',
-          sizeClasses,
-          className,
-          'max-h-[80vh] overflow-y-auto',
           '[pointer-events:auto]', // Override body's pointer-events:none when in modal
+          sizeClasses,
         )}
       >
-        {options.map((item, index) => {
-          if (isDivider(item)) {
-            return <div key={`divider-${index}`} className="my-1 border-t border-border-heavy" />;
-          }
-
-          const option = typeof item === 'string' ? { value: item, label: item } : item;
-          if (!isOption(option)) {
-            return null;
-          }
-
-          return (
-            <Select.SelectItem
-              key={`option-${index}`}
-              value={String(option.value)}
-              className="select-item"
-              data-theme={option.value}
-            >
-              <div className="flex w-full items-center gap-2">
-                {option.icon != null && <span>{option.icon as React.ReactNode}</span>}
-                <span className="block truncate">{option.label}</span>
-                {selectedValue === option.value && (
-                  <span className="ml-auto pl-2">
-                    <svg
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
-                      className="icon-md block group-hover:hidden"
-                    >
-                      <path
-                        fillRule="evenodd"
-                        clipRule="evenodd"
-                        d="M2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12ZM16.0755 7.93219C16.5272 8.25003 16.6356 8.87383 16.3178 9.32549L11.5678 16.0755C11.3931 16.3237 11.1152 16.4792 10.8123 16.4981C10.5093 16.517 10.2142 16.3973 10.0101 16.1727L7.51006 13.4227C7.13855 13.014 7.16867 12.3816 7.57733 12.0101C7.98598 11.6386 8.61843 11.6687 8.98994 12.0773L10.6504 13.9039L14.6822 8.17451C15 7.72284 15.6238 7.61436 16.0755 7.93219Z"
-                        fill="currentColor"
-                      />
-                    </svg>
-                  </span>
-                )}
+        {searchable ? (
+          <>
+            <div className="sticky -top-2 z-10 -mx-2 -mt-2 mb-1 bg-inherit px-2 pt-2 pb-1.5">
+              <div className="relative">
+                <Search
+                  className="text-text-tertiary size-theme-icon pointer-events-none absolute inset-s-2 top-1/2 -translate-y-1/2"
+                  aria-hidden="true"
+                />
+                <Combobox.Combobox
+                  store={comboboxStore}
+                  autoSelect
+                  placeholder={searchPlaceholder}
+                  aria-label={searchPlaceholder}
+                  className="border-border-control text-text-primary placeholder:text-text-secondary w-full rounded-lg border bg-inherit py-1.5 ps-8 pe-2 text-sm focus:outline-hidden"
+                />
               </div>
-            </Select.SelectItem>
-          );
-        })}
+            </div>
+            <Combobox.ComboboxList
+              store={comboboxStore}
+              aria-label={ariaLabel}
+              aria-labelledby={ariaLabelledBy}
+              className="flex flex-col"
+            >
+              {matches.map((option) => (
+                <Combobox.ComboboxItem
+                  key={`option-${String(option.value)}`}
+                  value={String(option.value)}
+                  className="select-item"
+                  render={
+                    <Select.SelectItem value={String(option.value)} data-theme={option.value} />
+                  }
+                >
+                  {renderOptionContent(option)}
+                </Combobox.ComboboxItem>
+              ))}
+            </Combobox.ComboboxList>
+            {matches.length === 0 && (
+              <div className="text-text-secondary px-2 py-6 text-center text-sm" aria-hidden="true">
+                {searchEmptyText}
+              </div>
+            )}
+            <div role="status" aria-live="polite" className="sr-only">
+              {matches.length === 0 ? searchEmptyText : ''}
+            </div>
+          </>
+        ) : (
+          options.map((item, index) => {
+            if (isDivider(item)) {
+              return <div key={`divider-${index}`} className="border-border-heavy my-1 border-t" />;
+            }
+
+            const option = normalizeOption(item);
+            if (!isOption(option)) {
+              return null;
+            }
+
+            return (
+              <Select.SelectItem
+                key={`option-${index}`}
+                value={String(option.value)}
+                disabled={option.disabled === true}
+                className="select-item"
+                data-theme={option.value}
+              >
+                {renderOptionContent(option)}
+              </Select.SelectItem>
+            );
+          })
+        )}
       </Select.SelectPopover>
     </div>
   );

@@ -1,4 +1,6 @@
-export default function ExperimentIcon() {
+import { JSX } from 'react/jsx-runtime';
+
+export default function ExperimentIcon(): JSX.Element {
   return (
     <svg
       width="24"

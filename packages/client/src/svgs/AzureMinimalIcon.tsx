@@ -1,3 +1,4 @@
+import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils/';
 
 export default function AzureMinimalIcon({
@@ -6,7 +7,7 @@ export default function AzureMinimalIcon({
 }: {
   size?: number;
   className?: string;
-}) {
+}): JSX.Element {
   const height = size;
   const width = size;
 

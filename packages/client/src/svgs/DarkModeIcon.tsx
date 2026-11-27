@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function DarkModeIcon() {
+export default function DarkModeIcon(): JSX.Element {
   return (
     <svg
       stroke="currentColor"

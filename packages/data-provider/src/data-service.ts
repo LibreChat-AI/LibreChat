@@ -1,18 +1,372 @@
+import { isAxiosError } from 'axios';
 import type { AxiosResponse } from 'axios';
+import type {
+  AgentChannel,
+  ActivateAgentChannel,
+  SlackChannelManifest,
+  SlackAppPage,
+  SlackAppRegistration,
+  ConfigureSlackApp,
+  SlackWorkspaceStatus,
+  SlackBotManagers,
+  SlackBotManager,
+  SlackWorkspaceConnect,
+  SlackWorkspaceDetail,
+  SlackWorkspaceRoutePage,
+  SlackWorkspaceRouteStatus,
+  SetSlackWorkspaceRoute,
+} from './types/channels';
+import type {
+  ResponseReviewView,
+  ResponseCancelReceipt,
+  ResponseReviewDecision,
+  ResponseReviewDecisionReceipt,
+} from './types/responseReview';
+import type {
+  TTracePage,
+  TTracePageParams,
+  TTraceAvailability,
+  TTraceRecordParams,
+  TTraceRecordDetail,
+} from './types/traces';
+import type {
+  ChannelIdentityClient,
+  ChannelIdentityResult,
+  ChannelLinkView,
+} from './types/channelIdentity';
+import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
+import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
+import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
+import type { TFileConfig } from './file-config';
+import type * as tl from './types/tools';
 import type * as t from './types';
+import {
+  responseReviewDecisionReceiptSchema,
+  responseCancelReceiptSchema,
+} from './types/responseReview';
+import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
+import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
+import * as permissions from './accessPermissions';
+import { setClientLimits } from './clientLimits';
 import * as endpoints from './api-endpoints';
-import * as a from './types/assistants';
-import * as ag from './types/agents';
-import * as m from './types/mutations';
-import * as q from './types/queries';
-import * as f from './types/files';
-import * as sk from './types/skills';
+import { uploadEventStream } from './upload';
 import * as mcp from './types/mcpServers';
+import * as qt from './types/queuedTurns';
+import * as sch from './types/schedules';
+import * as a from './types/assistants';
+import * as m from './types/mutations';
+import * as ag from './types/agents';
+import * as q from './types/queries';
+import * as sk from './types/skills';
+import * as f from './types/files';
 import * as config from './config';
 import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
-import * as permissions from './accessPermissions';
+
+export function listAgentChannels(agentId: string): Promise<AgentChannel[]> {
+  return request.get(endpoints.agentChannels(agentId));
+}
+
+export function getResponseReview(responseId: string): Promise<ResponseReviewView> {
+  return request.get(endpoints.responseReview(responseId));
+}
+
+export async function cancelOwnerResponse(responseId: string): Promise<ResponseCancelReceipt> {
+  const body: unknown = await request.post(endpoints.responseCancel(responseId), {});
+  const receipt = responseCancelReceiptSchema.safeParse(body);
+  if (!receipt.success || receipt.data.id !== responseId)
+    throw new Error('Response cancellation acknowledgement is unavailable');
+  return receipt.data;
+}
+
+export async function submitResponseReviewDecision(
+  responseId: string,
+  decision: ResponseReviewDecision,
+): Promise<ResponseReviewDecisionReceipt> {
+  const body: unknown = await request.post(endpoints.responseReview(responseId), decision);
+  const receipt = responseReviewDecisionReceiptSchema.safeParse(body);
+  if (
+    !receipt.success ||
+    receipt.data.responseId !== responseId ||
+    receipt.data.actionId !== decision.actionId
+  )
+    throw new Error('Response decision acknowledgement is unavailable');
+  return receipt.data;
+}
+
+export function createAgentChannel(
+  agentId: string,
+  credentialMode: AgentChannel['credentialMode'] = 'shared',
+): Promise<AgentChannel> {
+  return request.post(endpoints.agentChannels(agentId), { type: 'slack', credentialMode });
+}
+
+export function getAgentChannelManifest(
+  agentId: string,
+  channelId: string,
+): Promise<SlackChannelManifest> {
+  return request.get(`${endpoints.agentChannels(agentId, channelId)}/manifest`);
+}
+
+function channelCredentialFailure(error: unknown): never {
+  const failure = isAxiosError<{ error?: unknown }>(error)
+    ? error.response?.data?.error
+    : undefined;
+  const code =
+    typeof failure === 'object' && failure !== null && 'code' in failure ? failure.code : failure;
+  // Axios failures retain serialized secrets. Only this supported setup code may escape.
+  throw Object.assign(
+    new Error('Channel credential update failed'),
+    code === 'transactions_unavailable' ? { code } : {},
+  );
+}
+
+export function activateAgentChannel(
+  agentId: string,
+  channelId: string,
+  input: ActivateAgentChannel,
+): Promise<AgentChannel> {
+  return request
+    .patch(endpoints.agentChannels(agentId, channelId), input)
+    .catch(channelCredentialFailure);
+}
+
+export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { status: 'disabled' });
+}
+
+export function changeAgentChannelMode(
+  agentId: string,
+  channelId: string,
+  credentialMode: AgentChannel['credentialMode'],
+  revision: string,
+): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { credentialMode, revision });
+}
+
+export function deleteAgentChannel(agentId: string, channelId: string): Promise<void> {
+  return request.delete(endpoints.agentChannels(agentId, channelId));
+}
+
+export function createWorkspaceAgentChannel(
+  agentId: string,
+  workspaceId: string,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId)}/workspace-connections`, { workspaceId });
+}
+
+export function getAgentChannelWorkspaceRoutes(
+  agentId: string,
+  channelId: string,
+  cursor?: string,
+): Promise<SlackWorkspaceRoutePage> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getAgentChannelWorkspaceTarget(
+  agentId: string,
+  channelId: string,
+  externalChannelId?: string,
+): Promise<SlackWorkspaceRouteStatus> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes?target=${encodeURIComponent(externalChannelId || 'default')}`,
+  );
+}
+
+export function setAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: SetSlackWorkspaceRoute,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId, channelId)}/workspace-routes`, input);
+}
+
+export function removeAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: { externalChannelId?: string; expectedRevision: string },
+): Promise<void> {
+  return request.deleteWithOptions(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes`,
+    { data: input },
+  );
+}
+
+export function getSlackWorkspaces(cursor?: string): Promise<SlackWorkspaceStatus> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getSlackBotManagers(workspaceId: string): Promise<SlackBotManagers> {
+  return request.get(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`);
+}
+
+export function searchSlackBotManagers(
+  workspaceId: string,
+  query: string,
+): Promise<SlackBotManager[]> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+export function setSlackBotManagers(
+  workspaceId: string,
+  revision: string,
+  userIds: string[],
+): Promise<{ revision: string }> {
+  return request.put(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`, {
+    revision,
+    userIds,
+  });
+}
+
+export function getSlackWorkspace(workspaceId: string): Promise<SlackWorkspaceDetail> {
+  return request.get(endpoints.slackWorkspaces(workspaceId));
+}
+
+export function getSlackApps(cursor?: string): Promise<SlackAppPage> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/apps${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function configureSlackApp(input: ConfigureSlackApp): Promise<SlackAppRegistration> {
+  return request.put(`${endpoints.slackWorkspaces()}/apps`, input).catch(channelCredentialFailure);
+}
+
+export function removeSlackApp(appId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces()}/apps/${encodeURIComponent(appId)}/remove`, {
+    revision,
+  });
+}
+
+export function connectSlackWorkspace(
+  workspaceId?: string,
+  appId?: string,
+): Promise<SlackWorkspaceConnect> {
+  return request.post(`${endpoints.slackWorkspaces()}/connect`, { workspaceId, appId });
+}
+
+export function disconnectSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.slackWorkspaces(workspaceId), { data: { revision } });
+}
+
+export function removeSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces(workspaceId)}/remove`, { revision });
+}
+
+export function cancelSlackWorkspaceInstall(flowId: string): Promise<void> {
+  return request.delete(`${endpoints.slackWorkspaces()}/attempts/${encodeURIComponent(flowId)}`);
+}
+
+export const channelIdentityClient: ChannelIdentityClient = {
+  preview: (ticket): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/preview`, { ticket }),
+  accept: ({ ticket, expectedRevision }): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/accept`, {
+      ticket,
+      revision: expectedRevision,
+    }),
+  list: (): Promise<ChannelLinkView[]> =>
+    request.get(`${endpoints.apiBaseUrl()}/api/channels/links`),
+  revoke: (linkId, revision): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.deleteWithOptions(
+      `${endpoints.apiBaseUrl()}/api/channels/links/${encodeURIComponent(linkId)}`,
+      { data: { revision } },
+    ),
+};
+
+export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResponse> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      value.forEach((item) => query.append(key, String(item)));
+    } else if (value !== undefined && value !== null && value !== '') {
+      query.set(key, String(value));
+    }
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request.get(`${endpoints.insights()}${suffix}`);
+}
+
+export function getInsightsAccess(): Promise<TInsightsAccessResponse> {
+  return request.get(endpoints.insightsAccess());
+}
+
+export function getConversationTraceAvailability(
+  conversationId: string,
+): Promise<TTraceAvailability> {
+  return request.get(endpoints.conversationTraceAvailability(conversationId));
+}
+
+export function getConversationTraceRecords(
+  { conversationId, cursor }: TTracePageParams,
+  signal?: AbortSignal,
+): Promise<TTracePage> {
+  return request.get(
+    endpoints.conversationTraceRecords(conversationId, cursor),
+    signal ? { signal } : undefined,
+  );
+}
+
+export function getConversationTraceRecord(
+  { conversationId, recordId, messageId, sourceId }: TTraceRecordParams,
+  signal?: AbortSignal,
+): Promise<TTraceRecordDetail> {
+  return request.get(
+    endpoints.conversationTraceRecord(conversationId, recordId, messageId, sourceId),
+    signal ? { signal } : undefined,
+  );
+}
+
+export function getLangfuseConnection(): Promise<t.TLangfuseConnectionStatus> {
+  return request.get(endpoints.adminLangfuseConnection());
+}
+
+export function updateLangfuseConnection(
+  payload: t.TUpdateLangfuseConnectionRequest,
+): Promise<t.TLangfuseConnectionStatus> {
+  return request.put(endpoints.adminLangfuseConnection(), payload);
+}
+
+export function testLangfuseConnection(
+  payload: t.TLangfuseConnectionTestRequest,
+): Promise<t.TLangfuseConnectionTestResponse> {
+  return request.post(endpoints.adminLangfuseConnectionTest(), payload);
+}
+
+export function getLangfuseSessionLink(
+  conversationId: string,
+): Promise<t.TLangfuseSessionLinkResponse> {
+  return request.get(endpoints.adminLangfuseSessionLink(conversationId));
+}
+
+export function updateLangfusePromptSync(
+  payload: t.TUpdateLangfusePromptSyncRequest,
+): Promise<t.TLangfuseConnectionStatus> {
+  return request.put(endpoints.adminLangfusePromptSync(), payload);
+}
+
+export function getLangfusePrompts(
+  params: t.TLangfusePromptListParams = {},
+): Promise<t.TLangfusePromptListResponse> {
+  return request.get(endpoints.adminLangfusePrompts(params));
+}
+
+export function getLangfusePrompt(
+  params: t.TLangfusePromptGetParams,
+): Promise<t.TLangfusePromptGetResponse> {
+  return request.get(endpoints.adminLangfusePrompt(params.name, params.version));
+}
+
+export function syncLangfusePrompts(): Promise<t.TLangfusePromptSyncResult> {
+  return request.post(endpoints.adminLangfuseSyncPrompts(), {});
+}
 
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
@@ -26,25 +380,110 @@ export function deleteUser(payload?: t.TDeleteUserRequest): Promise<unknown> {
   return request.deleteWithOptions(endpoints.deleteUser(), { data: payload });
 }
 
+function parseCodeSetupAttempt(attemptId: string, data: unknown): CodeSetupAttempt {
+  const attempt = codeSetupAttemptSchema.parse(data);
+  if (attempt.attemptId !== attemptId) {
+    throw new Error('Code setup response does not match the requested attempt');
+  }
+  return attempt;
+}
+
+export async function getCodeSetupAttempt(attemptId: string): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(attemptId, await request.get(endpoints.codeSetupAttempt(attemptId)));
+}
+
+export async function approveCodeSetupAttempt(
+  attemptId: string,
+  payload: CodeSetupApprovalRequest,
+): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(
+    attemptId,
+    await request.post(
+      endpoints.codeSetupApprove(attemptId),
+      codeSetupApprovalRequestSchema.parse(payload),
+    ),
+  );
+}
+
+export async function denyCodeSetupAttempt(attemptId: string): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(
+    attemptId,
+    await request.post(endpoints.codeSetupDeny(attemptId), {}),
+  );
+}
+
+export function getCodeEnvironments(): Promise<t.TCodeEnvironmentsResponse> {
+  return request.get(endpoints.codeEnvironments());
+}
+
+export function getCodeEnvironmentStatus(id: string): Promise<t.TCodeEnvironmentStatusResponse> {
+  return request.get(endpoints.codeEnvironmentStatus(id));
+}
+
+export function moveConversationCodeEnvironment({
+  conversationId,
+  from,
+  to,
+}: t.TCodeEnvironmentMoveRequest): Promise<t.TCodeEnvironmentMoveResponse> {
+  return request.patch(endpoints.codeEnvironmentConversationDecision(conversationId), {
+    from,
+    to,
+  });
+}
+
+export function pairCodeEnvironment(payload: {
+  name: string;
+  controlPlaneId: string;
+}): Promise<t.TCodeEnvironmentPairingResponse> {
+  return request.post(endpoints.codeEnvironmentPairings(), payload);
+}
+
+export function deleteCodeEnvironment(
+  id: string,
+): Promise<{ environment: t.TCodeEnvironmentSummary }> {
+  return request.delete(endpoints.codeEnvironmentById(id));
+}
+
+export function updateCodeEnvironmentSettings({
+  id,
+  settings,
+}: {
+  id: string;
+  settings: config.CodeEnvironmentUserSettings;
+}): Promise<{ environment: t.TCodeEnvironmentSummary }> {
+  return request.patch(endpoints.codeEnvironmentSettings(id), { settings });
+}
+
 export function getFavorites(): Promise<q.TUserFavorite[]> {
   return request.get(`${endpoints.apiBaseUrl()}/api/user/settings/favorites`);
 }
 
 export function updateFavorites(favorites: q.TUserFavorite[]): Promise<q.TUserFavorite[]> {
-  return request.post(`${endpoints.apiBaseUrl()}/api/user/settings/favorites`, { favorites });
+  return request.post(`${endpoints.apiBaseUrl()}/api/user/settings/favorites`, {
+    favorites,
+  });
 }
 
-/**
- * Skill favorites (star-a-skill). The backend route is phase 2 — see the
- * original UI PR for the client surface. Until then, these resolve with
- * an empty list so the UI hooks compile and the Star button is a no-op.
- */
-export function getSkillFavorites(): Promise<string[]> {
-  return Promise.resolve([] as string[]);
+/** Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
+export function getPinnedOrder(): Promise<string[]> {
+  return request.get(endpoints.pinnedOrder());
 }
 
-export function updateSkillFavorites(skillFavorites: string[]): Promise<string[]> {
-  return Promise.resolve(skillFavorites);
+export function updatePinnedOrder(pinnedOrder: string[]): Promise<string[]> {
+  return request.post(endpoints.pinnedOrder(), { pinnedOrder });
+}
+
+/** Tool favorites — starred marketplace items (builtins, tools, MCP servers, skills). */
+export function getToolFavorites(): Promise<q.TToolFavorite[]> {
+  return request.get(endpoints.toolFavorites());
+}
+
+export function addToolFavorite(favorite: q.TToolFavorite): Promise<q.TToolFavorite> {
+  return request.put(endpoints.toolFavorite(favorite.itemType, favorite.itemId));
+}
+
+export function removeToolFavorite(favorite: q.TToolFavorite): Promise<{ ok: boolean }> {
+  return request.delete(endpoints.toolFavorite(favorite.itemType, favorite.itemId));
 }
 
 /** Per-user skill active/inactive overrides. */
@@ -62,32 +501,45 @@ export function getSharedMessages(shareId: string): Promise<t.TSharedMessagesRes
   return request.get(endpoints.shareMessages(shareId));
 }
 
+export function getSharedStartupConfig(shareId: string): Promise<config.TSharedLinkStartupConfig> {
+  return request.get(endpoints.sharedStartupConfig(shareId));
+}
+
 export const listSharedLinks = async (
   params: q.SharedLinksListParams,
 ): Promise<q.SharedLinksResponse> => {
-  const { pageSize, isPublic, sortBy, sortDirection, search, cursor } = params;
+  const { pageSize, sortBy, sortDirection, search, cursor } = params;
 
-  return request.get(
-    endpoints.getSharedLinks(pageSize, isPublic, sortBy, sortDirection, search, cursor),
-  );
+  return request.get(endpoints.getSharedLinks(pageSize, sortBy, sortDirection, search, cursor));
 };
 
-export function getSharedLink(conversationId: string): Promise<t.TSharedLinkGetResponse> {
-  return request.get(endpoints.getSharedLink(conversationId));
+export function getSharedLink(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<t.TSharedLinkGetResponse> {
+  return request.get(endpoints.getSharedLink(conversationId), signal ? { signal } : undefined);
 }
 
 export function createSharedLink(
   conversationId: string,
   targetMessageId?: string,
+  snapshotFiles?: boolean,
 ): Promise<t.TSharedLinkResponse> {
-  return request.post(endpoints.createSharedLink(conversationId), { targetMessageId });
+  return request.post(endpoints.createSharedLink(conversationId), {
+    targetMessageId,
+    snapshotFiles,
+  });
 }
 
 export function updateSharedLink(
   shareId: string,
   targetMessageId?: string,
+  snapshotFiles?: boolean,
 ): Promise<t.TSharedLinkResponse> {
-  return request.patch(endpoints.updateSharedLink(shareId), { targetMessageId });
+  return request.patch(endpoints.updateSharedLink(shareId), {
+    targetMessageId,
+    snapshotFiles,
+  });
 }
 
 export function deleteSharedLink(shareId: string): Promise<m.TDeleteSharedLinkResponse> {
@@ -105,6 +557,10 @@ export function updateUserKey(payload: t.TUpdateUserKeyRequest) {
 
 export function getAgentApiKeys(): Promise<t.TAgentApiKeyListResponse> {
   return request.get(endpoints.apiKeys());
+}
+
+export function getApiKeyAgents(): Promise<t.TApiKeyAgentsResponse> {
+  return request.get(endpoints.apiKeyAgents());
 }
 
 export function createAgentApiKey(
@@ -141,13 +597,15 @@ export function getUser(): Promise<t.TUser> {
   return request.get(endpoints.user());
 }
 
+export function updateUserPreferences(
+  preferences: t.TUpdateUserPreferencesRequest,
+): Promise<t.TUpdateUserPreferencesResponse> {
+  return request.patch(endpoints.userPreferences(), preferences);
+}
+
 export function getUserBalance(): Promise<t.TBalanceResponse> {
   return request.get(endpoints.balance());
 }
-
-export const updateTokenCount = (text: string) => {
-  return request.post(endpoints.tokenizer(), { arg: text });
-};
 
 export const login = (payload: t.TLoginUser): Promise<t.TLoginResponse> => {
   return request.post(endpoints.login(), payload);
@@ -164,10 +622,6 @@ export const register = (payload: t.TRegisterUser) => {
 export const userKeyQuery = (name: string): Promise<t.TCheckUserKeyResponse> =>
   request.get(endpoints.userKeyQuery(name));
 
-export const getLoginGoogle = () => {
-  return request.get(endpoints.loginGoogle());
-};
-
 export const requestPasswordReset = (
   payload: t.TRequestPasswordReset,
 ): Promise<t.TRequestPasswordResetResponse> => {
@@ -182,21 +636,29 @@ export const verifyEmail = (payload: t.TVerifyEmail): Promise<t.VerifyEmailRespo
   return request.post(endpoints.verifyEmail(), payload);
 };
 
+export const requestEmailChange = (
+  payload: t.TRequestEmailChange,
+): Promise<t.TEmailChangeResponse> => {
+  return request.post(endpoints.requestEmailChange(), payload);
+};
+
+export const confirmEmailChange = (
+  payload: t.TConfirmEmailChange,
+): Promise<t.TEmailChangeResponse> => {
+  return request.post(endpoints.confirmEmailChange(), payload);
+};
+
 export const resendVerificationEmail = (
   payload: t.TResendVerificationEmail,
 ): Promise<t.VerifyEmailResponse> => {
   return request.post(endpoints.resendVerificationEmail(), payload);
 };
 
-export const getAvailablePlugins = (): Promise<s.TPlugin[]> => {
-  return request.get(endpoints.plugins());
-};
-
 export const updateUserPlugins = (payload: t.TUpdateUserPlugins) => {
   return request.post(endpoints.userPlugins(), payload);
 };
 
-export const reinitializeMCPServer = (serverName: string) => {
+export const reinitializeMCPServer = (serverName: string): Promise<mcp.MCPReinitializeResponse> => {
   return request.post(endpoints.mcpReinitialize(serverName));
 };
 
@@ -212,12 +674,6 @@ export const getMCPConnectionStatus = (): Promise<q.MCPConnectionStatusResponse>
   return request.get(endpoints.mcpConnectionStatus());
 };
 
-export const getMCPServerConnectionStatus = (
-  serverName: string,
-): Promise<q.MCPServerConnectionStatusResponse> => {
-  return request.get(endpoints.mcpServerConnectionStatus(serverName));
-};
-
 export const getMCPAuthValues = (serverName: string): Promise<q.MCPAuthValuesResponse> => {
   return request.get(endpoints.mcpAuthValues(serverName));
 };
@@ -226,22 +682,50 @@ export function cancelMCPOAuth(serverName: string): Promise<m.CancelMCPOAuthResp
   return request.post(endpoints.cancelMCPOAuth(serverName), {});
 }
 
+export function getMCPOAuthStatus(flowId: string): Promise<mcp.MCPOAuthStatusResponse> {
+  return request.get(endpoints.mcpOAuthStatus(flowId));
+}
+
 /* Config */
 
-export const getStartupConfig = (): Promise<
+export type StartupConfigOptions = {
+  context?: config.StartupConfigContext;
+};
+
+export const getStartupConfig = (
+  options?: StartupConfigOptions,
+): Promise<
   config.TStartupConfig & {
     mcpCustomUserVars?: Record<string, { title: string; description: string }>;
   }
 > => {
-  return request.get(endpoints.config());
+  return request
+    .get<config.TStartupConfig>(endpoints.config(options?.context))
+    .then((startupConfig) => {
+      setClientLimits(startupConfig?.clientLimits);
+      return startupConfig;
+    });
 };
 
 export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {
   return request.get(endpoints.aiEndpoints());
 };
 
-export const getModels = async (): Promise<t.TModelsConfig> => {
-  return request.get(endpoints.models());
+export const getTokenConfig = async (endpoint?: string): Promise<t.TTokenConfigMap> => {
+  const config = await request.get<t.TTokenConfigMap>(endpoints.tokenConfig(endpoint));
+  return endpoint == null ? config : { [endpoint]: config[endpoint] ?? {} };
+};
+
+export const getReasoningCapabilities = (
+  endpoint: string,
+): Promise<t.TReasoningCapabilitiesResponse> => {
+  return request.get(endpoints.reasoningCapabilities(endpoint));
+};
+
+export const getModels = async (endpoint?: string): Promise<t.TModelsConfig> => {
+  const models = await request.get<t.TModelsConfig>(endpoints.models(endpoint));
+  // Older servers ignore the selector and return the aggregate catalog.
+  return endpoint == null ? models : { [endpoint]: models[endpoint] ?? [] };
 };
 
 /* Assistants */
@@ -257,14 +741,17 @@ export const getAssistantById = ({
   endpoint,
   assistant_id,
   version,
+  model,
 }: {
   endpoint: s.AssistantsEndpoint;
   assistant_id: string;
-  version: number | string | number;
+  version: number | string;
+  model?: string | null;
 }): Promise<a.Assistant> => {
   return request.get(
     endpoints.assistants({
-      path: assistant_id,
+      path: encodeURIComponent(assistant_id),
+      options: model ? { model } : undefined,
       endpoint,
       version,
     }),
@@ -390,6 +877,11 @@ export const callTool = <T extends m.ToolId>({
   );
 };
 
+export const resetToolApprovalGrants = (params: {
+  agentId: string;
+  toolName?: string;
+}): Promise<{ reset: true }> => request.post(endpoints.resetToolApprovalGrants(), params);
+
 export const getToolCalls = (params: q.GetToolCallParams): Promise<q.ToolCallResults> => {
   return request.get(
     endpoints.agents({
@@ -401,8 +893,11 @@ export const getToolCalls = (params: q.GetToolCallParams): Promise<q.ToolCallRes
 
 /* Files */
 
-export const getFiles = (): Promise<f.TFile[]> => {
-  return request.get(endpoints.files());
+export const getFiles = (params?: { limit?: number }): Promise<f.TFile[]> => {
+  return request.get(
+    endpoints.files(),
+    params?.limit != null ? { params: { limit: params.limit } } : undefined,
+  );
 };
 
 /**
@@ -421,25 +916,50 @@ export const getFilePreview = (fileId: string): Promise<f.TFilePreview> => {
   return request.get(endpoints.filePreview(fileId));
 };
 
+/** Preview status for a snapshotted file served through a shared link. */
+export const getSharedFilePreview = (shareId: string, fileId: string): Promise<f.TFilePreview> => {
+  return request.get(endpoints.sharedFilePreview(shareId, fileId));
+};
+
 export const getAgentFiles = (agentId: string): Promise<f.TFile[]> => {
   return request.get(endpoints.agentFiles(agentId));
 };
 
-export const getFileConfig = (): Promise<f.FileConfig> => {
+export const getFileConfig = (): Promise<TFileConfig> => {
   return request.get(`${endpoints.files()}/config`);
 };
 
 export const uploadImage = (
   data: FormData,
   signal?: AbortSignal | null,
+  sseEnabled = false,
 ): Promise<f.TFileUpload> => {
   const requestConfig = signal ? { signal } : undefined;
+  if (sseEnabled) {
+    return uploadEventStream(endpoints.images(), data, signal);
+  }
   return request.postMultiPart(endpoints.images(), data, requestConfig);
 };
 
-export const uploadFile = (data: FormData, signal?: AbortSignal | null): Promise<f.TFileUpload> => {
+export const uploadFile = (
+  data: FormData,
+  signal?: AbortSignal | null,
+  sseEnabled = false,
+): Promise<f.TFileUpload> => {
   const requestConfig = signal ? { signal } : undefined;
+  if (sseEnabled) {
+    return uploadEventStream(endpoints.files(), data, signal);
+  }
   return request.postMultiPart(endpoints.files(), data, requestConfig);
+};
+
+/**
+ * Marks uploaded files as used (owner-scoped TTL touch) so the upload-window
+ * TTL cannot reap attachments held in a client-side queue during a long run.
+ * Best-effort: callers fire-and-forget — send-time marking is the backstop.
+ */
+export const markFilesUsage = (body: f.TFilesUsageBody): Promise<f.TFilesUsageResponse> => {
+  return request.post(endpoints.fileUsage(), body);
 };
 
 /* actions */
@@ -482,11 +1002,11 @@ export const deleteAction = async ({
  * Agents
  */
 
-export const createAgent = ({ ...data }: a.AgentCreateParams): Promise<a.Agent> => {
+export const createAgent = ({ ...data }: ag.AgentCreateParams): Promise<ag.Agent> => {
   return request.post(endpoints.agents({}), data);
 };
 
-export const getAgentById = ({ agent_id }: { agent_id: string }): Promise<a.Agent> => {
+export const getAgentById = ({ agent_id }: { agent_id: string }): Promise<ag.Agent> => {
   return request.get(
     endpoints.agents({
       path: agent_id,
@@ -494,10 +1014,18 @@ export const getAgentById = ({ agent_id }: { agent_id: string }): Promise<a.Agen
   );
 };
 
-export const getExpandedAgentById = ({ agent_id }: { agent_id: string }): Promise<a.Agent> => {
+export const getExpandedAgentById = ({ agent_id }: { agent_id: string }): Promise<ag.Agent> => {
   return request.get(
     endpoints.agents({
       path: `${agent_id}/expanded`,
+    }),
+  );
+};
+
+export const getAgentVersions = ({ agent_id }: { agent_id: string }): Promise<ag.Agent[]> => {
+  return request.get(
+    endpoints.agents({
+      path: `${agent_id}/versions`,
     }),
   );
 };
@@ -507,8 +1035,8 @@ export const updateAgent = ({
   data,
 }: {
   agent_id: string;
-  data: a.AgentUpdateParams;
-}): Promise<a.Agent> => {
+  data: ag.AgentUpdateParams;
+}): Promise<ag.Agent> => {
   return request.patch(
     endpoints.agents({
       path: agent_id,
@@ -519,7 +1047,7 @@ export const updateAgent = ({
 
 export const duplicateAgent = ({
   agent_id,
-}: m.DuplicateAgentBody): Promise<{ agent: a.Agent; actions: ag.Action[] }> => {
+}: m.DuplicateAgentBody): Promise<{ agent: ag.Agent; actions: ag.Action[] }> => {
   return request.post(
     endpoints.agents({
       path: `${agent_id}/duplicate`,
@@ -535,7 +1063,10 @@ export const deleteAgent = ({ agent_id }: m.DeleteAgentBody): Promise<void> => {
   );
 };
 
-export const listAgents = (params: a.AgentListParams): Promise<a.AgentListResponse> => {
+export const getModelSpecHandoffs = (): Promise<ag.ModelSpecHandoffTarget[]> =>
+  request.get(endpoints.agents({ path: 'handoff-targets' }));
+
+export const listAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
       options: params,
@@ -549,7 +1080,7 @@ export const revertAgentVersion = ({
 }: {
   agent_id: string;
   version_index: number;
-}): Promise<a.Agent> => request.post(endpoints.revertAgentVersion(agent_id), { version_index });
+}): Promise<ag.Agent> => request.post(endpoints.revertAgentVersion(agent_id), { version_index });
 
 /* Marketplace */
 
@@ -563,17 +1094,9 @@ export const getAgentCategories = (): Promise<t.TMarketplaceCategory[]> => {
 /**
  * Unified marketplace agents endpoint with query string controls
  */
-export const getMarketplaceAgents = (params: {
-  requiredPermission: number;
-  category?: string;
-  search?: string;
-  limit?: number;
-  cursor?: string;
-  promoted?: 0 | 1;
-}): Promise<a.AgentListResponse> => {
+export const getMarketplaceAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
-      // path: 'marketplace',
       options: params,
     }),
   );
@@ -684,7 +1207,7 @@ export const uploadAssistantAvatar = (data: m.AssistantAvatarVariables): Promise
   );
 };
 
-export const uploadAgentAvatar = (data: m.AgentAvatarVariables): Promise<a.Agent> => {
+export const uploadAgentAvatar = (data: m.AgentAvatarVariables): Promise<ag.Agent> => {
   return request.postMultiPart(
     `${endpoints.images()}/agents/${data.agent_id}/avatar`,
     data.formData,
@@ -707,6 +1230,19 @@ export const getFileDownloadURL = async (
   return request.get(`${endpoints.files()}/download-url/${userId}/${file_id}`);
 };
 
+/** Blob download for a snapshotted file served through a shared link. */
+export const getSharedFileDownload = async (
+  shareId: string,
+  file_id: string,
+): Promise<AxiosResponse> => {
+  return request.getResponse(endpoints.sharedFileDownload(shareId, file_id), {
+    responseType: 'blob',
+    headers: {
+      Accept: 'application/octet-stream',
+    },
+  });
+};
+
 export const getCodeOutputDownload = async (url: string): Promise<AxiosResponse> => {
   return request.getResponse(url, {
     responseType: 'blob',
@@ -720,7 +1256,7 @@ export const deleteFiles = async (payload: {
   files: f.BatchFile[];
   agent_id?: string;
   assistant_id?: string;
-  tool_resource?: a.EToolResources;
+  tool_resource?: tl.EToolResources;
 }): Promise<f.DeleteFilesResponse> =>
   request.deleteWithOptions(endpoints.files(), {
     data: payload,
@@ -736,6 +1272,14 @@ export const textToSpeech = (data: FormData): Promise<ArrayBuffer> => {
   return request.postTTS(endpoints.textToSpeechManual(), data);
 };
 
+export const streamTextToSpeech = (data: FormData, signal: AbortSignal): Promise<Response> => {
+  return request.authenticatedFetch(endpoints.textToSpeechManual(), {
+    method: 'POST',
+    body: data,
+    signal,
+  });
+};
+
 export const getVoices = (): Promise<f.VoiceResponse> => {
   return request.get(endpoints.textToSpeechVoices());
 };
@@ -746,18 +1290,37 @@ export const getCustomConfigSpeech = (): Promise<t.TCustomConfigSpeechResponse> 
 
 /* conversations */
 
+/** Asks for tool-call previews in a response whose messages seed the conversation cache. */
+function withToolCallPreviews(url: string): string {
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}${TOOL_CALL_PREVIEWS_PARAM}=${TOOL_CALL_PREVIEWS_VERSION}`;
+}
+
 export function duplicateConversation(
   payload: t.TDuplicateConvoRequest,
 ): Promise<t.TDuplicateConvoResponse> {
-  return request.post(endpoints.duplicateConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.duplicateConversation()), payload);
 }
 
 export function forkConversation(payload: t.TForkConvoRequest): Promise<t.TForkConvoResponse> {
-  return request.post(endpoints.forkConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.forkConversation()), payload);
+}
+
+export function forkSharedConversation(
+  shareId: string,
+  targetMessageIndex?: number,
+  shareRevision?: string,
+): Promise<t.TForkConvoResponse> {
+  return request.post(withToolCallPreviews(endpoints.forkSharedMessages(shareId)), {
+    targetMessageIndex,
+    shareRevision,
+  });
 }
 
 export function deleteConversation(payload: t.TDeleteConversationRequest) {
-  return request.deleteWithOptions(endpoints.deleteConversation(), { data: { arg: payload } });
+  return request.deleteWithOptions(endpoints.deleteConversation(), {
+    data: { arg: payload },
+  });
 }
 
 export function clearAllConversations(): Promise<unknown> {
@@ -770,12 +1333,8 @@ export const listConversations = (
   return request.get(endpoints.conversations(params ?? {}));
 };
 
-export function getConversations(cursor: string): Promise<t.TGetConversationsResponse> {
-  return request.get(endpoints.conversations({ cursor }));
-}
-
-export function getConversationById(id: string): Promise<s.TConversation> {
-  return request.get(endpoints.conversationById(id));
+export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
+  return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
 }
 
 export function updateConversation(
@@ -788,6 +1347,83 @@ export function archiveConversation(
   payload: t.TArchiveConversationRequest,
 ): Promise<t.TArchiveConversationResponse> {
   return request.post(endpoints.archiveConversation(), { arg: payload });
+}
+
+export function archiveAllConversations(): Promise<t.TArchiveAllConversationsResponse> {
+  return request.post(endpoints.archiveAllConversations(), {});
+}
+
+export function listProjects(params?: q.ProjectListParams): Promise<q.ProjectListResponse> {
+  return request.get(endpoints.projects(params ?? {}));
+}
+
+export function createProject(payload: t.TCreateChatProjectRequest): Promise<t.TChatProject> {
+  return request.post(endpoints.projects(), payload);
+}
+
+export function getProjectById(projectId: string): Promise<t.TChatProject> {
+  return request.get(endpoints.projectById(projectId));
+}
+
+export function updateProject(payload: t.TUpdateChatProjectRequest): Promise<t.TChatProject> {
+  const { projectId, ...data } = payload;
+  return request.patch(endpoints.projectById(projectId), data);
+}
+
+export function deleteProject(projectId: string): Promise<t.TDeleteChatProjectResponse> {
+  return request.delete(endpoints.projectById(projectId));
+}
+
+export function getProjectFiles(projectId: string): Promise<t.TChatProjectFile[]> {
+  return request.get(endpoints.projectFiles(projectId));
+}
+
+export function getAvailableProjectFiles(
+  projectId: string,
+  params: q.ProjectAvailableFilesParams = {},
+): Promise<q.ProjectAvailableFilesResponse> {
+  return request.get(endpoints.projectAvailableFiles(projectId, params));
+}
+
+export function addProjectFile(payload: {
+  projectId: string;
+  file_id: string;
+}): Promise<t.TChatProject> {
+  return request.post(endpoints.projectFiles(payload.projectId), { file_id: payload.file_id });
+}
+
+export function removeProjectFile(payload: {
+  projectId: string;
+  file_id: string;
+}): Promise<t.TChatProject> {
+  return request.delete(endpoints.projectFile(payload.projectId, payload.file_id));
+}
+
+export function assignConversationToProject(
+  payload: t.TAssignConversationToProjectRequest,
+): Promise<t.TAssignConversationToProjectResponse> {
+  const { conversationId, projectId } = payload;
+  return request.put(endpoints.projectConversation(conversationId), {
+    projectId,
+  });
+}
+
+export function pinConversation(
+  payload: t.TPinConversationRequest,
+): Promise<t.TPinConversationResponse> {
+  return request.post(endpoints.pinConversation(), { arg: payload });
+}
+
+export function markConversationSeen(
+  payload: t.TMarkConversationSeenRequest,
+): Promise<t.TMarkConversationSeenResponse> {
+  return request.post(endpoints.markConversationSeen(), { arg: payload });
+}
+
+export function markConversationUnread(
+  payload: t.TMarkConversationUnreadRequest,
+): Promise<t.TMarkConversationUnreadResponse> {
+  return request.post(endpoints.markConversationUnread(), { arg: payload });
 }
 
 export function genTitle(payload: m.TGenTitleRequest): Promise<m.TGenTitleResponse> {
@@ -804,7 +1440,9 @@ export function updateMessage(payload: t.TUpdateMessageRequest): Promise<unknown
     throw new Error('conversationId is required');
   }
 
-  return request.put(endpoints.messages({ conversationId, messageId }), { text });
+  return request.put(endpoints.messages({ conversationId, messageId }), {
+    text,
+  });
 }
 
 export function updateMessageContent(payload: t.TUpdateMessageContent): Promise<unknown> {
@@ -813,30 +1451,183 @@ export function updateMessageContent(payload: t.TUpdateMessageContent): Promise<
     throw new Error('conversationId is required');
   }
 
-  return request.put(endpoints.messages({ conversationId, messageId }), { text, index });
+  return request.put(endpoints.messages({ conversationId, messageId }), {
+    text,
+    index,
+  });
 }
 
 export const editArtifact = async ({
   messageId,
   ...params
 }: m.TEditArtifactRequest): Promise<m.TEditArtifactResponse> => {
-  return request.post(endpoints.messagesArtifacts(messageId), params);
+  return request.post(withToolCallPreviews(endpoints.messagesArtifacts(messageId)), params);
 };
 
 export const branchMessage = async (
   payload: m.TBranchMessageRequest,
 ): Promise<m.TBranchMessageResponse> => {
-  return request.post(endpoints.messagesBranch(), payload);
+  return request.post(withToolCallPreviews(endpoints.messagesBranch()), payload);
 };
 
-export function getMessagesByConvoId(conversationId: string): Promise<s.TMessage[]> {
+export interface OwnerMessageText {
+  canonicalText: string;
+  messageId: string;
+  revision: string;
+  text?: string;
+}
+
+/** Private display data; never merge into ordinary message/query-cache objects. */
+export function getOwnerMessageTexts(
+  conversationId: string,
+  messageIds: string[],
+): Promise<{ messages: OwnerMessageText[] }> {
+  return request.post(`${endpoints.messages({ conversationId })}/owner-text`, { messageIds });
+}
+
+/**
+ * Loads a conversation's messages. `toolPreviews` asks for bounded previews of settled tool
+ * calls; a caller that needs every byte (export, share, trace) leaves it off.
+ */
+export function getMessagesByConvoId(
+  conversationId: string,
+  options?: { toolPreviews?: boolean },
+): Promise<s.TMessage[]> {
   if (
     conversationId === config.Constants.NEW_CONVO ||
     conversationId === config.Constants.PENDING_CONVO
   ) {
     return Promise.resolve([]);
   }
-  return request.get(endpoints.messages({ conversationId }));
+  const url = endpoints.messages({ conversationId });
+  return request.get(options?.toolPreviews === true ? withToolCallPreviews(url) : url);
+}
+
+export function getToolCallPart(params: q.ToolCallPartParams): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.messageToolCallPart(params));
+}
+
+export function getSubagentAttachmentCalls(
+  params: q.SubagentAttachmentCallsParams,
+): Promise<q.SubagentAttachmentCallsResponse> {
+  return request.get(endpoints.messageSubagentAttachmentCalls(params));
+}
+
+export function getMessageById(conversationId: string, messageId: string): Promise<s.TMessage[]> {
+  return request.get(endpoints.messages({ conversationId, messageId }));
+}
+
+export function getParentSubagents(parentConversationId: string): Promise<t.ParentSubagentIndex> {
+  return request.get(endpoints.parentSubagents(parentConversationId));
+}
+
+export function getSubagentThread(
+  parentConversationId: string,
+  threadId: string,
+  taskId?: string,
+  cursor?: string,
+): Promise<t.SubagentThreadView> {
+  return request.get(endpoints.subagentThread(parentConversationId, threadId, taskId, cursor));
+}
+
+/** The most rows one read of a child thread's messages asks for; the server holds the same bound. */
+export const SUBAGENT_THREAD_MESSAGES_PAGE = 50;
+
+/**
+ * One page of a child thread's messages, in the shape and with the previews of a conversation
+ * load: the thread's newest rows, or with `cursor` the rows before a page already read. A
+ * thread can hold more than is worth reading at once, so it is read a page at a time.
+ */
+export async function getSubagentThreadMessages(
+  parentConversationId: string,
+  threadId: string,
+  options?: { toolPreviews?: boolean; cursor?: string },
+): Promise<t.SubagentThreadMessagesPage> {
+  const url = endpoints.subagentThreadMessagesPage(parentConversationId, threadId, {
+    limit: SUBAGENT_THREAD_MESSAGES_PAGE,
+    cursor: options?.cursor,
+  });
+  const page = await request.get<s.TMessage[] | t.SubagentThreadMessagesPage>(
+    options?.toolPreviews === true ? withToolCallPreviews(url) : url,
+  );
+  /** A server that predates paging answers with the whole thread as a list. */
+  return Array.isArray(page) ? { messages: page, earlier: null } : page;
+}
+
+/** The full tool call behind a preview in a child thread; `params.conversationId` is the thread. */
+export function getSubagentThreadToolCallPart(
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.subagentThreadToolCallPart(parentConversationId, params));
+}
+
+export function getSubagentTaskContent(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  afterSequence?: number,
+  cursor?: string,
+): Promise<t.SubagentTaskContentResponse> {
+  return request.get(
+    endpoints.subagentTaskContent(parentConversationId, threadId, taskId, afterSequence, cursor),
+  );
+}
+
+export function getSubagentControlReceipt(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  invocationId: string,
+): Promise<t.SubagentControlResponse> {
+  return request.get(
+    endpoints.subagentControlReceipt(parentConversationId, threadId, taskId, invocationId),
+  );
+}
+
+export function controlSubagentTask(
+  parentConversationId: string,
+  threadId: string,
+  body: t.SubagentControlRequest,
+): Promise<t.SubagentControlResponse> {
+  return request.post(endpoints.subagentControl(parentConversationId, threadId), body);
+}
+
+export function getBackgroundTasks(conversationId: string): Promise<t.BackgroundTaskIndex> {
+  return request.get(endpoints.backgroundTasks(conversationId));
+}
+
+export function cancelBackgroundTasks(
+  conversationId: string,
+  body: t.BackgroundTaskCancelRequest,
+): Promise<t.BackgroundTaskCancelResponse> {
+  return request.post(endpoints.backgroundTasksCancel(conversationId), body);
+}
+
+export function getConversationPullRequest(
+  conversationId: string,
+  options?: { signal?: AbortSignal },
+): Promise<t.TConversationPullRequestResponse> {
+  return request.get(endpoints.conversationPullRequest(conversationId), options);
+}
+
+export function getConversationPullRequests(
+  conversationIds: string[],
+  options?: { signal?: AbortSignal },
+): Promise<t.TConversationPullRequestsResponse> {
+  return request.post(endpoints.conversationPullRequests(), { conversationIds }, options);
+}
+
+export function getPullRequestConnection(): Promise<t.TPullRequestConnection> {
+  return request.get(endpoints.pullRequestConnection());
+}
+
+export function connectPullRequestAccount(): Promise<t.TPullRequestConnectStart> {
+  return request.get(endpoints.pullRequestConnect());
+}
+
+export function disconnectPullRequestAccount(): Promise<void> {
+  return request.delete(endpoints.pullRequestDisconnect());
 }
 
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
@@ -859,6 +1650,17 @@ export function getPromptGroups(
 
 export function getPromptGroup(id: string): Promise<t.TPromptGroup> {
   return request.get(endpoints.getPromptGroup(id));
+}
+
+export function resolvePromptGroup(
+  id: string,
+  version?: number,
+): Promise<t.TResolvedPromptResponse> {
+  return request.get(endpoints.resolvePromptGroup(id, version));
+}
+
+export function getPromptGroupRevisions(id: string): Promise<t.TPromptRevisionChoicesResponse> {
+  return request.get(endpoints.getPromptGroupRevisions(id));
 }
 
 export function createPrompt(payload: t.TCreatePrompt): Promise<t.TCreatePromptResponse> {
@@ -916,6 +1718,69 @@ export function listSkills(params?: sk.TSkillListRequest): Promise<sk.TSkillList
   return request.get(endpoints.listSkillsWithFilters(params ?? {}));
 }
 
+export function getSchedules(): Promise<sch.TSchedulesResponse> {
+  return request.get(endpoints.schedules());
+}
+
+export async function enqueueAgentQueuedTurn(
+  payload: qt.TEnqueueAgentQueuedTurnRequest,
+): Promise<qt.TEnqueueAgentQueuedTurnResponse> {
+  if (payload.codeApprovalMode == null) {
+    return request.post(endpoints.agentQueuedTurns(), payload);
+  }
+  const unsupported = () =>
+    Object.assign(new Error('Queued approval snapshots require protocol v2'), {
+      response: { status: 409, data: { code: 'QUEUED_TURN_PROTOCOL_REQUIRED' } },
+    });
+  try {
+    // The versioned URL is the capability gate. Do not preflight with a list:
+    // retries must reach receipt lookup even when mutable access has changed.
+    return await request.post(endpoints.agentQueuedTurns(2), payload);
+  } catch (error) {
+    const response = (error as { response?: { status?: number; data?: { code?: unknown } } })
+      ?.response;
+    const status = response?.status;
+    // Structured origin responses (notably priority fallback) are authoritative.
+    if ((status === 404 || status === 501) && typeof response?.data?.code !== 'string') {
+      throw unsupported();
+    }
+    throw error;
+  }
+}
+
+export function listAgentQueuedTurns(
+  conversationId: string,
+  clientRequestIds?: string[],
+): Promise<qt.TListAgentQueuedTurnsResponse> {
+  return request.get(endpoints.agentQueuedTurnsByConversation(conversationId, clientRequestIds));
+}
+
+export function cancelAgentQueuedTurn(
+  queuedTurnId: string,
+): Promise<qt.TCancelAgentQueuedTurnResponse> {
+  return request.delete(endpoints.agentQueuedTurn(queuedTurnId));
+}
+
+export function getSchedule(id: string): Promise<sch.TSchedule> {
+  return request.get(endpoints.schedule(id));
+}
+
+export function createSchedule(payload: sch.TCreateSchedule): Promise<sch.TSchedule> {
+  return request.post(endpoints.schedules(), payload);
+}
+
+export function updateSchedule(id: string, payload: sch.TUpdateSchedule): Promise<sch.TSchedule> {
+  return request.patch(endpoints.schedule(id), payload);
+}
+
+export function deleteSchedule(id: string): Promise<{ id: string }> {
+  return request.delete(endpoints.schedule(id));
+}
+
+export function runScheduleNow(id: string): Promise<sch.TScheduleRunNowResponse> {
+  return request.post(endpoints.runSchedule(id), {});
+}
+
 export function getSkill(id: string): Promise<sk.TSkill> {
   return request.get(endpoints.getSkill(id));
 }
@@ -940,6 +1805,12 @@ export function listSkillFiles(skillId: string): Promise<sk.TListSkillFilesRespo
 }
 
 export function uploadSkillFile(skillId: string, formData: FormData): Promise<sk.TSkillFile> {
+  const relativePath = formData.get('relativePath');
+  // Conditional edits use a new route: older servers must reject the request,
+  // not silently ignore expectedFileId and perform an unconditional replacement.
+  if (formData.has('expectedFileId') && typeof relativePath === 'string') {
+    return request.postMultiPart(endpoints.skillFile(skillId, relativePath), formData);
+  }
   return request.postMultiPart(endpoints.skillFiles(skillId), formData);
 }
 
@@ -1047,6 +1918,29 @@ export const updateSkillNodeContent = (variables: {
   });
 };
 
+export function getGitHubSkillSyncStatus(): Promise<sk.TGitHubSkillSyncStatusResponse> {
+  return request.get(endpoints.adminSkillsSyncStatus());
+}
+
+export function runGitHubSkillSync(): Promise<sk.TGitHubSkillSyncManualRunResponse> {
+  return request.post(endpoints.adminSkillsSyncRun());
+}
+
+export function setGitHubSkillSyncCredential(variables: {
+  credentialKey: string;
+  token: string;
+}): Promise<sk.TGitHubSkillSyncCredentialSummary> {
+  return request.put(endpoints.adminSkillsSyncCredential(variables.credentialKey), {
+    token: variables.token,
+  } satisfies sk.TGitHubSkillSyncCredentialUpdateRequest);
+}
+
+export function deleteGitHubSkillSyncCredential(
+  credentialKey: string,
+): Promise<{ credentialKey: string; deleted: boolean }> {
+  return request.delete(endpoints.adminSkillsSyncCredential(credentialKey));
+}
+
 /* Roles */
 export function listRoles(): Promise<q.ListRolesResponse> {
   return request.get(`${endpoints.adminRoles()}?limit=200`);
@@ -1137,10 +2031,6 @@ export function addTagToConversation(
 ): Promise<t.TTagConversationResponse> {
   return request.put(endpoints.addTagToConversation(conversationId), payload);
 }
-export function rebuildConversationTags(): Promise<t.TConversationTagsResponse> {
-  return request.post(endpoints.conversationTags('rebuild'));
-}
-
 export function healthCheck(): Promise<string> {
   return request.get(endpoints.health());
 }
@@ -1170,11 +2060,41 @@ export function enableTwoFactor(payload?: t.TEnable2FARequest): Promise<t.TEnabl
   return request.post(endpoints.enableTwoFactor(), payload);
 }
 
+export function enableTwoFactorSetup(
+  payload: t.TEnable2FASetupRequest,
+): Promise<t.TEnable2FAResponse> {
+  return request.post(endpoints.enableTwoFactorSetup(), payload);
+}
+
+export function confirmTwoFactorSetup(
+  payload: t.TConfirm2FASetupRequest,
+): Promise<t.TConfirm2FASetupResponse> {
+  return request.post(endpoints.confirmTwoFactorSetup(), payload);
+}
+
+export function acknowledgeTwoFactorSetup(
+  payload: t.TAcknowledge2FASetupRequest,
+): Promise<t.TAcknowledge2FASetupResponse> {
+  return request.post(endpoints.acknowledgeTwoFactorSetup(), payload);
+}
+
+export function finalizeTwoFactorSetup(
+  payload: t.TFinalize2FASetupRequest,
+): Promise<t.TFinalize2FASetupResponse> {
+  return request.post(endpoints.finalizeTwoFactorSetup(), payload);
+}
+
+export function cancelTwoFactorSetup(
+  payload: t.TCancel2FASetupRequest,
+): Promise<t.TCancel2FASetupResponse> {
+  return request.post(endpoints.cancelTwoFactorSetup(), payload);
+}
+
 export function verifyTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
   return request.post(endpoints.verifyTwoFactor(), payload);
 }
 
-export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
+export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TConfirm2FAResponse> {
   return request.post(endpoints.confirmTwoFactor(), payload);
 }
 
@@ -1194,21 +2114,82 @@ export function verifyTwoFactorTemp(
   return request.post(endpoints.verifyTwoFactorTemp(), payload);
 }
 
+// Passkeys (WebAuthn)
+export function getPasskeys(): Promise<t.TPasskeysResponse> {
+  return request.get(endpoints.passkeys());
+}
+
+export function getPasskeyRegistrationOptions(
+  payload: t.TPasskeyRegistrationOptionsRequest,
+): Promise<t.TPasskeyCreationOptions> {
+  return request.post(endpoints.passkeyRegistrationOptions(), payload);
+}
+
+export function verifyPasskeyRegistration(
+  payload: t.TVerifyPasskeyRegistrationRequest,
+): Promise<t.TPasskeyResponse> {
+  return request.post(endpoints.passkeyRegistrationVerify(), payload);
+}
+
+export function getPasskeyLoginOptions(): Promise<t.TPasskeyAuthenticationOptionsResponse> {
+  return request.post(endpoints.passkeyLoginOptions(), {});
+}
+
+export function verifyPasskeyLogin(
+  payload: t.TVerifyPasskeyLoginRequest,
+): Promise<t.TLoginResponse> {
+  return request.post(endpoints.passkeyLoginVerify(), payload);
+}
+
+export function renamePasskey({
+  passkeyId,
+  name,
+}: t.TRenamePasskeyRequest): Promise<t.TPasskeyResponse> {
+  return request.patch(endpoints.passkey(passkeyId), { name });
+}
+
+export function deletePasskey({
+  passkeyId,
+  password,
+}: t.TDeletePasskeyRequest): Promise<{ message: string }> {
+  return request.deleteWithOptions(endpoints.passkey(passkeyId), { data: { password } });
+}
+
 /* Memories */
 export const getMemories = (): Promise<q.MemoriesResponse> => {
   return request.get(endpoints.memories());
 };
 
-export const deleteMemory = (key: string): Promise<void> => {
-  return request.delete(endpoints.memory(key));
+export const deleteMemory = (key: string, agentId?: string): Promise<q.DeleteMemoryResponse> => {
+  return request.delete(endpoints.memory(key, agentId));
+};
+
+export const deleteMemoryById = (id: string, agentId?: string): Promise<q.DeleteMemoryResponse> => {
+  return request.delete(endpoints.memoryById(id, agentId));
 };
 
 export const updateMemory = (
   key: string,
   value: string,
   originalKey?: string,
-): Promise<q.TUserMemory> => {
-  return request.patch(endpoints.memory(originalKey || key), { key, value });
+  agentId?: string,
+): Promise<q.UpdateMemoryResponse> => {
+  return request.patch(endpoints.memory(originalKey || key, agentId), {
+    key,
+    value,
+  });
+};
+
+export const updateMemoryById = (
+  id: string,
+  value: string,
+  key?: string,
+  agentId?: string,
+): Promise<q.UpdateMemoryResponse> => {
+  return request.patch(endpoints.memoryById(id, agentId), {
+    value,
+    ...(key ? { key } : {}),
+  });
 };
 
 export const updateMemoryPreferences = (preferences: {
@@ -1220,6 +2201,7 @@ export const updateMemoryPreferences = (preferences: {
 export const createMemory = (data: {
   key: string;
   value: string;
+  agentId?: string;
 }): Promise<{ created: boolean; memory: q.TUserMemory }> => {
   return request.post(endpoints.memories(), data);
 };
@@ -1269,10 +2251,6 @@ export function getGraphApiToken(params: q.GraphTokenParams): Promise<q.GraphTok
   return request.get(endpoints.graphToken(params.scopes));
 }
 
-export function getDomainServerBaseUrl(): string {
-  return `${endpoints.apiBaseUrl()}/api`;
-}
-
 /* Active Jobs */
 export interface ActiveJobsResponse {
   activeJobIds: string[];
@@ -1281,3 +2259,41 @@ export interface ActiveJobsResponse {
 export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
 };
+
+export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
+  return request.get(endpoints.scheduleMCPConsent(id));
+}
+export function getScheduleMCPOffer(agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.scheduleMCPOffer(), { agent_id: agentId });
+}
+export function confirmScheduleMCPConsent(
+  id: string,
+  payload: ConfirmScheduleMCPConsent,
+): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.scheduleMCPConsent(id), payload);
+}
+export function revokeScheduleMCPConsent(id: string, expectedRevision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.scheduleMCPConsent(id), {
+    data: { expectedRevision },
+  });
+}
+
+export function getApiKeyMCPConsent(id: string, agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.get(endpoints.apiKeyMCPConsent(id, agentId));
+}
+export function confirmApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  payload: ConfirmScheduleMCPConsent,
+): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.apiKeyMCPConsent(id, agentId), payload);
+}
+export function revokeApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  expectedRevision: string,
+): Promise<void> {
+  return request.deleteWithOptions(endpoints.apiKeyMCPConsent(id, agentId), {
+    data: { expectedRevision },
+  });
+}

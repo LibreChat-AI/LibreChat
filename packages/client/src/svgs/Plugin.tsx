@@ -1,6 +1,8 @@
+import { JSX } from 'react/jsx-runtime';
+import type { SVGProps } from 'react';
 import { cn } from '~/utils/';
 
-export default function Plugin({ className = '', ...props }) {
+export default function Plugin({ className = '', ...props }: SVGProps<SVGSVGElement>): JSX.Element {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"

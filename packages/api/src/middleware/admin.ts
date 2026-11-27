@@ -7,7 +7,11 @@ import type { ServerRequest } from '~/types/http';
  * Middleware to check if authenticated user has admin role.
  * Should be used AFTER authentication middleware (requireJwtAuth, requireLocalAuth, etc.)
  */
-export const requireAdmin = (req: ServerRequest, res: Response, next: NextFunction) => {
+export const requireAdmin = (
+  req: ServerRequest,
+  res: Response,
+  next: NextFunction,
+): Response | undefined => {
   if (!req.user) {
     logger.warn('[requireAdmin] No user found in request');
     return res.status(401).json({
@@ -17,7 +21,7 @@ export const requireAdmin = (req: ServerRequest, res: Response, next: NextFuncti
   }
 
   if (!req.user.role || req.user.role !== SystemRoles.ADMIN) {
-    logger.debug(`[requireAdmin] Access denied for non-admin user: ${req.user.email}`);
+    logger.debug(`[requireAdmin] Access denied for non-admin user: ${req.user.id}`);
     return res.status(403).json({
       error: 'Access denied: Admin privileges required',
       error_code: 'ADMIN_REQUIRED',

@@ -22,6 +22,7 @@ const CustomEndpoint = ({
             label={`${endpoint} API Key`}
             labelClassName="mb-1"
             inputClassName="mb-2"
+            secret
           />
         )}
       />

@@ -1,7 +1,10 @@
 import { Constants } from '@librechat/agents';
 import type { CodeEnvFile, CodeSessionContext, ToolSessionMap } from '@librechat/agents';
 import {
+  buildAgentInitialToolSessions,
+  mergeCodeFilesIntoContext,
   buildInitialToolSessions,
+  collectCodeExecutionProfileRoutes,
   seedCodeFilesIntoSessions,
   type CodeFilesAgent,
 } from './codeFilesSession';
@@ -19,6 +22,62 @@ const file = (id: string, storage_session_id: string, name: string): CodeEnvFile
    * primed code-execution attachments at the test boundary (most are
    * chat uploads). Tests that need shared kinds set it explicitly. */
   kind: 'user',
+});
+
+describe('mergeCodeFilesIntoContext', () => {
+  it('adds a freshly provisioned file to an existing session context', () => {
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('a', 'store-1', 'a.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('b', 'store-1', 'b.csv')]);
+
+    expect(merged?.session_id).toBe('exec-1');
+    expect(merged?.files.map((f) => f.id)).toEqual(['a', 'b']);
+  });
+
+  it('builds a context when the batch had none', () => {
+    const merged = mergeCodeFilesIntoContext(undefined, [file('b', 'store-2', 'b.csv')]);
+
+    expect(merged?.session_id).toBe('store-2');
+    expect(merged?.files.map((f) => f.id)).toEqual(['b']);
+  });
+
+  it('does not duplicate a file the context already carries', () => {
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('a', 'store-1', 'a.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('a', 'store-1', 'a.csv')]);
+
+    expect(merged?.files.map((f) => f.id)).toEqual(['a']);
+  });
+
+  it('drops a provisioned file whose destination the context already claimed', () => {
+    /**
+     * The destination constraint has to hold on this path too. Lazy provisioning
+     * folds its uploads into a context the graph seeded at run start, so a name
+     * the seed already claimed reaches codeapi as a duplicate destination and
+     * takes the whole `/exec` call down, exactly as in the seeding path.
+     */
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('id-A', 'sess-A', 'data.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('id-B', 'sess-B', 'data.csv')]);
+
+    expect(merged?.files.map((f) => f.id)).toEqual(['id-A']);
+  });
+
+  it('reports nothing to record when there are no files', () => {
+    expect(mergeCodeFilesIntoContext({ session_id: 'exec-1' }, [])).toBeUndefined();
+  });
 });
 
 describe('seedCodeFilesIntoSessions', () => {
@@ -130,19 +189,120 @@ describe('seedCodeFilesIntoSessions', () => {
     expect(entry.files!.map((f) => f.id).sort()).toEqual(['new-1', 'shared-1', 'skill-1']);
   });
 
-  it('treats same name + same session as a duplicate; same name + different sessions as distinct', () => {
+  it('keeps distinct identities that mount at distinct destinations', () => {
     /**
-     * The dedupe key is `(session_id, id)` — not `name` alone. Two
-     * primed uploads can legitimately share a filename when they live
-     * in different sandbox sessions (e.g. each agent re-uploaded the
-     * same source file). Both should land in the seed.
+     * The dedupe key is `(session_id, id)` — not `name` alone. Two primed
+     * uploads are separate files even when one was re-uploaded into a new
+     * sandbox session, and both belong in the seed as long as the caller
+     * resolved them to different mount paths.
      */
     const a = file('id-A', 'sess-A', 'data.csv');
-    const b = file('id-B', 'sess-B', 'data.csv');
+    const b = file('id-B', 'sess-B', 'data-2.csv');
     const result = seedCodeFilesIntoSessions([a, a, b], undefined);
     const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
     expect(entry.files).toHaveLength(2);
     expect(entry.files!.map((f) => f.storage_session_id).sort()).toEqual(['sess-A', 'sess-B']);
+  });
+
+  it('drops a distinct identity that would mount at an already-claimed destination', () => {
+    /**
+     * Regression for #15443. The identity key cannot see this: one file
+     * re-uploaded by one agent and cache-hit by another arrives twice with
+     * different `storage_session_id`s under a single `name`. Codeapi rejects
+     * the whole `/exec` request on the duplicate destination, and because the
+     * call never reaches the sandbox nothing comes back to collapse the pair
+     * — every later turn re-primes it and fails the same way.
+     */
+    const primed = file('id-A', 'sess-A', 'data.csv');
+    const reuploaded = file('id-B', 'sess-B', 'data.csv');
+    const result = seedCodeFilesIntoSessions([primed, reuploaded], undefined);
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files).toHaveLength(1);
+    expect(entry.files![0].storage_session_id).toBe('sess-A');
+  });
+
+  it('lets the prior partition keep a destination an incoming file also wants', () => {
+    const existing: ToolSessionMap = new Map();
+    existing.set(Constants.EXECUTE_CODE, {
+      session_id: 'skill-sess',
+      files: [file('skill-1', 'skill-sess', 'skills/report/run.py')],
+      lastUpdated: 1,
+    } satisfies CodeSessionContext);
+
+    const result = seedCodeFilesIntoSessions(
+      [file('user-1', 'user-sess', 'skills/report/run.py'), file('user-2', 'user-sess', 'ok.csv')],
+      existing,
+    );
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files!.map((f) => f.id)).toEqual(['skill-1', 'user-2']);
+  });
+
+  it('rejects an incoming file whose destination is a directory of a claimed one', () => {
+    const result = seedCodeFilesIntoSessions(
+      [file('id-A', 'sess-A', 'data/rows.csv'), file('id-B', 'sess-B', 'data')],
+      undefined,
+    );
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files!.map((f) => f.id)).toEqual(['id-A']);
+  });
+
+  it('seeds only the requested code-session partition', () => {
+    const statefulKey = 'execute_code:stateful:v1:user';
+    const existing: ToolSessionMap = new Map();
+    existing.set(Constants.EXECUTE_CODE, {
+      session_id: 'stateless-session',
+      files: [file('s1', 'stateless-session', 'stateless.txt')],
+      lastUpdated: 1,
+    } satisfies CodeSessionContext);
+
+    const result = seedCodeFilesIntoSessions(
+      [file('w1', 'stateful-session', 'stateful.txt')],
+      existing,
+      statefulKey,
+    );
+
+    expect(result!.get(Constants.EXECUTE_CODE)?.files?.map((f) => f.id)).toEqual(['s1']);
+    expect(result!.get(statefulKey)?.files?.map((f) => f.id)).toEqual(['w1']);
+  });
+});
+
+describe('buildAgentInitialToolSessions', () => {
+  it('clones only the agent partition and merges files resolved after the run seed', () => {
+    const statefulKey = 'execute_code:stateful:v2:user:user-1';
+    const statelessFile = file('stateless', 'stateless-session', 'stateless.txt');
+    const skillFile = file('skill', 'stateful-skill-session', 'skills/tool.py');
+    const lazyAttachment = file('attachment', 'stateful-user-session', 'input.csv');
+    const runSessions: ToolSessionMap = new Map([
+      [
+        Constants.EXECUTE_CODE,
+        {
+          session_id: statelessFile.storage_session_id,
+          files: [statelessFile],
+          lastUpdated: 1,
+        } satisfies CodeSessionContext,
+      ],
+      [
+        statefulKey,
+        {
+          session_id: skillFile.storage_session_id,
+          files: [skillFile],
+          lastUpdated: 2,
+        } satisfies CodeSessionContext,
+      ],
+    ]);
+
+    const result = buildAgentInitialToolSessions(
+      { codeSessionKey: statefulKey, primedCodeFiles: [lazyAttachment] },
+      runSessions,
+    );
+
+    expect(result?.has(Constants.EXECUTE_CODE)).toBe(false);
+    expect(result?.get(statefulKey)?.files?.map((entry) => entry.id)).toEqual([
+      'skill',
+      'attachment',
+    ]);
+    expect(result).not.toBe(runSessions);
+    expect(runSessions.get(statefulKey)?.files?.map((entry) => entry.id)).toEqual(['skill']);
   });
 });
 
@@ -151,8 +311,10 @@ describe('buildInitialToolSessions', () => {
     name: string,
     primedCodeFiles?: CodeEnvFile[],
     subagents?: CodeFilesAgent[],
+    codeSessionKey?: string,
   ): CodeFilesAgent & { __label: string } => ({
     __label: name,
+    codeSessionKey,
     primedCodeFiles,
     subagentAgentConfigs: subagents,
   });
@@ -214,6 +376,17 @@ describe('buildInitialToolSessions', () => {
     const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
     const names = entry.files!.map((f) => f.name).sort();
     expect(names).toEqual(['mid.txt', 'nested.txt', 'top.txt']);
+  });
+
+  it('includes graph-subagent members pruned from the top-level agent map', () => {
+    const member = agent('graph-member', [file('g1', 'sess-G', 'team.txt')]);
+    const primary = agent('primary');
+    primary.subagentGraphConfigs = [{ memberConfigs: [member] }];
+
+    const result = buildInitialToolSessions({ agents: [primary] });
+
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files!.map((item) => item.name)).toEqual(['team.txt']);
   });
 
   it('preserves the skill side representative session_id when merging', () => {
@@ -326,5 +499,256 @@ describe('buildInitialToolSessions', () => {
     const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
     expect(entry.files).toHaveLength(2);
     expect(entry.files!.map((f) => f.name).sort()).toEqual(['shared.csv', 'top.csv']);
+  });
+
+  it('keeps stateless and stateful agent files in separate partitions', () => {
+    const statefulKey = 'execute_code:stateful:v1:user';
+    const skillSessions: ToolSessionMap = new Map();
+    skillSessions.set(Constants.EXECUTE_CODE, {
+      session_id: 'skill-sess',
+      files: [file('skill-1', 'skill-sess', 'skill.py')],
+      lastUpdated: 1,
+    } satisfies CodeSessionContext);
+    skillSessions.set(statefulKey, {
+      session_id: 'stateful-skill-sess',
+      files: [file('stateful-skill-1', 'stateful-skill-sess', 'skill.py')],
+      lastUpdated: 1,
+    } satisfies CodeSessionContext);
+
+    const result = buildInitialToolSessions({
+      skillSessions,
+      agents: [
+        agent('stateless', [file('s1', 'stateless-sess', 'stateless.txt')]),
+        agent('stateful', [file('w1', 'stateful-sess', 'stateful.txt')], undefined, statefulKey),
+      ],
+    });
+
+    expect(result!.get(Constants.EXECUTE_CODE)?.files?.map((f) => f.id)).toEqual(['skill-1', 's1']);
+    expect(result!.get(statefulKey)?.files?.map((f) => f.id)).toEqual(['stateful-skill-1', 'w1']);
+  });
+
+  it('shares user-scoped stateful files but isolates agent-user scopes', () => {
+    const userKey = 'execute_code:stateful:v1:user';
+    const firstAgentKey = 'execute_code:stateful:v1:agent-user:agent-a';
+    const secondAgentKey = 'execute_code:stateful:v1:agent-user:agent-b';
+
+    const result = buildInitialToolSessions({
+      agents: [
+        agent('user-a', [file('u1', 'user-a-sess', 'a.txt')], undefined, userKey),
+        agent('user-b', [file('u2', 'user-b-sess', 'b.txt')], undefined, userKey),
+        agent('agent-a', [file('a1', 'agent-a-sess', 'private-a.txt')], undefined, firstAgentKey),
+        agent('agent-b', [file('b1', 'agent-b-sess', 'private-b.txt')], undefined, secondAgentKey),
+      ],
+    });
+
+    expect(result!.get(userKey)?.files?.map((f) => f.id)).toEqual(['u1', 'u2']);
+    expect(result!.get(firstAgentKey)?.files?.map((f) => f.id)).toEqual(['a1']);
+    expect(result!.get(secondAgentKey)?.files?.map((f) => f.id)).toEqual(['b1']);
+    expect(result!.has(Constants.EXECUTE_CODE)).toBe(false);
+  });
+
+  it('preserves a profile-local stateful skill seed without agent files', () => {
+    const statefulKey = 'execute_code:stateful:v1:user';
+    const skillSessions: ToolSessionMap = new Map();
+    skillSessions.set(statefulKey, {
+      session_id: 'skill-sess',
+      files: [file('skill-1', 'skill-sess', 'skill.py')],
+      lastUpdated: 1,
+    } satisfies CodeSessionContext);
+
+    const result = buildInitialToolSessions({
+      skillSessions,
+      agents: [agent('stateful', undefined, undefined, statefulKey)],
+    });
+
+    expect(result!.get(statefulKey)?.files?.map((f) => f.id)).toEqual(['skill-1']);
+  });
+
+  it('never copies a default-profile skill pointer into a stateful partition', () => {
+    const statefulKey = 'execute_code:stateful:v1:user';
+    const skillSessions: ToolSessionMap = new Map();
+    skillSessions.set(Constants.EXECUTE_CODE, {
+      session_id: 'default-skill-sess',
+      files: [file('skill-1', 'default-skill-sess', 'skill.py')],
+      lastUpdated: 1,
+    } satisfies CodeSessionContext);
+
+    const result = buildInitialToolSessions({
+      skillSessions,
+      agents: [agent('stateful', undefined, undefined, statefulKey)],
+    });
+
+    expect(result!.has(statefulKey)).toBe(false);
+  });
+});
+
+describe('collectCodeExecutionProfileRoutes', () => {
+  it('groups reachable code agents by deployment and retains each trusted partition', () => {
+    const statelessContext = {
+      baseUrl: 'https://code.example.com/v1',
+      codeSessionKey: Constants.EXECUTE_CODE,
+      executionProfile: 'default' as const,
+      statefulSessions: false,
+    };
+    const statefulContext = (key: string) => ({
+      baseUrl: 'https://stateful.example.com/v1',
+      codeSessionKey: key,
+      executionProfile: 'stateful' as const,
+      runtimeSessionHint: key.slice('execute_code:stateful:'.length),
+      statefulSessions: true,
+    });
+    const childKey = 'execute_code:stateful:v2:agent-user:child';
+    const parentKey = 'execute_code:stateful:v2:user:shared';
+    const child: CodeFilesAgent = {
+      codeEnvAvailable: true,
+      codeExecutionContext: statefulContext(childKey),
+      codeSessionKey: childKey,
+    };
+
+    const routes = collectCodeExecutionProfileRoutes([
+      {
+        codeEnvAvailable: true,
+        codeExecutionContext: statelessContext,
+        codeSessionKey: Constants.EXECUTE_CODE,
+      },
+      {
+        codeEnvAvailable: true,
+        codeExecutionContext: statefulContext(parentKey),
+        codeSessionKey: parentKey,
+        subagentAgentConfigs: [child],
+      },
+      { codeEnvAvailable: false, codeExecutionContext: statefulContext('ignored') },
+    ]);
+
+    expect(routes).toEqual([
+      {
+        codeExecutionContext: statelessContext,
+        codeSessionKeys: [Constants.EXECUTE_CODE],
+      },
+      {
+        codeExecutionContext: statefulContext(parentKey),
+        codeSessionKeys: [parentKey, childKey],
+      },
+    ]);
+  });
+
+  it('includes execution routes used only by graph-subagent members', () => {
+    const graphKey = 'execute_code:stateful:v2:user:graph-member';
+    const graphContext = {
+      baseUrl: 'https://stateful.example.com/v1',
+      codeSessionKey: graphKey,
+      executionProfile: 'stateful' as const,
+      runtimeSessionHint: 'v2:user:graph-member',
+      statefulSessions: true,
+    };
+
+    const routes = collectCodeExecutionProfileRoutes([
+      {
+        id: 'parent',
+        codeEnvAvailable: false,
+        subagentGraphConfigs: [
+          {
+            memberConfigs: [
+              {
+                id: 'graph-member',
+                codeEnvAvailable: true,
+                codeExecutionContext: graphContext,
+                codeSessionKey: graphKey,
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(routes).toEqual([{ codeExecutionContext: graphContext, codeSessionKeys: [graphKey] }]);
+  });
+
+  it('includes the per-call machines of a graph member a lazy child initializes later', () => {
+    const memberKey = 'execute_code:stateful:attached:buildbox:member';
+    const buildbox = {
+      baseUrl: 'https://bridge.example.com/v1',
+      codeSessionKey: memberKey,
+      executionProfile: 'stateful' as const,
+      executionRouteKey: 'attached:buildbox',
+      runtimeSessionHint: 'member',
+      statefulSessions: true,
+      environmentId: 'buildbox',
+      environmentType: 'attached' as const,
+    };
+
+    const routes = collectCodeExecutionProfileRoutes([
+      {
+        id: 'parent',
+        codeEnvAvailable: false,
+        lazySubagentConfigs: [
+          {
+            id: 'reviewer',
+            codeEnvAvailable: false,
+            subagentGraphMemberMetadata: [
+              { id: 'member', codeEnvAvailable: false, codeExecutionChoices: [buildbox] },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(routes).toEqual([{ codeExecutionContext: buildbox, codeSessionKeys: [memberKey] }]);
+  });
+
+  it('keeps configured stateful deployments in separate routing namespaces', () => {
+    const context = (executionRouteKey: string, baseUrl: string) => ({
+      baseUrl,
+      codeSessionKey: `execute_code:stateful:${executionRouteKey}`,
+      executionProfile: 'stateful' as const,
+      executionRouteKey,
+      runtimeSessionHint: `v3:${executionRouteKey}:user:scope`,
+      statefulSessions: true,
+    });
+    const first = context('stateful:first', 'https://first.example/v1');
+    const second = context('stateful:second', 'https://second.example/v1');
+
+    const routes = collectCodeExecutionProfileRoutes([
+      { codeEnvAvailable: true, codeExecutionContext: first },
+      { codeEnvAvailable: true, codeExecutionContext: second },
+    ]);
+
+    expect(routes).toEqual([
+      { codeExecutionContext: first, codeSessionKeys: [first.codeSessionKey] },
+      { codeExecutionContext: second, codeSessionKeys: [second.codeSessionKey] },
+    ]);
+  });
+
+  it('derives and includes the trusted profile for a lazy subagent descriptor', () => {
+    process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful.example.com/v1';
+    const routes = collectCodeExecutionProfileRoutes(
+      [
+        {
+          id: 'parent',
+          codeEnvAvailable: false,
+          lazySubagentConfigs: [
+            {
+              id: 'lazy-child',
+              codeEnvAvailable: true,
+              statefulCodeSessions: true,
+              statefulCodeEnvironment: 'agent-user',
+            },
+          ],
+        },
+      ],
+      { userId: 'user-1', conversationId: 'conversation-1' },
+    );
+
+    expect(routes).toHaveLength(1);
+    expect(routes[0].codeExecutionContext).toEqual(
+      expect.objectContaining({
+        executionProfile: 'stateful',
+        statefulSessions: true,
+      }),
+    );
+    expect(routes[0].codeSessionKeys).toEqual([
+      expect.stringMatching(/^execute_code:stateful:v2:agent-user:/),
+    ]);
+    delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
   });
 });

@@ -1,9 +1,12 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
+import { useAtom, useSetAtom } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
+import { useRecoilValue, useRecoilCallback } from 'recoil';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
-import { useRecoilState, useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
+import { filesFamily, submissionByIndex } from '@librechat/chat/react';
 import {
   Constants,
+  QueryKeys,
   FileSources,
   Permissions,
   EModelEndpoint,
@@ -22,49 +25,133 @@ import type {
   TModelsConfig,
   TConversation,
   TEndpointsConfig,
+  TAgentsMap,
+  Agent,
 } from 'librechat-data-provider';
-import type { AssistantListItem } from '~/common';
+import type { NewConversationOptions } from './Chat/contract';
 import {
-  updateLastSelectedModel,
   getLocalStorageItems,
+  isNotFoundError,
   getDefaultModelSpec,
   getDefaultEndpoint,
   getModelSpecPreset,
+  hasModelSelection,
   buildDefaultConvo,
+  requestChatFocus,
+  renewNewConversationDraftToken,
+  getNewConversationDraftId,
+  getPendingDraftId,
+  getActiveComposerDraftId,
+  getFilesDraft,
+  isPastedTextFileMarked,
+  loadPendingDiscardIds,
+  storePendingDiscardIds,
+  removeTabAttachmentPresence,
+  collectForeignAttachmentClaims,
+  scheduleRetainedFileDeletionRetry,
+  retainFileDeletion,
+  failedFileIdsFrom,
   logger,
+  setDocumentTitle,
 } from '~/utils';
 import { useDeleteFilesMutation, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
-import useAssistantListMap from './Assistants/useAssistantListMap';
-import { useResetChatBadges } from './useChatBadges';
+import { supersedeNavigation } from './Conversations/useNavigateToConvo';
+import useGetConversation from './Conversations/useGetConversation';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import { clearUploadRecovery } from './Files/useFileHandling';
 import { useApplyModelSpecEffects } from './Agents';
 import { usePauseGlobalAudio } from './Audio';
 import { useHasAccess } from '~/hooks';
 import store from '~/store';
 
-const useNewConvo = (index = 0) => {
+export function clearInheritedAgentWorkspace(
+  conversation: TConversation,
+  previousConversation?: TConversation | null,
+): TConversation {
+  const startsNewAgentConversation =
+    conversation.conversationId === Constants.NEW_CONVO &&
+    conversation.agent_id != null &&
+    conversation.agent_id !== previousConversation?.agent_id;
+
+  return startsNewAgentConversation
+    ? { ...conversation, codeEnvironmentMode: undefined, codeWorkspaces: undefined }
+    : conversation;
+}
+
+function restoreRememberedTarget(
+  conversation: TConversation,
+  endpoint: EModelEndpoint,
+  index: number,
+): TConversation {
+  if (
+    conversation.spec ||
+    conversation.model ||
+    conversation.agent_id ||
+    conversation.assistant_id
+  ) {
+    return conversation;
+  }
+  if (isAgentsEndpoint(endpoint)) {
+    const agentId = localStorage.getItem(`${LocalStorageKeys.AGENT_ID_PREFIX}${index}`);
+    return agentId && !isEphemeralAgentId(agentId)
+      ? { ...conversation, endpoint, agent_id: agentId }
+      : conversation;
+  }
+  if (!isAssistantsEndpoint(endpoint)) return conversation;
+  const assistantId = localStorage.getItem(`${LocalStorageKeys.ASST_ID_PREFIX}${index}${endpoint}`);
+  if (!assistantId) return conversation;
+  const stored = localStorage.getItem(`${LocalStorageKeys.LAST_CONVO_SETUP}_${index}`);
+  let model: string | null | undefined;
+  try {
+    const setup = stored ? (JSON.parse(stored) as Partial<TConversation>) : undefined;
+    if (setup?.endpoint === endpoint) {
+      if (setup.assistant_id === assistantId) model = setup.model;
+    } else {
+      const models = localStorage.getItem(LocalStorageKeys.LAST_MODEL);
+      model = models
+        ? (JSON.parse(models) as Record<string, string | undefined>)[endpoint]
+        : undefined;
+    }
+  } catch {
+    // The remembered ID can still be resolved without a saved setup.
+  }
+  return { ...conversation, endpoint, assistant_id: assistantId, model };
+}
+
+/**
+ * `routed` is false for a pane the page's route does not address, such as a conversation open
+ * beside the chat. Such a pane holds one conversation: it takes a change to that conversation
+ * (its model, endpoint or agent) and nothing that would put another in its place, and nothing
+ * it does moves the route or the page's focus.
+ */
+const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { data: startupConfig } = useGetStartupConfig();
+  const getConversation = useGetConversation(index);
   const applyModelSpecEffects = useApplyModelSpecEffects();
   const clearAllConversations = store.useClearConvoState();
   const defaultPreset = useRecoilValue(store.defaultPreset);
   const { setConversation } = store.useSetConversationAtom(index);
-  const [files, setFiles] = useRecoilState(store.filesByIndex(index));
-  const saveBadgesState = useRecoilValue<boolean>(store.saveBadgesState);
-  const clearAllLatestMessages = store.useClearLatestMessages(`useNewConvo ${index}`);
-  const setSubmission = useSetRecoilState<TSubmission | null>(store.submissionByIndex(index));
+  const [files, setFiles] = useAtom(filesFamily(index));
+  const setSubmission = useSetAtom(submissionByIndex(index));
   const { data: endpointsConfig = {} as TEndpointsConfig } = useGetEndpointsQuery();
+  const queryClient = useQueryClient();
+  const storedAgentId = getLocalStorageItems().lastConversationSetup?.agent_id;
+  const storedAgent = queryClient.getQueryState<Agent>([QueryKeys.agent, storedAgentId]);
+  const agentsMap = useMemo<TAgentsMap | undefined>(() => {
+    if (storedAgent?.data) return { [storedAgent.data.id]: storedAgent.data };
+    if (storedAgent?.status === 'error' && isNotFoundError(storedAgent.error)) return {};
+    return undefined;
+  }, [storedAgent?.data, storedAgent?.status, storedAgent?.error]);
 
   const hasAgentAccess = useHasAccess({
     permissionType: PermissionTypes.AGENTS,
     permission: Permissions.USE,
   });
 
-  const modelsQuery = useGetModelsQuery();
-  const assistantsListMap = useAssistantListMap();
   const { pauseGlobalAudio } = usePauseGlobalAudio(index);
-  const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
-  const resetBadges = useResetChatBadges();
+  const { saveDrafts } = useChatSettings();
 
   const { mutateAsync } = useDeleteFilesMutation({
     onSuccess: () => {
@@ -82,14 +169,18 @@ const useNewConvo = (index = 0) => {
         preset: Partial<TPreset> | null = null,
         modelsData?: TModelsConfig,
         buildDefault?: boolean,
-        keepLatestMessage?: boolean,
         keepAddedConvos?: boolean,
         disableFocus?: boolean,
         _disableParams?: boolean,
+        replaceNavigation = false,
       ) => {
-        const modelsConfig = modelsData ?? modelsQuery.data;
         const { endpoint = null } = conversation;
         const buildDefaultConversation = (endpoint === null || buildDefault) ?? false;
+        const hasExplicitChatProjectId = Object.prototype.hasOwnProperty.call(
+          conversation,
+          'chatProjectId',
+        );
+        const explicitChatProjectId = conversation.chatProjectId;
         const activePreset =
           // use default preset only when it's defined,
           // preset is not provided,
@@ -156,50 +247,34 @@ const useNewConvo = (index = 0) => {
             conversation.endpointType = undefined;
           }
 
-          const isAssistantEndpoint = isAssistantsEndpoint(defaultEndpoint);
-          const assistants: AssistantListItem[] = assistantsListMap[defaultEndpoint] ?? [];
-          const currentAssistantId = conversation.assistant_id ?? '';
-          const currentAssistant = assistantsListMap[defaultEndpoint]?.[currentAssistantId] as
-            | AssistantListItem
-            | undefined;
-
-          if (currentAssistantId && !currentAssistant) {
+          if (!isAssistantsEndpoint(defaultEndpoint)) {
             conversation.assistant_id = undefined;
           }
 
-          if (!currentAssistantId && isAssistantEndpoint) {
-            conversation.assistant_id =
-              localStorage.getItem(
-                `${LocalStorageKeys.ASST_ID_PREFIX}${index}${defaultEndpoint}`,
-              ) ?? assistants[0]?.id;
+          if (!activePreset && conversation.conversationId === Constants.NEW_CONVO) {
+            conversation = restoreRememberedTarget(conversation, defaultEndpoint, index);
           }
 
-          if (
-            currentAssistantId &&
-            isAssistantEndpoint &&
-            conversation.conversationId === Constants.NEW_CONVO
-          ) {
-            const assistant = assistants.find((asst) => asst.id === currentAssistantId);
-            conversation.model = assistant?.model;
-            updateLastSelectedModel({
-              endpoint: defaultEndpoint,
-              model: conversation.model,
-            });
-          }
-
-          if (currentAssistantId && !isAssistantEndpoint) {
-            conversation.assistant_id = undefined;
-          }
-
-          const models = modelsConfig?.[defaultEndpoint] ?? [];
+          const models =
+            modelsData?.[defaultEndpoint] ??
+            queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
+              defaultEndpoint
+            ];
           const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, defaultEndpoint);
           conversation = buildDefaultConvo({
             conversation,
-            lastConversationSetup: activePreset as TConversation,
+            lastConversationSetup:
+              activePreset ?? (conversation.endpoint === defaultEndpoint ? conversation : null),
             endpoint: defaultEndpoint,
             models,
             defaultParamsEndpoint,
           });
+
+          if (hasExplicitChatProjectId) {
+            conversation.chatProjectId = explicitChatProjectId ?? null;
+          } else {
+            delete conversation.chatProjectId;
+          }
         }
 
         if (disableParams === true) {
@@ -225,34 +300,51 @@ const useNewConvo = (index = 0) => {
           setConversation(conversation);
         }
         setSubmission({} as TSubmission);
-        if (!(keepLatestMessage ?? false)) {
-          logger.log('latest_message', 'Clearing all latest messages');
-          clearAllLatestMessages();
-        }
-        if (isCancelled) {
+        if (isCancelled || !routed) {
           return;
         }
 
-        const searchParamsString = searchParams?.toString();
-        const getParams = () => (searchParamsString ? `?${searchParamsString}` : '');
+        const getParams = (nextConversation: TConversation) => {
+          const nextParams = new URLSearchParams(searchParams);
+          nextParams.delete('projectId');
+          if (
+            nextConversation.conversationId === Constants.NEW_CONVO &&
+            nextConversation.chatProjectId
+          ) {
+            nextParams.set('projectId', nextConversation.chatProjectId);
+          }
 
-        if (conversation.conversationId === Constants.NEW_CONVO && !modelsData) {
+          const searchParamsString = nextParams.toString();
+          return searchParamsString ? `?${searchParamsString}` : '';
+        };
+
+        if (
+          conversation.conversationId === Constants.NEW_CONVO &&
+          !modelsData &&
+          !replaceNavigation
+        ) {
           const appTitle = localStorage.getItem(LocalStorageKeys.APP_TITLE) ?? '';
           if (appTitle) {
-            document.title = appTitle;
+            setDocumentTitle(appTitle, true);
           }
-          const path = `/c/${Constants.NEW_CONVO}${getParams()}`;
-          navigate(path, { state: { focusChat: true } });
+          const path = `/c/${Constants.NEW_CONVO}${getParams(conversation)}`;
+          /** Honor disableFocus here too: the transient focus intent survives
+           * follow-up navigations (unlike the old location.state), so e.g.
+           * SearchBar's clear-search must not have focus stolen back. */
+          if (!disableFocus) {
+            requestChatFocus();
+          }
+          navigate(path);
           return;
         }
 
-        const path = `/c/${conversation.conversationId}${getParams()}`;
-        navigate(path, {
-          replace: true,
-          state: disableFocus ? {} : { focusChat: true },
-        });
+        const path = `/c/${conversation.conversationId}${getParams(conversation)}`;
+        if (!disableFocus) {
+          requestChatFocus();
+        }
+        navigate(path, { replace: true });
       },
-    [endpointsConfig, defaultPreset, assistantsListMap, modelsQuery.data, hasAgentAccess],
+    [index, routed, endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
   );
 
   const newConversation = useCallback(
@@ -262,23 +354,27 @@ const useNewConvo = (index = 0) => {
       modelsData,
       disableFocus,
       buildDefault = true,
-      keepLatestMessage = false,
       keepAddedConvos = false,
+      keepComposerState = false,
       disableParams,
-    }: {
-      template?: Partial<TConversation>;
-      preset?: Partial<TPreset>;
-      modelsData?: TModelsConfig;
-      buildDefault?: boolean;
-      disableFocus?: boolean;
-      keepLatestMessage?: boolean;
-      keepAddedConvos?: boolean;
-      disableParams?: boolean;
-    } = {}) {
-      pauseGlobalAudio();
-      if (!saveBadgesState) {
-        resetBadges();
+    }: NewConversationOptions = {}) {
+      const nextConversationId = _template.conversationId ?? '';
+      if (!routed) {
+        const held = getConversation()?.conversationId ?? '';
+        if (held === '' || held === Constants.NEW_CONVO || nextConversationId !== held) {
+          return;
+        }
       }
+      const keepsExistingDraft =
+        modelsData != null ||
+        keepComposerState ||
+        (nextConversationId !== '' &&
+          nextConversationId !== Constants.NEW_CONVO &&
+          !nextConversationId.startsWith('_'));
+      if (!keepsExistingDraft) {
+        renewNewConversationDraftToken(index);
+      }
+      pauseGlobalAudio();
 
       const templateConvoId = _template.conversationId ?? '';
       const paramEndpoint =
@@ -286,10 +382,10 @@ const useNewConvo = (index = 0) => {
         isParamEndpoint(_preset?.endpoint ?? '', _preset?.endpointType ?? '');
       const template =
         paramEndpoint === true && templateConvoId && templateConvoId === Constants.NEW_CONVO
-          ? { endpoint: _template.endpoint }
+          ? { endpoint: _template.endpoint, chatProjectId: _template.chatProjectId }
           : _template;
 
-      const conversation = {
+      let conversation = {
         conversationId: Constants.NEW_CONVO as string,
         title: 'New Chat',
         endpoint: null,
@@ -299,48 +395,166 @@ const useNewConvo = (index = 0) => {
       };
 
       let preset = _preset;
-      const result = getDefaultModelSpec(startupConfig);
-      const defaultModelSpec = result?.default ?? result?.last;
-      if (
-        !preset &&
-        startupConfig &&
-        (startupConfig.modelSpecs?.prioritize === true ||
-          (startupConfig.interface?.modelSelect ?? true) !== true ||
-          (result?.last != null && Object.keys(_template).length === 0)) &&
-        defaultModelSpec
-      ) {
+      const result = getDefaultModelSpec(startupConfig, endpointsConfig, agentsMap);
+      const defaultModelSpec = result?.default ?? result?.last ?? result?.softDefault;
+      const shouldApplyModelSpec =
+        result?.softDefault != null
+          ? !hasModelSelection(_template)
+          : startupConfig?.modelSpecs?.prioritize === true ||
+            (startupConfig?.interface?.modelSelect ?? true) !== true ||
+            (result?.last != null &&
+              Object.keys(_template).filter((key) => key !== 'chatProjectId').length === 0);
+      if (!preset && startupConfig && shouldApplyModelSpec && defaultModelSpec) {
         preset = getModelSpecPreset(defaultModelSpec);
       }
 
+      const prevConversation = getConversation();
+      conversation = clearInheritedAgentWorkspace(conversation, prevConversation);
       applyModelSpecEffects({
         startupConfig,
         specName: preset?.spec,
         convoId: conversation.conversationId,
+        prevConvoId: prevConversation?.conversationId,
+        prevSpecName: prevConversation?.spec,
       });
 
-      if (conversation.conversationId === Constants.NEW_CONVO && !modelsData) {
-        const filesToDelete = Array.from(files.values())
-          .filter(
-            (file) =>
-              file.filepath != null &&
-              file.filepath !== '' &&
-              file.source &&
-              !(file.embedded ?? false) &&
-              file.temp_file_id,
-          )
-          .map((file) => ({
-            file_id: file.file_id,
-            embedded: !!(file.embedded ?? false),
-            filepath: file.filepath as string,
-            source: file.source as FileSources, // Ensure that the source is of type FileSources
-          }));
+      if (
+        conversation.conversationId === Constants.NEW_CONVO &&
+        !modelsData &&
+        !keepComposerState
+      ) {
+        const sourceDraftId =
+          !prevConversation?.conversationId ||
+          prevConversation.conversationId === Constants.NEW_CONVO
+            ? getNewConversationDraftId(index)
+            : prevConversation.conversationId;
+        const activeDraftId = getActiveComposerDraftId(
+          index,
+          prevConversation?.conversationId ?? Constants.NEW_CONVO,
+        );
+        const retainedUploadIds = new Set(
+          saveDrafts
+            ? [
+                ...getFilesDraft(sourceDraftId).fileIds,
+                ...getFilesDraft(getPendingDraftId(index)).fileIds,
+                ...(activeDraftId ? getFilesDraft(activeDraftId).fileIds : []),
+              ]
+            : [],
+        );
+        const filesToDelete = Array.from(files.entries()).flatMap(([fileId, file]) => {
+          const retainFileSearch = [fileId, file.file_id, file.temp_file_id].some(
+            (id) => id != null && retainedUploadIds.has(id),
+          );
+          clearUploadRecovery(fileId, retainFileSearch);
+          if (file.temp_file_id && file.temp_file_id !== fileId) {
+            clearUploadRecovery(file.temp_file_id, retainFileSearch);
+          }
 
+          /** A generated paste is this composer's own upload and goes with it, even when that
+           * upload was vectorized for file search: skipping every embedded record left an unsent
+           * embedded paste with its metadata, storage and vectors all still on the server.
+           * Anything else embedded is left alone, since those are shared. */
+          const ownedPaste =
+            [fileId, file.file_id, file.temp_file_id].some((id) => isPastedTextFileMarked(id)) &&
+            file.attached !== true;
+          if (
+            file.filepath == null ||
+            file.filepath === '' ||
+            !file.source ||
+            ((file.embedded ?? false) && !ownedPaste) ||
+            (!file.temp_file_id && !ownedPaste)
+          ) {
+            return [];
+          }
+
+          return [
+            {
+              file_id: file.file_id,
+              embedded: ownedPaste ? (file.embedded ?? false) : false,
+              filepath: file.filepath,
+              source: file.source as FileSources,
+            },
+          ];
+        });
+        if (!saveDrafts) {
+          /** An upload still in flight has no filepath or source yet, so filesToDelete cannot build a
+           * deletion payload for it. Direct newConversation callers need to persist its id before
+           * clearing the composer map. Merge with the existing store because useNewChat may already
+           * have recorded the same id. */
+          const inFlightPasteIds: string[] = [];
+          files.forEach((file, key) => {
+            const isMarkedPaste = [key, file.file_id, file.temp_file_id].some((id) =>
+              isPastedTextFileMarked(id),
+            );
+            if (file.attached !== true && file.progress < 1 && isMarkedPaste) {
+              inFlightPasteIds.push(file.file_id);
+            }
+          });
+          if (inFlightPasteIds.length > 0) {
+            const pendingDiscardIds = new Set(loadPendingDiscardIds(index));
+            inFlightPasteIds.forEach((fileId) => pendingDiscardIds.add(fileId));
+            storePendingDiscardIds(index, Array.from(pendingDiscardIds));
+          }
+        }
+
+        const discardedFileIds = Array.from(
+          new Set([
+            ...filesToDelete.map((f) => f.file_id),
+            ...Array.from(files.keys()),
+            ...Array.from(files.values()).flatMap(
+              (f) => [f.file_id, f.temp_file_id].filter(Boolean) as string[],
+            ),
+          ]),
+        );
+        removeTabAttachmentPresence(discardedFileIds, index);
         setFiles(new Map());
         localStorage.setItem(LocalStorageKeys.FILES_TO_DELETE, JSON.stringify({}));
-
         if (!saveDrafts && filesToDelete.length > 0) {
-          mutateAsync({ files: filesToDelete });
+          /** Another tab's draft or live presence wins over this reset's cleanup: its chip or sent
+           * message may still reference the same server upload. The discarded draft keys are
+           * excluded so this pane's own claims do not block its cleanup, and skipped records are
+           * not retained for retry because they are not this pane's to delete. */
+          const claimedElsewhere = collectForeignAttachmentClaims(
+            [getNewConversationDraftId(index), getPendingDraftId(index)],
+            index,
+          );
+          const deletableFiles = filesToDelete.filter(
+            (record) => !claimedElsewhere.has(record.file_id),
+          );
+          if (deletableFiles.length > 0) {
+            /** The map is already cleared above, so a lost request leaves nothing that could
+             * rebuild these payloads. Whatever the server did not delete is retained for the
+             * cleanup pass, since a failed storage delete comes back as a 200 naming the file in
+             * `failedFileIds` rather than as a rejection. */
+            const retainAll = (records: typeof filesToDelete) => {
+              for (const record of records) {
+                retainFileDeletion(record);
+              }
+              scheduleRetainedFileDeletionRetry();
+            };
+            mutateAsync({ files: deletableFiles })
+              .then((result) => {
+                const failed = new Set(failedFileIdsFrom(result));
+                if (failed.size === 0) {
+                  return;
+                }
+                retainAll(deletableFiles.filter((record) => failed.has(record.file_id)));
+              })
+              .catch(() => retainAll(deletableFiles));
+          }
         }
+      }
+
+      /** A first visit to another conversation may still be waiting on its
+       * record. Starting a new chat keeps the pathname, so the route check sees no change. That
+       * record could then land and pull the user into the conversation they just abandoned.
+       *
+       * `keepComposerState` marks a call that re-renders a composer an earlier
+       * call already opened, such as agent metadata arriving late. The user did
+       * not ask for anything there, so it must not cancel a conversation they
+       * clicked while it was in flight. */
+      if (!keepComposerState && routed) {
+        supersedeNavigation();
       }
 
       switchToConversation(
@@ -348,20 +562,23 @@ const useNewConvo = (index = 0) => {
         preset,
         modelsData,
         buildDefault,
-        keepLatestMessage,
         keepAddedConvos,
         disableFocus,
         disableParams,
+        keepComposerState,
       );
     },
     [
+      index,
       files,
+      routed,
       setFiles,
+      agentsMap,
       saveDrafts,
       mutateAsync,
-      resetBadges,
       startupConfig,
-      saveBadgesState,
+      endpointsConfig,
+      getConversation,
       pauseGlobalAudio,
       switchToConversation,
       applyModelSpecEffects,

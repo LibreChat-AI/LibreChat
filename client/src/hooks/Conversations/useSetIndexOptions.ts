@@ -47,13 +47,15 @@ const useSetIndexOptions: TUseSetOptions = (preset = false) => {
       }
     }
 
-    setConversation(
-      (prevState) =>
-        tConvoUpdateSchema.parse({
-          ...prevState,
-          ...update,
-        }) as TConversation,
-    );
+    setConversation((prevState) => {
+      if (prevState && Object.keys(update).every((key) => Object.is(prevState[key], update[key]))) {
+        return prevState;
+      }
+      return tConvoUpdateSchema.parse({
+        ...prevState,
+        ...update,
+      }) as TConversation;
+    });
   };
 
   const setExample: TSetExample = (i, type, newValue = null) => {

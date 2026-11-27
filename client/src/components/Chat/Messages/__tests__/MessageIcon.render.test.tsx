@@ -1,5 +1,5 @@
 import React from 'react';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { Agent } from 'librechat-data-provider';
 import type { TMessageIcon } from '~/common';
@@ -62,6 +62,22 @@ describe('MessageIcon render cycles', () => {
     expect(iconRenderCount.current).toBe(1);
   });
 
+  it('renders same-origin absolute model spec icon URLs directly', () => {
+    render(
+      <MessageIcon
+        iconData={{
+          ...baseIconData,
+          iconURL: '/assets/clickhouse-logo.svg',
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('convo-icon-url')).toHaveAttribute(
+      'data-icon-url',
+      '/assets/clickhouse-logo.svg',
+    );
+  });
+
   it('does not re-render when parent re-renders with same field values but new object references', () => {
     const agent = makeAgent();
     const { rerender } = render(<MessageIcon iconData={baseIconData} agent={agent} />);
@@ -88,7 +104,7 @@ describe('MessageIcon render cycles', () => {
     const { rerender } = render(<MessageIcon iconData={baseIconData} agent={agent1} />);
     iconRenderCount.current = 0;
 
-    const agent2 = makeAgent({ avatar: { filepath: '/images/new-avatar.png' } });
+    const agent2 = makeAgent({ avatar: { filepath: '/images/new-avatar.png', source: 'local' } });
     rerender(<MessageIcon iconData={baseIconData} agent={agent2} />);
 
     expect(iconRenderCount.current).toBe(1);

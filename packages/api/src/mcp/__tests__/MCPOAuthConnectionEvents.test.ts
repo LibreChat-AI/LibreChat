@@ -5,12 +5,12 @@
  * oauthFailed rejection, timeout behavior, and token expiry mid-session.
  */
 
-import { MCPConnection } from '~/mcp/connection';
-import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { createOAuthMCPServer } from './helpers/oauthTestServer';
 import type { OAuthTestServer } from './helpers/oauthTestServer';
 import type { StreamableHTTPOptions } from '~/mcp/types';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
+import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
+import { createOAuthMCPServer } from './helpers/oauthTestServer';
+import { MCPConnection } from '~/mcp/connection';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -21,10 +21,13 @@ jest.mock('@librechat/data-schemas', () => ({
   },
   encryptV2: jest.fn(async (val: string) => `enc:${val}`),
   decryptV2: jest.fn(async (val: string) => val.replace(/^enc:/, '')),
+  getTenantId: jest.fn(),
 }));
 
 jest.mock('~/auth', () => ({
   createSSRFSafeUndiciConnect: jest.fn(() => undefined),
+  isOAuthUrlAllowed: jest.fn(() => false),
+  isSSRFTarget: jest.fn(() => false),
   resolveHostnameSSRF: jest.fn(async () => false),
 }));
 
@@ -130,6 +133,40 @@ describe('MCPConnection OAuth Events — Real Server', () => {
       await connectPromise.catch(() => undefined);
     });
 
+    it.each(['credential-a', undefined])(
+      'retains a delayed transport identity including absence (%s)',
+      async (credential) => {
+        const accessToken = await exchangeCodeForToken(server.url);
+        connection = new MCPConnection({
+          serverName: 'test-server',
+          serverConfig: { type: 'streamable-http', url: server.url },
+          userId: 'user-1',
+          oauthTokens: {
+            access_token: accessToken,
+            token_type: 'Bearer',
+            obtained_at: Date.now(),
+            credential_set_id: credential,
+          },
+        });
+        await connection.connect();
+        connection.setOAuthTokens({
+          access_token: 'new-token',
+          token_type: 'Bearer',
+          obtained_at: Date.now(),
+          credential_set_id: 'credential-b',
+        });
+        const error = new Error('Error POSTing to endpoint (HTTP 401): Unauthorized');
+        const transport = (
+          connection as unknown as { transport: { onerror: (error: Error) => void } }
+        ).transport;
+        transport.onerror(error);
+        expect(await connection.isConnected()).toBe(false);
+        expect(connection.getLastConnectionCheckError()).toBe(error);
+        expect(connection.getLastConnectionCheckCredentialSetId()).toBe(credential ?? null);
+        expect(connection.getOAuthCredentialSetId()).toBe(credential ?? null);
+      },
+    );
+
     it('should not emit oauthRequired when connecting with a valid token', async () => {
       const accessToken = await exchangeCodeForToken(server.url);
 
@@ -233,6 +270,7 @@ describe('MCPConnection OAuth Events — Real Server', () => {
         userId: 'user-1',
         oauthTokens: {
           access_token: accessToken,
+          credential_set_id: 'expired-credential',
           token_type: 'Bearer',
         } as MCPOAuthTokens,
       });
@@ -247,7 +285,8 @@ describe('MCPConnection OAuth Events — Real Server', () => {
 
       // Reconnect should trigger oauthRequired since token is expired on the server
       let oauthFired = false;
-      connection.on('oauthRequired', () => {
+      connection.on('oauthRequired', (event) => {
+        expect(event.rejectedCredentialSetId).toBe('expired-credential');
         oauthFired = true;
         connection!.emit('oauthFailed', new Error('Will retry with fresh token'));
       });

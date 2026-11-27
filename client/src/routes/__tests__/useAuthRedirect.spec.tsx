@@ -5,16 +5,6 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import useAuthRedirect from '../useAuthRedirect';
 import { useAuthContext } from '~/hooks';
 
-// Polyfill Request for React Router in test environment
-if (typeof Request === 'undefined') {
-  global.Request = class Request {
-    constructor(
-      public url: string,
-      public init?: RequestInit,
-    ) {}
-  } as any;
-}
-
 jest.mock('~/hooks', () => ({
   useAuthContext: jest.fn(),
 }));

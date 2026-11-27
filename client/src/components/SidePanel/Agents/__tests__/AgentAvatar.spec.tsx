@@ -2,7 +2,6 @@
  * @jest-environment jsdom
  */
 /* eslint-disable i18next/no-literal-string */
-import { describe, it, expect } from '@jest/globals';
 import { render, fireEvent } from '@testing-library/react';
 import { FormProvider, useForm, type UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
@@ -40,8 +39,18 @@ const defaultFormValues: AgentForm = {
   name: 'Agent',
   description: null,
   instructions: null,
+  instructionsSource: 'inline',
+  instructionsPrompt: null,
   model: 'gpt-4',
-  model_parameters: {},
+  model_parameters: {
+    temperature: 1,
+    maxContextTokens: null,
+    max_context_tokens: null,
+    max_output_tokens: null,
+    top_p: 1,
+    frequency_penalty: 0,
+    presence_penalty: 0,
+  },
   tools: [],
   provider: 'openai',
   agent_ids: [],
@@ -62,7 +71,7 @@ const defaultFormValues: AgentForm = {
 
 describe('AgentAvatar reset menu', () => {
   it('clears preview and file state when reset is triggered', () => {
-    let methodsRef: UseFormReturn<AgentForm>;
+    let methodsRef: UseFormReturn<AgentForm> | undefined;
     const Wrapper = () => {
       methodsRef = useForm<AgentForm>({
         defaultValues: {
@@ -87,6 +96,10 @@ describe('AgentAvatar reset menu', () => {
 
     const { getByTestId } = render(<Wrapper />);
     fireEvent.click(getByTestId('reset-avatar'));
+
+    if (!methodsRef) {
+      throw new Error('Form methods were not initialized');
+    }
 
     expect(methodsRef.getValues('avatar_preview')).toBe('');
     expect(methodsRef.getValues('avatar_file')).toBeNull();

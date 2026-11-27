@@ -72,6 +72,20 @@ export function getCodeEnvFileOptions(filename: string): CodeEnvFileOptions {
   return { filename: basename, filepath: normalized };
 }
 
+/** The destination encoded by the multipart adapter, including its safe-path fallback. */
+export function getCodeEnvUploadFilename(filename: string): string {
+  const options = getCodeEnvFileOptions(filename);
+  return options.filepath ?? options.filename;
+}
+
+/** Older upload strategies may omit the receipt name; use their shared multipart normalization. */
+export function getUploadedCodeEnvFilename(
+  uploaded: { filename?: string },
+  requestedFilename: string,
+): string {
+  return uploaded.filename || getCodeEnvUploadFilename(requestedFilename);
+}
+
 export function appendCodeEnvFile(
   form: FormData,
   stream: NodeJS.ReadableStream,

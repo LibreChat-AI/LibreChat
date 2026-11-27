@@ -1,0 +1,717 @@
+import { AppService, logger } from '@librechat/data-schemas';
+import { AuthType, PrincipalType, EModelEndpoint } from 'librechat-data-provider';
+import type { TEndpoint } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
+import type { ServerRequest } from '~/types';
+
+const mockValidateEndpointURL = jest.fn().mockResolvedValue(undefined);
+jest.mock('~/auth', () => ({
+  validateEndpointURL: (...args: unknown[]) => mockValidateEndpointURL(...args),
+}));
+
+jest.mock('~/utils', () => {
+  const original = jest.requireActual('~/utils');
+  return {
+    ...original,
+    // Inline literal — jest.mock() factory may not reference imports.
+    isUserProvided: (val: string) => val === 'user_provided',
+  };
+});
+
+import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from '../keys';
+import { createLoadConfigModels, configuredModelList } from './models';
+import { createEnvReferencePolicy } from '~/app/allowlist';
+import { mergeOverrideLayers } from '~/app/overrides';
+import { tokenConfigCache } from '~/cache';
+
+describe('createLoadConfigModels – user-provided baseURL header guard', () => {
+  const fetchModels = jest.fn().mockResolvedValue([]);
+
+  const buildAppConfig = (endpointOverrides: Record<string, unknown>) => ({
+    endpoints: {
+      [EModelEndpoint.custom]: [
+        {
+          name: 'TestProxy',
+          baseURL: AuthType.USER_PROVIDED,
+          apiKey: AuthType.USER_PROVIDED,
+          models: { fetch: true },
+          ...endpointOverrides,
+        },
+      ],
+    },
+  });
+
+  beforeEach(() => {
+    fetchModels.mockReset().mockResolvedValue([]);
+    mockValidateEndpointURL.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('does NOT forward configured headers when baseURL is user-provided', async () => {
+    const headers = {
+      Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}',
+      'X-User-Email': '{{LIBRECHAT_USER_EMAIL}}',
+    };
+
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue(buildAppConfig({ headers })),
+      getUserKeyValues: jest.fn().mockResolvedValue({
+        apiKey: 'sk-user-key',
+        baseURL: 'https://user-controlled.example.com/v1',
+      }),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1', email: 'user@example.com' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    expect(mockValidateEndpointURL).toHaveBeenCalledWith(
+      'https://user-controlled.example.com/v1',
+      'TestProxy',
+      undefined,
+    );
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'TestProxy',
+        baseURL: 'https://user-controlled.example.com/v1',
+        baseURLIsUserProvided: true,
+        headers: undefined,
+      }),
+    );
+  });
+
+  it('uses the user API key when baseURL is user-provided', async () => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue(
+        buildAppConfig({
+          apiKey: 'sk-system-key',
+        }),
+      ),
+      getUserKeyValues: jest.fn().mockResolvedValue({
+        apiKey: 'sk-user-key',
+        baseURL: 'https://user-controlled.example.com/v1',
+      }),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1', email: 'user@example.com' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'TestProxy',
+        apiKey: 'sk-user-key',
+        baseURL: 'https://user-controlled.example.com/v1',
+      }),
+    );
+    expect(fetchModels).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'sk-system-key',
+      }),
+    );
+  });
+
+  it('does NOT call fetchModels when user-provided baseURL validation fails', async () => {
+    mockValidateEndpointURL.mockRejectedValueOnce(new Error('blocked SSRF target'));
+
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue(buildAppConfig({})),
+      getUserKeyValues: jest.fn().mockResolvedValue({
+        apiKey: 'sk-user-key',
+        baseURL: 'http://127.0.0.1:11434/v1',
+      }),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    const modelsConfig = await loadConfigModels(req);
+
+    expect(fetchModels).not.toHaveBeenCalled();
+    expect(modelsConfig.TestProxy).toEqual([]);
+  });
+
+  it('DOES forward configured headers when baseURL is admin-trusted (only apiKey is user-provided)', async () => {
+    const headers = {
+      Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}',
+    };
+
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          [EModelEndpoint.custom]: [
+            {
+              name: 'TrustedProxy',
+              baseURL: 'https://admin-trusted.example.com/v1',
+              apiKey: AuthType.USER_PROVIDED,
+              models: { fetch: true },
+              headers,
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn().mockResolvedValue({
+        apiKey: 'sk-user-key',
+        baseURL: undefined,
+      }),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'TrustedProxy',
+        baseURL: 'https://admin-trusted.example.com/v1',
+        baseURLIsUserProvided: false,
+        headers,
+      }),
+    );
+  });
+
+  it('tenant-scopes the fetched token config cache key for system-defined endpoints', async () => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue(
+        buildAppConfig({
+          baseURL: 'https://admin-trusted.example.com/v1',
+          apiKey: 'sk-system-key',
+        }),
+      ),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1', tenantId: 'tenant-a' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    const tokenKey = fetchModels.mock.calls[0][0].tokenKey;
+    expect(fetchModels.mock.calls[0][0].name).toBe('TestProxy');
+    expect(tokenKey.startsWith(SCOPED_TOKEN_CONFIG_KEY_PREFIX)).toBe(true);
+    expect(tokenKey).not.toBe('tenant:tenant-a:TestProxy');
+    expect(tokenKey).not.toContain('tenant-a');
+    expect(tokenKey).not.toContain('TestProxy');
+  });
+});
+
+describe('createLoadConfigModels – in-request fetch coalescing', () => {
+  const fetchModels = jest.fn().mockResolvedValue([]);
+
+  beforeEach(() => {
+    fetchModels.mockReset().mockResolvedValue([]);
+  });
+
+  it('does NOT coalesce two endpoints with the same baseURL+apiKey but different headers', async () => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          [EModelEndpoint.custom]: [
+            {
+              name: 'TenantA',
+              baseURL: 'https://shared-proxy.example.com/v1',
+              apiKey: 'sk-shared',
+              models: { fetch: true },
+              headers: { 'X-Tenant': 'a' },
+            },
+            {
+              name: 'TenantB',
+              baseURL: 'https://shared-proxy.example.com/v1',
+              apiKey: 'sk-shared',
+              models: { fetch: true },
+              headers: { 'X-Tenant': 'b' },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    expect(fetchModels).toHaveBeenCalledTimes(2);
+    const headersByName = new Map<string, Record<string, string> | undefined>();
+    for (const call of fetchModels.mock.calls) {
+      headersByName.set(call[0].name, call[0].headers);
+    }
+    expect(headersByName.get('TenantA')).toEqual({ 'X-Tenant': 'a' });
+    expect(headersByName.get('TenantB')).toEqual({ 'X-Tenant': 'b' });
+  });
+
+  it.each([
+    [
+      'different keys',
+      'https://provider.example/v1',
+      'key-a',
+      'https://provider.example/v1',
+      'key-b',
+    ],
+    [
+      'delimiter collisions',
+      'https://provider.example/v1__a',
+      'b',
+      'https://provider.example/v1',
+      'a__b',
+    ],
+  ])('keeps fetches separate for %s', async (_case, firstURL, firstKey, secondURL, secondKey) => {
+    const load = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            { name: 'First', baseURL: firstURL, apiKey: firstKey, models: { fetch: true } },
+            { name: 'Second', baseURL: secondURL, apiKey: secondKey, models: { fetch: true } },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+
+    await load({ user: { id: 'user-1' } } as ServerRequest);
+
+    expect(fetchModels).toHaveBeenCalledTimes(2);
+  });
+
+  it('still coalesces two endpoints that share baseURL+apiKey AND identical headers', async () => {
+    const sharedHeaders = { Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}' };
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          [EModelEndpoint.custom]: [
+            {
+              name: 'AliasOne',
+              baseURL: 'https://shared-proxy.example.com/v1',
+              apiKey: 'sk-shared',
+              models: { fetch: true },
+              headers: sharedHeaders,
+            },
+            {
+              name: 'AliasTwo',
+              baseURL: 'https://shared-proxy.example.com/v1',
+              apiKey: 'sk-shared',
+              models: { fetch: true },
+              headers: sharedHeaders,
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    // Same baseURL + apiKey + headers → one fetch shared across both endpoints.
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createLoadConfigModels � configured model lists for built-in endpoints', () => {
+  const load = (endpoints: Record<string, unknown>, config?: Record<string, unknown>) =>
+    createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({ endpoints }),
+      getUserKeyValues: jest.fn(),
+      fetchModels: jest.fn(),
+    })({ user: { id: 'user-1' }, config } as unknown as ServerRequest);
+
+  it.each([
+    EModelEndpoint.openAI,
+    EModelEndpoint.google,
+    EModelEndpoint.anthropic,
+    EModelEndpoint.bedrock,
+  ])('serves the %s list from config in place of its environment list', async (endpoint) => {
+    const models = await load({ [endpoint]: { models: ['model-a', 'model-b'] } });
+    expect(models[endpoint]).toEqual(['model-a', 'model-b']);
+  });
+
+  it('reads the per-request config, so principal overrides narrow the list', async () => {
+    const models = await load(
+      { [EModelEndpoint.anthropic]: { models: ['base-a', 'base-b'] } },
+      { endpoints: { [EModelEndpoint.anthropic]: { models: ['narrowed'] } } },
+    );
+    expect(models[EModelEndpoint.anthropic]).toEqual(['narrowed']);
+  });
+
+  it('leaves endpoints without a configured list to their environment defaults', async () => {
+    const models = await load({ [EModelEndpoint.openAI]: { streamRate: 25 } });
+    expect(models).not.toHaveProperty(EModelEndpoint.openAI);
+    expect(models).not.toHaveProperty(EModelEndpoint.anthropic);
+  });
+
+  it('keeps an explicitly empty list and drops non-string entries', async () => {
+    const models = await load({
+      [EModelEndpoint.google]: { models: [] },
+      [EModelEndpoint.bedrock]: { models: ['ok', 42, null] },
+    });
+    expect(models[EModelEndpoint.google]).toEqual([]);
+    expect(models[EModelEndpoint.bedrock]).toEqual(['ok']);
+  });
+});
+
+describe('createLoadConfigModels – safe failure logging', () => {
+  const apiKey = 'sk-CANARY-not-a-real-key-7f3a';
+  const baseURL = 'https://provider.example.com/v1?token=url-secret';
+  const headers = { Authorization: 'Bearer header-secret' };
+  const failure = Object.assign(new Error(`Request failed: ${apiKey} ${baseURL}`), {
+    status: 503,
+    config: { headers },
+    response: { data: apiKey, headers },
+  });
+
+  it.each([failure, apiKey])(
+    'logs only endpoint names and safe metadata for rejected fetches',
+    async (reason) => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation();
+      const fetchModels = jest.fn().mockRejectedValue(reason);
+      const load = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: ['First', 'Second'].map((name) => ({
+              name,
+              apiKey,
+              baseURL,
+              headers,
+              models: { fetch: true, default: [`${name}-fallback`] },
+            })),
+          },
+        }),
+        getUserKeyValues: jest.fn(),
+        fetchModels,
+      });
+
+      await expect(load({ user: { id: 'user-1' } } as ServerRequest)).resolves.toEqual({
+        First: ['First-fallback'],
+        Second: ['Second-fallback'],
+      });
+      expect(fetchModels).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[loadConfigModels] Model fetch failed for "First", "Second":',
+        reason instanceof Error ? { type: 'Error', status: 503 } : { type: 'UnknownError' },
+      );
+      const logged = JSON.stringify(warn.mock.calls);
+      for (const secret of [apiKey, baseURL, headers.Authorization]) {
+        expect(logged).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each(['get', 'set'] as const)(
+    'retains fetched models after a shared token-cache %s failure',
+    async (operation) => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation();
+      const cache = tokenConfigCache();
+      if (operation === 'set') {
+        await cache.set('First', { model: { context: 1024 } });
+      }
+      jest.spyOn(cache, operation).mockRejectedValue(failure);
+      const load = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: ['First', 'Second'].map((name) => ({
+              name,
+              apiKey,
+              baseURL,
+              models: { fetch: true },
+            })),
+          },
+        }),
+        getUserKeyValues: jest.fn(),
+        fetchModels: jest.fn().mockResolvedValue(['discovered-model']),
+      });
+
+      await expect(load({ user: { id: 'user-1' } } as ServerRequest)).resolves.toEqual({
+        First: ['discovered-model'],
+        Second: ['discovered-model'],
+      });
+      expect(warn).toHaveBeenCalledWith(
+        '[loadConfigModels] Failed to share token config for "First", "Second":',
+        { type: 'Error', status: 503 },
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(apiKey);
+    },
+  );
+
+  it('does not log raw user credential lookup errors', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation();
+    const load = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            {
+              name: 'UserEndpoint',
+              apiKey: AuthType.USER_PROVIDED,
+              baseURL,
+              models: { fetch: true },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn().mockRejectedValue(failure),
+      fetchModels: jest.fn(),
+    });
+
+    await expect(load({ user: { id: 'user-1' } } as ServerRequest)).resolves.toEqual({
+      UserEndpoint: [],
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[loadConfigModels] Failed to retrieve user key for "UserEndpoint":',
+      { type: 'Error', status: 503 },
+    );
+  });
+});
+
+describe('configuredModelList', () => {
+  it('returns string entries of a configured list and undefined otherwise', () => {
+    const appConfig = {
+      endpoints: {
+        [EModelEndpoint.openAI]: { models: ['a', 7, 'b'] },
+        [EModelEndpoint.google]: { streamRate: 25 },
+      },
+    } as unknown as Parameters<typeof configuredModelList>[0];
+    expect(configuredModelList(appConfig, EModelEndpoint.openAI)).toEqual(['a', 'b']);
+    expect(configuredModelList(appConfig, EModelEndpoint.google)).toBeUndefined();
+    expect(configuredModelList(undefined, EModelEndpoint.anthropic)).toBeUndefined();
+  });
+});
+
+describe('createLoadConfigModels – Azure and Vertex models a profile merges', () => {
+  const east = {
+    group: 'east',
+    apiKey: 'east-key',
+    instanceName: 'east',
+    version: '2024-10-21',
+    deploymentName: 'gpt-4o',
+    assistants: true,
+    models: { 'gpt-4o': true },
+  };
+  const load = (config: AppConfig) =>
+    createLoadConfigModels({
+      getAppConfig: jest.fn(),
+      getUserKeyValues: jest.fn(),
+      fetchModels: jest.fn(),
+    })({ user: { id: 'user-1' }, config } as unknown as ServerRequest);
+
+  it("serves librechat.yaml's Azure models with those a profile's group adds, with re-derivation on", async () => {
+    const yaml = { endpoints: { azureOpenAI: { assistants: true, groups: [east] } } };
+    const base = await AppService({ config: structuredClone(yaml) });
+    const merge = (rederiveEndpoints: boolean) =>
+      mergeOverrideLayers(
+        base,
+        [
+          {
+            principalType: PrincipalType.ROLE,
+            principalId: 'USER',
+            priority: 10,
+            overrides: {
+              endpoints: {
+                azureOpenAI: {
+                  groups: [
+                    { group: 'east', models: { 'gpt-4o-mini': { deploymentName: 'mini' } } },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+        { envPolicy: createEnvReferencePolicy({ config: yaml }), rederiveEndpoints },
+      );
+
+    const models = await load(merge(true));
+    const inert = await load(merge(false));
+    expect(models[EModelEndpoint.azureOpenAI]).toEqual(['gpt-4o', 'gpt-4o-mini']);
+    expect(models[EModelEndpoint.azureAssistants]).toEqual(['gpt-4o', 'gpt-4o-mini']);
+    expect(inert[EModelEndpoint.azureOpenAI]).toEqual(['gpt-4o']);
+    expect(inert[EModelEndpoint.azureAssistants]).toEqual(['gpt-4o']);
+  });
+
+  it('serves the Vertex AI models a profile writes, with re-derivation on', async () => {
+    const yaml = {
+      endpoints: { anthropic: { vertex: { region: 'global', models: ['claude-sonnet-4-6'] } } },
+    };
+    const base = await AppService({ config: structuredClone(yaml) });
+    const merged = mergeOverrideLayers(
+      base,
+      [
+        {
+          principalType: PrincipalType.ROLE,
+          principalId: 'USER',
+          priority: 10,
+          overrides: { endpoints: { anthropic: { vertex: { models: ['claude-opus-4-8'] } } } },
+        },
+      ],
+      { envPolicy: createEnvReferencePolicy({ config: yaml }), rederiveEndpoints: true },
+    );
+
+    expect((await load(base))[EModelEndpoint.anthropic]).toEqual(['claude-sonnet-4-6']);
+    expect((await load(merged))[EModelEndpoint.anthropic]).toEqual(['claude-opus-4-8']);
+  });
+});
+
+describe('createLoadConfigModels – scoped discovery', () => {
+  const endpoint = (name: string, overrides: Partial<TEndpoint> = {}) => ({
+    name,
+    apiKey: 'admin-key',
+    baseURL: 'https://trusted.example/v1',
+    models: { fetch: true, default: ['fallback'] },
+    ...overrides,
+  });
+  const request = (custom: ReturnType<typeof endpoint>[], endpoints = {}) =>
+    ({
+      user: { id: 'user-1', tenantId: 'tenant-a' },
+      config: { endpoints: { custom, ...endpoints } },
+    }) as unknown as ServerRequest;
+
+  beforeEach(() => {
+    mockValidateEndpointURL.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('does no discovery or credential I/O for unrelated endpoints', async () => {
+    const fetchModels = jest.fn().mockResolvedValue(['selected']);
+    const getUserKeyValues = jest.fn();
+    const req = request([
+      endpoint('Selected'),
+      endpoint('Unrelated', { apiKey: AuthType.USER_PROVIDED }),
+      endpoint('OtherProvider', { baseURL: 'https://other.example/v1' }),
+    ]);
+    const load = createLoadConfigModels({ getAppConfig: jest.fn(), getUserKeyValues, fetchModels });
+    await expect(load(req, 'Selected')).resolves.toEqual({ Selected: ['selected'] });
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    expect(fetchModels).toHaveBeenCalledWith(expect.objectContaining({ name: 'Selected' }));
+    expect(getUserKeyValues).not.toHaveBeenCalled();
+  });
+
+  it('reads only the selected user key and retains the user URL header guard', async () => {
+    const fetchModels = jest.fn().mockResolvedValue(['selected']);
+    const getUserKeyValues = jest
+      .fn()
+      .mockResolvedValue({ apiKey: 'user-key', baseURL: 'https://user.example/v1' });
+    const headers = { Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}' };
+    const req = request([
+      endpoint('Selected', {
+        apiKey: AuthType.USER_PROVIDED,
+        baseURL: AuthType.USER_PROVIDED,
+        headers,
+      }),
+      endpoint('Unrelated', { apiKey: AuthType.USER_PROVIDED }),
+    ]);
+    const load = createLoadConfigModels({ getAppConfig: jest.fn(), getUserKeyValues, fetchModels });
+    await expect(load(req, 'Selected')).resolves.toEqual({ Selected: ['selected'] });
+    expect(getUserKeyValues).toHaveBeenCalledTimes(1);
+    expect(getUserKeyValues).toHaveBeenCalledWith({ userId: 'user-1', name: 'Selected' });
+    expect(mockValidateEndpointURL).toHaveBeenCalledWith(
+      'https://user.example/v1',
+      'Selected',
+      undefined,
+    );
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Selected',
+        userObject: req.user,
+        headers: undefined,
+        apiKey: 'user-key',
+        skipCache: true,
+        baseURLIsUserProvided: true,
+      }),
+    );
+    expect(fetchModels.mock.calls[0][0].tokenKey).toMatch(
+      new RegExp(`^${SCOPED_TOKEN_CONFIG_KEY_PREFIX}`),
+    );
+  });
+
+  it('matches the last served definition of a normalized endpoint name', async () => {
+    const fetchModels = jest.fn().mockResolvedValue(['selected']);
+    const load = createLoadConfigModels({
+      getAppConfig: jest.fn(),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+    await expect(
+      load(
+        request([
+          endpoint('Ollama', { baseURL: 'https://old.example/v1' }),
+          endpoint('OLLAMA', { baseURL: 'https://current.example/v1' }),
+        ]),
+        'ollama',
+      ),
+    ).resolves.toEqual({ ollama: ['selected'] });
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({ baseURL: 'https://current.example/v1', name: 'ollama' }),
+    );
+  });
+
+  it('returns only the selected built-in override without custom discovery', async () => {
+    const fetchModels = jest.fn();
+    const getUserKeyValues = jest.fn();
+    const load = createLoadConfigModels({ getAppConfig: jest.fn(), getUserKeyValues, fetchModels });
+    const req = request([endpoint('Unrelated', { apiKey: AuthType.USER_PROVIDED })], {
+      openAI: { models: ['configured'] },
+      google: { models: ['gemini'] },
+      azureOpenAI: {
+        modelNames: ['deployment'],
+        assistants: true,
+        assistantModels: ['assistant-deployment'],
+      },
+    });
+    await expect(load(req, 'openAI')).resolves.toEqual({ openAI: ['configured'] });
+    await expect(load(req, 'azureAssistants')).resolves.toEqual({
+      azureAssistants: ['assistant-deployment'],
+    });
+    expect(fetchModels).not.toHaveBeenCalled();
+    expect(getUserKeyValues).not.toHaveBeenCalled();
+  });
+
+  it('uses configured defaults on a selected discovery failure', async () => {
+    const load = createLoadConfigModels({
+      getAppConfig: jest.fn(),
+      getUserKeyValues: jest.fn(),
+      fetchModels: jest.fn().mockRejectedValue(new Error('unavailable')),
+    });
+    await expect(load(request([endpoint('Selected')]), 'Selected')).resolves.toEqual({
+      Selected: ['fallback'],
+    });
+  });
+
+  it('does not fall back to the aggregate for an unknown or differently cased name', async () => {
+    const fetchModels = jest.fn();
+    const getUserKeyValues = jest.fn();
+    const load = createLoadConfigModels({ getAppConfig: jest.fn(), getUserKeyValues, fetchModels });
+    await expect(load(request([endpoint('Selected')]), 'selected')).resolves.toEqual({});
+    expect(fetchModels).not.toHaveBeenCalled();
+    expect(getUserKeyValues).not.toHaveBeenCalled();
+  });
+});

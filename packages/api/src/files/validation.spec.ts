@@ -1,6 +1,12 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes } from 'librechat-data-provider';
-import { validatePdf, validateBedrockDocument, validateVideo, validateAudio } from './validation';
+import {
+  validatePdf,
+  validateVideo,
+  validateAudio,
+  validateBedrockDocument,
+  getBedrockDocumentLimit,
+} from './validation';
 
 describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
   /** Helper to create a PDF buffer with valid header */
@@ -239,6 +245,72 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
       expect(result.error).toBeUndefined();
     });
 
+    it.each([
+      'anthropic.claude-opus-5',
+      'global.anthropic.claude-opus-5',
+      'us.anthropic.claude-opus-5',
+      'global.anthropic.claude-sonnet-5',
+      'global.anthropic.claude-fable-5',
+    ])('should exempt undated Claude 4+ ID %s from the 4.5MB limit', async (model) => {
+      /** These IDs end at the major version, so a pattern requiring a trailing
+       * `-` after it silently dropped the exemption. */
+      const pdfBuffer = createMockPdfBuffer(10);
+      const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, undefined, model);
+
+      expect(result.isValid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it.each([
+      'global.anthropic.claude-opus-4-8',
+      'global.anthropic.claude-opus-4-7',
+      'global.anthropic.claude-sonnet-4-6',
+      'global.anthropic.claude-opus-4-6-v1',
+    ])('should exempt global inference profile ID %s', async (model) => {
+      const pdfBuffer = createMockPdfBuffer(10);
+      const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, undefined, model);
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it.each(['claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-fable-5'])(
+      'should exempt bare application inference profile ID %s',
+      async (model) => {
+        /** A LibreChat model ID mapping to an application inference profile has
+         * no `anthropic.` segment. */
+        const pdfBuffer = createMockPdfBuffer(10);
+        const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, undefined, model);
+
+        expect(result.isValid).toBe(true);
+        expect(result.error).toBeUndefined();
+      },
+    );
+
+    it.each(['claude-4-6-opus', 'claude-5-sonnet', 'anthropic.claude-4-6-opus'])(
+      'should exempt version-first ID %s',
+      async (model) => {
+        const pdfBuffer = createMockPdfBuffer(10);
+        const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, undefined, model);
+
+        expect(result.isValid).toBe(true);
+      },
+    );
+
+    it.each([
+      'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'anthropic.claude-3-opus-20240229-v1:0',
+      'claude-3-5-sonnet',
+      'claude-3-opus',
+      'mistral.mistral-large-2402-v1:0',
+    ])('should NOT exempt pre-Claude-4 or non-Claude model %s', async (model) => {
+      /** The relaxed prefix must not pull in Claude 3.x or other providers. */
+      const pdfBuffer = createMockPdfBuffer(10);
+      const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider, undefined, model);
+
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('4.5MB');
+    });
+
     it('should still enforce 4.5MB for non-exempt models without config override', async () => {
       const pdfBuffer = createMockPdfBuffer(5);
       const model = 'anthropic.claude-3-5-sonnet-20241022-v2:0';
@@ -311,6 +383,21 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
 
       expect(result.isValid).toBe(true);
       expect(result.error).toBeUndefined();
+    });
+  });
+
+  describe('getBedrockDocumentLimit', () => {
+    const claude4 = 'anthropic.claude-sonnet-4-20250514-v1:0';
+
+    it('is 4.5MB by default and 32MB for a type the model exempts', () => {
+      expect(getBedrockDocumentLimit('text/csv')).toBe(mbToBytes(4.5));
+      expect(getBedrockDocumentLimit('application/pdf', undefined, claude4)).toBe(mbToBytes(32));
+      expect(getBedrockDocumentLimit('text/csv', undefined, claude4)).toBe(mbToBytes(4.5));
+    });
+
+    it('gives way to a limit the operator set, lower or higher', () => {
+      expect(getBedrockDocumentLimit('text/csv', mbToBytes(2))).toBe(mbToBytes(2));
+      expect(getBedrockDocumentLimit('text/csv', mbToBytes(10))).toBe(mbToBytes(10));
     });
   });
 

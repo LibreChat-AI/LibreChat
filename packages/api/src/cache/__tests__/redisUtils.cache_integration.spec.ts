@@ -1,4 +1,5 @@
 import { batchDeleteKeys, scanKeys } from '../redisUtils';
+import { closeRedisClients } from './redisClients.helper';
 
 describe('redisUtils Integration Tests', () => {
   let keyvRedisClient: Awaited<typeof import('../redisClients')>['keyvRedisClient'];
@@ -32,8 +33,8 @@ describe('redisUtils Integration Tests', () => {
       const keysToDelete: string[] = [];
 
       // Collect all keys first
-      for await (const key of keyvRedisClient.scanIterator({ MATCH: pattern })) {
-        keysToDelete.push(key);
+      for await (const page of keyvRedisClient.scanIterator({ MATCH: pattern })) {
+        keysToDelete.push(...page);
       }
 
       // Delete in parallel for cluster mode efficiency
@@ -44,8 +45,8 @@ describe('redisUtils Integration Tests', () => {
   });
 
   afterAll(async () => {
-    // Close Redis connection
-    if (keyvRedisClient?.isOpen) await keyvRedisClient.disconnect();
+    // Close both Redis clients created by the module import
+    await closeRedisClients();
   });
 
   describe('batchDeleteKeys', () => {

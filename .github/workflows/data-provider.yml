@@ -14,34 +14,70 @@ on:
         default: 'Manual publish requested'
 
 permissions:
-  id-token: write  # Required for OIDC trusted publishing
   contents: read
 
 jobs:
-  build:
+  pack:
     runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: '24.22.3'
       - run: cd packages/data-provider && npm ci
       - run: cd packages/data-provider && npm run build
+      - name: Check version change
+        id: check
+        working-directory: packages/data-provider
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if npm view "librechat-data-provider@$PACKAGE_VERSION" version 2>/dev/null | grep -q .; then
+            echo "Version $PACKAGE_VERSION is already published, skipping publish"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version $PACKAGE_VERSION is unpublished, proceeding with publish"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Pack package
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          mkdir -p npm-package
+          cd packages/data-provider
+          npm pack --pack-destination "$GITHUB_WORKSPACE/npm-package"
+      - name: Upload package
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: librechat-data-provider-package
+          path: npm-package/*.tgz
+          if-no-files-found: error
+          retention-days: 2
 
   publish-npm:
-    needs: build
+    needs: pack
+    if: github.ref == 'refs/heads/main' && needs.pack.outputs.skip != 'true'
     runs-on: ubuntu-latest
     environment: publish  # Must match npm trusted publisher config
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC trusted publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: '24.22.3'
           registry-url: 'https://registry.npmjs.org'
-      
-      - name: Update npm for OIDC support
-        run: npm install -g npm@latest  # Must be 11.5.1+ for provenance
-      
-      - run: cd packages/data-provider && npm ci
-      - run: cd packages/data-provider && npm run build
-      - run: cd packages/data-provider && npm publish --provenance
+
+      - name: Install npm with OIDC support
+        run: npm install -g npm@11.14.1 --ignore-scripts
+
+      - name: Download package
+        uses: actions/download-artifact@v7
+        with:
+          name: librechat-data-provider-package
+          path: npm-package
+
+      - name: Publish package
+        working-directory: npm-package
+        run: npm publish *.tgz --provenance

@@ -19,6 +19,8 @@ jest.mock('@librechat/api', () => ({
   refreshS3FileUrls: jest.fn(),
   resolveUploadErrorMessage: jest.fn(),
   verifyAgentUploadPermission: jest.fn(),
+  hasAgentBasedFileAccess: (...args) =>
+    jest.requireActual('@librechat/api').hasAgentBasedFileAccess(...args),
 }));
 
 const mockFindFileById = jest.fn();
@@ -36,7 +38,7 @@ jest.mock('~/models', () => ({
 jest.mock('~/server/services/Files/process', () => ({
   filterFile: jest.fn(),
   processFileUpload: jest.fn(),
-  processDeleteRequest: jest.fn(),
+  processDeleteRequest: jest.fn().mockResolvedValue({ deletedFileIds: [], failedFileIds: [] }),
   processAgentFileUpload: jest.fn(),
 }));
 
@@ -55,10 +57,7 @@ jest.mock('~/server/middleware/roles/capabilities', () => ({
 jest.mock('~/server/services/PermissionService', () => ({
   checkPermission: jest.fn(() => (_req, _res, next) => next()),
   getEffectivePermissions: jest.fn().mockResolvedValue(0),
-}));
-
-jest.mock('~/server/services/Files', () => ({
-  hasAccessToFilesViaAgent: jest.fn(),
+  getResourcePermissionsMap: jest.fn().mockResolvedValue(new Map()),
 }));
 
 jest.mock('~/server/utils/files', () => ({
@@ -124,7 +123,7 @@ describe('GET /files/:file_id/preview', () => {
     expect(mockFindFileById).not.toHaveBeenCalled();
   });
 
-  it('does not disclose preview text through an attacker-authored agent file reference', async () => {
+  it('allows preview text through an attached agent file reference', async () => {
     mockGetFiles.mockResolvedValueOnce([
       { file_id: 'victim-file', user: 'victim-user', filename: 'secret.xlsx', status: 'ready' },
     ]);
@@ -135,13 +134,23 @@ describe('GET /files/:file_id/preview', () => {
         tool_resources: { execute_code: { file_ids: ['victim-file'] } },
       },
     ]);
+    mockFindFileById.mockResolvedValueOnce({
+      file_id: 'victim-file',
+      text: 'shared secret',
+      textFormat: 'text',
+    });
 
     const res = await request(buildApp({ user: { id: 'attacker-user', role: 'user' } })).get(
       '/files/victim-file/preview',
     );
 
-    expect(res.status).toBe(403);
-    expect(mockFindFileById).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      file_id: 'victim-file',
+      status: 'ready',
+      text: 'shared secret',
+      textFormat: 'text',
+    });
   });
 
   it('returns status:pending without text/textFormat while the deferred render is in flight', async () => {

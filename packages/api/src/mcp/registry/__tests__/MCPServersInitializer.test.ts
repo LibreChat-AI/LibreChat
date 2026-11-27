@@ -1,12 +1,12 @@
 import { logger } from '@librechat/data-schemas';
-import * as t from '~/mcp/types';
-import { isLeader } from '~/cluster';
 import { registryStatusCache } from '~/mcp/registry/cache/RegistryStatusCache';
 import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCPConnection } from '~/mcp/connection';
+import { isLeader } from '~/cluster';
+import * as t from '~/mcp/types';
 
 const FIXED_TIME = 1699564800000;
 const originalDateNow = Date.now;
@@ -29,6 +29,7 @@ jest.mock('@librechat/data-schemas', () => ({
     error: jest.fn(),
     debug: jest.fn(),
   },
+  scopedCacheKey: (baseKey: string) => baseKey,
 }));
 
 // Mock ServerConfigsDB to avoid mongoose dependency
@@ -367,35 +368,35 @@ describe('MCPServersInitializer', () => {
       expect(mockInspect).toHaveBeenCalledTimes(5);
       expect(mockInspect).toHaveBeenCalledWith(
         'disabled_server',
-        testConfigs.disabled_server,
+        { ...testConfigs.disabled_server, source: 'yaml' },
         undefined,
         undefined,
         undefined,
       );
       expect(mockInspect).toHaveBeenCalledWith(
         'oauth_server',
-        testConfigs.oauth_server,
+        { ...testConfigs.oauth_server, source: 'yaml' },
         undefined,
         undefined,
         undefined,
       );
       expect(mockInspect).toHaveBeenCalledWith(
         'file_tools_server',
-        testConfigs.file_tools_server,
+        { ...testConfigs.file_tools_server, source: 'yaml' },
         undefined,
         undefined,
         undefined,
       );
       expect(mockInspect).toHaveBeenCalledWith(
         'search_tools_server',
-        testConfigs.search_tools_server,
+        { ...testConfigs.search_tools_server, source: 'yaml' },
         undefined,
         undefined,
         undefined,
       );
       expect(mockInspect).toHaveBeenCalledWith(
         'remote_no_oauth_server',
-        testConfigs.remote_no_oauth_server,
+        { ...testConfigs.remote_no_oauth_server, source: 'yaml' },
         undefined,
         undefined,
         undefined,
@@ -530,6 +531,68 @@ describe('MCPServersInitializer', () => {
       // Third call - still skips
       await MCPServersInitializer.initialize(testConfigs);
       expect(mockInspect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('librechat.yaml snapshot', () => {
+    it('records which servers a principal can hide before inspecting them', async () => {
+      await MCPServersInitializer.initialize(testConfigs);
+
+      expect([...registry.getHiddenServerNames({})].sort()).toEqual([
+        'oauth_server',
+        'remote_no_oauth_server',
+      ]);
+    });
+
+    it('records the snapshot on a follower that reuses the shared YAML cache', async () => {
+      await MCPServersInitializer.initialize(testConfigs);
+      (MCPServersRegistry as unknown as { instance: undefined }).instance = undefined;
+      const follower = MCPServersRegistry.createInstance(mockMongoose);
+      jest.clearAllMocks();
+
+      await MCPServersInitializer.initialize(testConfigs);
+
+      expect(mockInspect).not.toHaveBeenCalled();
+      expect(follower.getHiddenServerNames({ oauth_server: testConfigs.oauth_server })).toEqual(
+        new Set(['remote_no_oauth_server']),
+      );
+    });
+  });
+
+  describe('OBO initialization without browser token reuse', () => {
+    const oboConfigs: t.MCPServers = {
+      obo_server: {
+        type: 'streamable-http',
+        url: 'https://obo.example.com/mcp',
+        obo: { scopes: 'api://obo-server/Mcp.Tools.ReadWrite' },
+      } as unknown as t.MCPOptions,
+    };
+
+    const originalReuse = process.env.OPENID_REUSE_TOKENS;
+
+    afterEach(() => {
+      if (originalReuse == null) {
+        delete process.env.OPENID_REUSE_TOKENS;
+      } else {
+        process.env.OPENID_REUSE_TOKENS = originalReuse;
+      }
+    });
+
+    it('does not declare OBO unusable because bearer-auth flows remain valid', async () => {
+      delete process.env.OPENID_REUSE_TOKENS;
+      mockInspect.mockImplementationOnce(
+        async (_n, raw) =>
+          ({
+            ...raw,
+            requiresOAuth: false,
+          }) as unknown as t.ParsedServerConfig,
+      );
+
+      await MCPServersInitializer.initialize(oboConfigs);
+
+      const warnCalls = mockLogger.warn.mock.calls.flat().join(' | ');
+      expect(warnCalls).not.toMatch(/OBO is configured/);
+      expect(await registry.getServerConfig('obo_server')).toBeDefined();
     });
   });
 });

@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function SunIcon() {
+export default function SunIcon(): JSX.Element {
   return (
     <svg
       stroke="currentColor"

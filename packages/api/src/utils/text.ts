@@ -3,6 +3,10 @@ import { logger } from '@librechat/data-schemas';
 /** Token count function that can be sync or async */
 export type TokenCountFn = (text: string) => number | Promise<number>;
 
+export function normalizeString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
 /**
  * Safety buffer multiplier applied to character position estimates during truncation.
  *
@@ -39,10 +43,12 @@ export async function processTextWithTokenLimit({
   text,
   tokenLimit,
   tokenCountFn,
+  preserve = 'start',
 }: {
   text: string;
   tokenLimit: number;
   tokenCountFn: TokenCountFn;
+  preserve?: 'start' | 'end';
 }): Promise<{ text: string; tokenCount: number; wasTruncated: boolean }> {
   const originalTokenCount = await tokenCountFn(text);
 
@@ -61,7 +67,14 @@ export async function processTextWithTokenLimit({
   const ratio = tokenLimit / originalTokenCount;
   let charPosition = Math.floor(text.length * ratio * TRUNCATION_SAFETY_BUFFER);
 
-  let truncatedText = text.substring(0, charPosition);
+  const sliceText = (position: number) => {
+    if (position <= 0) {
+      return '';
+    }
+    return preserve === 'end' ? text.slice(-position) : text.substring(0, position);
+  };
+
+  let truncatedText = sliceText(charPosition);
   let tokenCount = await tokenCountFn(truncatedText);
 
   const maxIterations = 5;
@@ -70,7 +83,7 @@ export async function processTextWithTokenLimit({
   while (tokenCount > tokenLimit && iterations < maxIterations && charPosition > 0) {
     const overageRatio = tokenLimit / tokenCount;
     charPosition = Math.floor(charPosition * overageRatio * TRUNCATION_SAFETY_BUFFER);
-    truncatedText = text.substring(0, charPosition);
+    truncatedText = sliceText(charPosition);
     tokenCount = await tokenCountFn(truncatedText);
     iterations++;
   }
@@ -84,4 +97,24 @@ export async function processTextWithTokenLimit({
     tokenCount,
     wasTruncated: true,
   };
+}
+
+/**
+ * Truncates to `maxChars` keeping head and tail around an explicit marker, so
+ * the consumer (usually a model) can tell the content was cut and by how much.
+ */
+export function truncateMiddle(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const indicator = `\n\n... [truncated: ${value.length} chars exceeded ${maxChars} limit] ...\n\n`;
+  const available = maxChars - indicator.length;
+  if (available <= 0) {
+    return value.slice(0, maxChars);
+  }
+
+  const headSize = Math.ceil(available * 0.7);
+  const tailSize = available - headSize;
+  return value.slice(0, headSize) + indicator + value.slice(value.length - tailSize);
 }

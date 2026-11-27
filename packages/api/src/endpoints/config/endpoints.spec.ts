@@ -1,16 +1,44 @@
+import { Types } from 'mongoose';
 import {
+  AuthType,
   AgentCapabilities,
   EModelEndpoint,
+  PrincipalType,
   defaultAgentCapabilities,
 } from 'librechat-data-provider';
-import { createEndpointsConfigService } from './endpoints';
-import type { AppConfig } from '@librechat/data-schemas';
+
+import type { AppConfig, IConfig } from '@librechat/data-schemas';
+import type { AppConfigServiceDeps } from '~/app/service';
 import type { EndpointsConfigDeps } from './endpoints';
 import type { ServerRequest } from '~/types';
+
+import { createEndpointsConfigService } from './endpoints';
+import { createAppConfigService } from '~/app/service';
 
 function appConfig(partial: Record<string, unknown>): AppConfig {
   return partial as unknown as AppConfig;
 }
+
+function configDoc(partial: Record<string, unknown>): IConfig {
+  return partial as unknown as IConfig;
+}
+
+function createAppConfigCache() {
+  const store = new Map<string, unknown>();
+  return {
+    get: jest.fn((key: string) => Promise.resolve(store.get(key))),
+    set: jest.fn((key: string, value: unknown) => {
+      store.set(key, value);
+      return Promise.resolve(undefined);
+    }),
+    delete: jest.fn((key: string) => {
+      store.delete(key);
+      return Promise.resolve(true);
+    }),
+  };
+}
+
+type ConfigPrincipals = NonNullable<Parameters<AppConfigServiceDeps['getApplicableConfigs']>[0]>;
 
 function createMockDeps(overrides: Partial<EndpointsConfigDeps> = {}): EndpointsConfigDeps {
   return {
@@ -23,7 +51,13 @@ function createMockDeps(overrides: Partial<EndpointsConfigDeps> = {}): Endpoints
   };
 }
 
-function fakeReq(overrides: Partial<ServerRequest> = {}): ServerRequest {
+type TestRequestOverrides = {
+  body?: Partial<ServerRequest['body']>;
+  config?: AppConfig;
+  user?: { id?: string; role?: string; tenantId?: string };
+};
+
+function fakeReq(overrides: TestRequestOverrides = {}): ServerRequest {
   return { user: { id: 'u1', role: 'USER' }, ...overrides } as ServerRequest;
 }
 
@@ -59,6 +93,60 @@ describe('createEndpointsConfigService', () => {
       expect(result?.[EModelEndpoint.azureOpenAI]).toEqual(
         expect.objectContaining({ userProvide: false }),
       );
+    });
+
+    it('serves only the declared Azure efforts, not the deployment details', async () => {
+      const deps = createMockDeps({
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.azureOpenAI]: {
+                groupMap: {
+                  first: {
+                    apiKey: 'secret',
+                    models: {
+                      'production-west': {
+                        deploymentName: 'private-deployment',
+                        reasoningEfforts: ['low', 'high'],
+                      },
+                      'production-chat': { deploymentName: 'chat-deployment' },
+                      'boolean-model': true,
+                    },
+                  },
+                  second: { models: { 'production-east': { reasoningEfforts: ['medium'] } } },
+                },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.azureOpenAI]?.modelReasoningEfforts).toEqual({
+        'production-west': ['low', 'high'],
+        'production-east': ['medium'],
+      });
+      expect(JSON.stringify(result)).not.toContain('private-deployment');
+      expect(JSON.stringify(result)).not.toContain('secret');
+    });
+
+    it('adds no Azure efforts when no deployment declares any', async () => {
+      const deps = createMockDeps({
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.azureOpenAI]: {
+                groupMap: { first: { models: { 'production-chat': true } } },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.azureOpenAI]).not.toHaveProperty('modelReasoningEfforts');
     });
 
     it('adds azureAssistants when azure has assistants config', async () => {
@@ -129,7 +217,14 @@ describe('createEndpointsConfigService', () => {
             endpoints: {
               [EModelEndpoint.agents]: {
                 allowedProviders: ['openAI', 'anthropic'],
+                sdkRuntimes: {
+                  private: {
+                    remote: { url: 'wss://private/sdk', secret: 'private-server-secret' },
+                    roles: ['ADMIN'],
+                  },
+                },
                 capabilities: [AgentCapabilities.execute_code],
+                maxSubagents: 20,
               },
             },
           }),
@@ -139,6 +234,317 @@ describe('createEndpointsConfigService', () => {
       const result = await getEndpointsConfig(fakeReq());
 
       expect(result?.[EModelEndpoint.agents]?.allowedProviders).toEqual(['openAI', 'anthropic']);
+      expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
+      expect(result?.[EModelEndpoint.agents]).not.toHaveProperty('sdkRuntimes');
+    });
+
+    it.each([true, false, undefined])(
+      'exposes only channel availability to the agent builder when enabled=%s',
+      async (enabled) => {
+        const channels =
+          enabled == null
+            ? undefined
+            : {
+                enabled,
+                leaseMs: 60_000,
+                cleanup: { batchSize: 25 },
+                nativeSessions: true,
+                lifecycleReactions: true,
+                signatureToleranceSeconds: 60,
+                socketReconnectDelayMs: 100,
+                slackApp: {
+                  enabled: true,
+                  clientSecret: 'private-slack-client-secret',
+                  signingSecret: 'private-slack-signing-secret',
+                },
+              };
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(appConfig({ endpoints: { [EModelEndpoint.agents]: { channels } } })),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]).toEqual(
+          expect.objectContaining({ channels: { enabled: enabled === true } }),
+        );
+        expect(JSON.stringify(result)).not.toContain('private-slack');
+      },
+    );
+
+    it.each([true, false])(
+      'exposes file sharing policy to the agent builder when enabled=%s',
+      async (enabled) => {
+        const fileSharing = {
+          enabled,
+          allowSiblingSharing: false,
+          maxFiles: 100,
+          ttlMs: 3_600_000,
+        };
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(
+              appConfig({ endpoints: { [EModelEndpoint.agents]: { fileSharing } } }),
+            ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]?.fileSharing).toEqual(fileSharing);
+      },
+    );
+
+    describe('linkedInstructions.langfuse.enabled', () => {
+      it('defaults to false when omitted from the agents config', async () => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(appConfig({ endpoints: { [EModelEndpoint.agents]: {} } })),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]?.linkedInstructions).toEqual({
+          langfuse: { enabled: false },
+        });
+      });
+
+      it.each([true, false])(
+        'copies the switch through as configured (enabled=%s)',
+        async (enabled) => {
+          const deps = createMockDeps({
+            loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+              [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+            }),
+            getAppConfig: jest.fn().mockResolvedValue(
+              appConfig({
+                endpoints: {
+                  [EModelEndpoint.agents]: {
+                    linkedInstructions: {
+                      timeoutMs: 5_000,
+                      native: { cacheTtlMs: 60_000 },
+                      langfuse: { enabled },
+                    },
+                  },
+                },
+              }),
+            ),
+          });
+          const { getEndpointsConfig } = createEndpointsConfigService(deps);
+          const result = await getEndpointsConfig(fakeReq());
+
+          expect(result?.[EModelEndpoint.agents]?.linkedInstructions).toEqual({
+            langfuse: { enabled },
+          });
+        },
+      );
+    });
+
+    it('exposes the deployment stateful environment allowlist', async () => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval: { enabled: false },
+                statefulCodeSessions: {
+                  allowedEnvironments: ['user', 'agent-user'],
+                  environments: [
+                    {
+                      id: 'attached-vm',
+                      name: 'Attached VM',
+                      type: 'attached',
+                      baseURL: 'https://internal-code.example.com/v1',
+                      workerId: 'private-worker-route',
+                      pairing: {
+                        workerId: 'private-worker-route',
+                        tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+                      },
+                      configSchema: {
+                        permissions: {
+                          commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
+                        },
+                      },
+                      default: true,
+                    },
+                  ],
+                },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
+        allowedEnvironments: ['user', 'agent-user'],
+        allowEnvironmentSelection: true,
+        maxEnvironmentChoices: 32,
+        approvalsEnabled: false,
+        approvalModes: [],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            default: true,
+            configSchema: {
+              permissions: {
+                commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
+              },
+            },
+          },
+        ],
+      });
+    });
+
+    it('does not expose a pairing-only control plane as an execution environment', async () => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                statefulCodeSessions: {
+                  allowedEnvironments: ['user'],
+                  environments: [
+                    {
+                      id: 'self-service',
+                      name: 'Self-service',
+                      type: 'attached',
+                      baseURL: 'https://internal-code.example.com/v1',
+                      pairing: {
+                        allowPrincipalWorkers: true,
+                        tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
+        allowedEnvironments: ['user'],
+        allowEnvironmentSelection: true,
+        maxEnvironmentChoices: 32,
+        approvalsEnabled: true,
+        approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+        environments: [],
+      });
+    });
+
+    it.each([
+      [undefined, true],
+      [true, true],
+      [false, undefined],
+    ])(
+      'advertises machine selection unless the deployment turns it off (configured: %p)',
+      async (allowEnvironmentSelection, advertised) => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: {
+                [EModelEndpoint.agents]: {
+                  statefulCodeSessions: {
+                    ...(allowEnvironmentSelection === undefined
+                      ? {}
+                      : { allowEnvironmentSelection }),
+                  },
+                },
+              },
+            }),
+          ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+        const advertisedConfig = result?.[EModelEndpoint.agents]?.statefulCodeSessions;
+        expect(advertisedConfig?.allowEnvironmentSelection).toBe(advertised);
+        expect(advertisedConfig?.maxEnvironmentChoices).toBe(advertised ? 32 : undefined);
+      },
+    );
+
+    it('does not advertise machine selection when the decision protocol is off', async () => {
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
+      try {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: { [EModelEndpoint.agents]: { statefulCodeSessions: {} } },
+            }),
+          ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+        expect(
+          result?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowEnvironmentSelection,
+        ).toBeUndefined();
+      } finally {
+        delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      }
+    });
+
+    it.each([
+      [{ enabled: true }, ['ask']],
+      [{ enabled: true, mode: 'default' }, ['ask']],
+      [{ enabled: true, mode: 'dontAsk' }, ['ask']],
+      [{ enabled: true, mode: 'bypass' }, ['ask', 'acceptEdits', 'fullAccess']],
+    ])('exposes approval modes allowed by endpoint policy %p', async (toolApproval, expected) => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval,
+                statefulCodeSessions: {
+                  allowedEnvironments: ['user'],
+                  environments: [],
+                },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions?.approvalModes).toEqual(
+        expected,
+      );
     });
 
     it('merges bedrock availableRegions', async () => {
@@ -163,6 +569,47 @@ describe('createEndpointsConfigService', () => {
       ]);
     });
 
+    it('exposes Bedrock user-provided credential options', async () => {
+      const previousEnv = {
+        BEDROCK_AWS_ACCESS_KEY_ID: process.env.BEDROCK_AWS_ACCESS_KEY_ID,
+        BEDROCK_AWS_SECRET_ACCESS_KEY: process.env.BEDROCK_AWS_SECRET_ACCESS_KEY,
+        BEDROCK_AWS_SESSION_TOKEN: process.env.BEDROCK_AWS_SESSION_TOKEN,
+        BEDROCK_AWS_BEARER_TOKEN: process.env.BEDROCK_AWS_BEARER_TOKEN,
+      };
+
+      process.env.BEDROCK_AWS_ACCESS_KEY_ID = AuthType.USER_PROVIDED;
+      process.env.BEDROCK_AWS_SECRET_ACCESS_KEY = AuthType.USER_PROVIDED;
+      process.env.BEDROCK_AWS_SESSION_TOKEN = AuthType.USER_PROVIDED;
+      process.env.BEDROCK_AWS_BEARER_TOKEN = AuthType.USER_PROVIDED;
+
+      try {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.bedrock]: { userProvide: false, order: 0 },
+          }),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.bedrock]).toEqual(
+          expect.objectContaining({
+            userProvideAccessKeyId: true,
+            userProvideSecretAccessKey: true,
+            userProvideSessionToken: true,
+            userProvideBearerToken: true,
+          }),
+        );
+      } finally {
+        Object.entries(previousEnv).forEach(([key, value]) => {
+          if (value == null) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        });
+      }
+    });
+
     it('uses req.config when available instead of calling getAppConfig', async () => {
       const mockGetAppConfig = jest.fn();
       const deps = createMockDeps({ getAppConfig: mockGetAppConfig });
@@ -171,6 +618,97 @@ describe('createEndpointsConfigService', () => {
       await getEndpointsConfig(fakeReq({ config: appConfig({ endpoints: {} }) }));
 
       expect(mockGetAppConfig).not.toHaveBeenCalled();
+    });
+
+    it('passes userId when resolving scoped endpoint config', async () => {
+      const mockGetAppConfig = jest.fn().mockResolvedValue(appConfig({ endpoints: {} }));
+      const deps = createMockDeps({ getAppConfig: mockGetAppConfig });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+      await getEndpointsConfig(fakeReq({ user: { id: 'u1', role: 'USER', tenantId: 'tenant-a' } }));
+
+      expect(mockGetAppConfig).toHaveBeenCalledWith({
+        role: 'USER',
+        userId: 'u1',
+        idOnTheSource: undefined,
+        tenantId: 'tenant-a',
+      });
+    });
+
+    /** Endpoints a grouped user gets from a group override that references `${FOO_KEY}`/`${FOO_URL}`. */
+    async function getGroupScopedEndpoints(overrideEnvAllowlist?: string) {
+      const groupId = new Types.ObjectId('6a0aea2172e2d59d4658c9d2');
+      const getUserPrincipals = jest.fn().mockResolvedValue([
+        { principalType: PrincipalType.ROLE, principalId: 'USER' },
+        { principalType: PrincipalType.USER, principalId: 'u1' },
+        { principalType: PrincipalType.GROUP, principalId: groupId },
+      ]);
+      const getApplicableConfigs = jest.fn((principals: ConfigPrincipals = []) =>
+        Promise.resolve(
+          principals.some(
+            (principal) =>
+              principal.principalType === PrincipalType.GROUP &&
+              String(principal.principalId) === groupId.toString(),
+          )
+            ? [
+                configDoc({
+                  principalType: PrincipalType.GROUP,
+                  principalId: groupId,
+                  priority: 20,
+                  isActive: true,
+                  overrides: {
+                    endpoints: {
+                      custom: [
+                        {
+                          name: 'FOO',
+                          apiKey: '${FOO_KEY}',
+                          baseURL: '${FOO_URL}',
+                          models: { default: ['foo-model'], fetch: true },
+                        },
+                      ],
+                    },
+                  },
+                }),
+              ]
+            : [],
+        ),
+      );
+      const { getAppConfig } = createAppConfigService({
+        loadBaseConfig: jest.fn().mockResolvedValue(appConfig({ endpoints: {} })),
+        setCachedTools: jest.fn().mockResolvedValue(undefined),
+        getCache: jest.fn().mockReturnValue(createAppConfigCache()),
+        cacheKeys: { APP_CONFIG: 'app_config' },
+        getApplicableConfigs,
+        getUserPrincipals,
+        overrideEnvAllowlist,
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService({
+        getAppConfig,
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({}),
+      });
+
+      const result = await getEndpointsConfig(fakeReq({ user: { id: 'u1', role: 'USER' } }));
+
+      expect(getUserPrincipals).toHaveBeenCalledWith({
+        userId: 'u1',
+        role: 'USER',
+      });
+      expect(getApplicableConfigs).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ principalType: PrincipalType.GROUP, principalId: groupId }),
+        ]),
+      );
+      return result;
+    }
+
+    it('exposes custom endpoints from group-scoped overrides for grouped users', async () => {
+      const result = await getGroupScopedEndpoints('FOO_KEY,FOO_URL');
+      expect(result?.FOO).toEqual(expect.objectContaining({ type: EModelEndpoint.custom }));
+    });
+
+    it('treats env references outside the override allowlist as missing', async () => {
+      const result = await getGroupScopedEndpoints();
+      expect(result?.FOO).toBeUndefined();
     });
   });
 

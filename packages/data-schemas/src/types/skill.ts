@@ -1,4 +1,4 @@
-import type { CodeEnvRef } from 'librechat-data-provider';
+import type { CodeEnvRef, CodeEnvRefMap } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 /**
@@ -70,18 +70,21 @@ export interface ISkill {
   version: number;
   /**
    * Provenance of this skill's canonical definition.
-   * - `inline` — authored inside LibreChat (the only value phase 1 produces).
-   * - `github` / `notion` — reserved for phase 2+ external sync. Kept in the
-   *   enum so a future sync worker can populate it without a migration.
+   * - `inline` — authored inside LibreChat.
+   * - `github` — mirrored from a configured GitHub skill sync source.
+   * - `notion` — reserved for future external sync integrations.
    */
   source: 'inline' | 'github' | 'notion';
   /**
-   * Provenance payload keyed by `source`. Phase 2+ sync workers will store
-   * upstream identifiers (commit SHA, page id, etc.) here. Unused in phase 1.
+   * Provenance payload keyed by `source`, including upstream identifiers
+   * such as GitHub source id, path, and commit/blob SHAs.
    */
   sourceMetadata?: Record<string, unknown>;
   /** Denormalized count of associated `SkillFile` rows. Kept in sync by skill methods. */
   fileCount: number;
+  deletingAt?: Date;
+  deletionNeedsJournal?: boolean;
+  deletionJournalAttemptAt?: Date;
   /**
    * When `true`, the skill is auto-primed into every turn — no user `$`
    * invocation or model discretion required. Mirrors the `always-apply` YAML
@@ -120,6 +123,7 @@ export interface ISkillFile {
   storageKey?: string;
   storageRegion?: string;
   source: string;
+  sourceMetadata?: Record<string, unknown>;
   mimeType: string;
   bytes: number;
   category: 'script' | 'reference' | 'asset' | 'other';
@@ -136,6 +140,7 @@ export interface ISkillFile {
    * when the skill file is re-uploaded to storage.
    */
   codeEnvRef?: CodeEnvRef;
+  codeEnvRefs?: CodeEnvRefMap;
   createdAt?: Date;
   updatedAt?: Date;
 }

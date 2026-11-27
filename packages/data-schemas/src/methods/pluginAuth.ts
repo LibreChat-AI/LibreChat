@@ -8,7 +8,30 @@ import type {
 } from '~/types';
 
 // Factory function that takes mongoose instance and returns the methods
-export function createPluginAuthMethods(mongoose: typeof import('mongoose')) {
+export function createPluginAuthMethods(mongoose: typeof import('mongoose')): {
+  findOnePluginAuth: ({
+    userId,
+    authField,
+    pluginKey,
+  }: FindPluginAuthParams) => Promise<IPluginAuth | null>;
+  findPluginAuthsByKeys: ({
+    userId,
+    pluginKeys,
+  }: FindPluginAuthsByKeysParams) => Promise<IPluginAuth[]>;
+  updatePluginAuth: ({
+    userId,
+    authField,
+    pluginKey,
+    value,
+  }: UpdatePluginAuthParams) => Promise<IPluginAuth>;
+  deletePluginAuth: ({
+    userId,
+    authField,
+    pluginKey,
+    all,
+  }: DeletePluginAuthParams) => Promise<DeleteResult>;
+  deleteAllUserPluginAuths: (userId: string) => Promise<DeleteResult>;
+} {
   /**
    * Finds a single plugin auth entry by userId and authField (and optionally pluginKey)
    */
@@ -66,28 +89,12 @@ export function createPluginAuthMethods(mongoose: typeof import('mongoose')) {
   }: UpdatePluginAuthParams): Promise<IPluginAuth> {
     try {
       const PluginAuth: Model<IPluginAuth> = mongoose.models.PluginAuth;
-      const existingAuth = await PluginAuth.findOne({
-        userId,
-        pluginKey,
-        authField,
-      }).lean<IPluginAuth>();
-
-      if (existingAuth) {
-        return await PluginAuth.findOneAndUpdate(
-          { userId, pluginKey, authField },
-          { $set: { value } },
-          { new: true, upsert: true },
-        ).lean<IPluginAuth>();
-      } else {
-        const newPluginAuth = await new PluginAuth({
-          userId,
-          authField,
-          value,
-          pluginKey,
-        });
-        await newPluginAuth.save();
-        return newPluginAuth.toObject();
-      }
+      /** Single atomic upsert: a find-then-save let concurrent writers insert duplicates. */
+      return await PluginAuth.findOneAndUpdate(
+        { userId, pluginKey, authField },
+        { $set: { value } },
+        { new: true, upsert: true, setDefaultsOnInsert: true },
+      ).lean<IPluginAuth>();
     } catch (error) {
       throw new Error(
         `Failed to update plugin auth: ${error instanceof Error ? error.message : 'Unknown error'}`,

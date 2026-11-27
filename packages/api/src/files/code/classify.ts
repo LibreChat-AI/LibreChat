@@ -1,6 +1,6 @@
 import { excelMimeTypes } from 'librechat-data-provider';
 
-export type CodeArtifactCategory = 'utf8-text' | 'document' | 'pptx' | 'other';
+export type CodeArtifactCategory = 'utf8-text' | 'document' | 'presentation' | 'other';
 
 const UTF8_TEXT_EXTENSIONS = new Set<string>([
   // plaintext / data
@@ -119,9 +119,10 @@ const UTF8_TEXT_MIME_EXACT = new Set<string>([
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const ODT_MIME = 'application/vnd.oasis.opendocument.text';
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const POTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.template';
 
 const DOCUMENT_EXTENSIONS = new Set<string>(['docx', 'odt', 'xlsx', 'xls', 'ods']);
-const PPTX_EXTENSIONS = new Set<string>(['pptx']);
+const PRESENTATION_EXTENSIONS = new Set<string>(['pptx', 'potx']);
 
 const extensionOf = (name: string): string => {
   const dot = name.lastIndexOf('.');
@@ -176,8 +177,8 @@ export function classifyCodeArtifact(name: string, mimeType: string): CodeArtifa
   if (ext && DOCUMENT_EXTENSIONS.has(ext)) {
     return 'document';
   }
-  if (ext && PPTX_EXTENSIONS.has(ext)) {
-    return 'pptx';
+  if (ext && PRESENTATION_EXTENSIONS.has(ext)) {
+    return 'presentation';
   }
   const bare = bareNameOf(name);
   if (bare && UTF8_TEXT_EXTENSIONS.has(bare)) {
@@ -189,8 +190,8 @@ export function classifyCodeArtifact(name: string, mimeType: string): CodeArtifa
   if (isDocumentMime(mimeType)) {
     return 'document';
   }
-  if (mimeType === PPTX_MIME) {
-    return 'pptx';
+  if (mimeType === PPTX_MIME || mimeType === POTX_MIME) {
+    return 'presentation';
   }
   return 'other';
 }

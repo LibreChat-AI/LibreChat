@@ -16,7 +16,7 @@ const AuthSchema = new Schema(
   { _id: false },
 );
 
-const Action = new Schema<IAction>({
+const Action: mongoose.Schema<IAction> = new Schema<IAction>({
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -33,8 +33,14 @@ const Action = new Schema<IAction>({
     default: 'action_prototype',
   },
   settings: Schema.Types.Mixed,
-  agent_id: String,
-  assistant_id: String,
+  agent_id: {
+    type: String,
+    index: true,
+  },
+  assistant_id: {
+    type: String,
+    index: true,
+  },
   metadata: {
     api_key: String,
     auth: AuthSchema,

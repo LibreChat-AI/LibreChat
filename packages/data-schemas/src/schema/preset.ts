@@ -28,6 +28,7 @@ export interface IPreset extends Document {
   file_ids?: string[];
   resendImages?: boolean;
   promptCache?: boolean;
+  promptCacheTtl?: '5m' | '1h';
   thinking?: boolean;
   thinkingBudget?: number;
   effort?: string;
@@ -48,9 +49,12 @@ export interface IPreset extends Document {
   max_tokens?: number;
   reasoning_effort?: string;
   reasoning_summary?: string;
+  reasoning_mode?: string;
+  reasoning_context?: string;
   verbosity?: string;
   useResponsesApi?: boolean;
   web_search?: boolean;
+  url_context?: boolean;
   disableStreaming?: boolean;
   fileTokenLimit?: number;
   tenantId?: string;

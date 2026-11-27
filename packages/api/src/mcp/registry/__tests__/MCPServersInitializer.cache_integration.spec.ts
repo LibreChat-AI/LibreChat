@@ -1,6 +1,8 @@
-import type * as t from '~/mcp/types';
-import type { MCPConnection } from '~/mcp/connection';
 import type { MCPServersRegistry as MCPServersRegistryType } from '../MCPServersRegistry';
+import type { RedisClientsModule } from '~/cache/__tests__/redisClients.helper';
+import type { MCPConnection } from '~/mcp/connection';
+import type * as t from '~/mcp/types';
+import { closeRedisClients } from '~/cache/__tests__/redisClients.helper';
 
 // Mock isLeader to always return true to avoid lock contention during parallel operations
 jest.mock('~/cluster', () => ({
@@ -28,6 +30,7 @@ describe('MCPServersInitializer Redis Integration Tests', () => {
   let MCPServerInspector: typeof import('../MCPServerInspector').MCPServerInspector;
   let MCPConnectionFactory: typeof import('~/mcp/MCPConnectionFactory').MCPConnectionFactory;
   let keyvRedisClient: Awaited<typeof import('~/cache/redisClients')>['keyvRedisClient'];
+  let redisClientsModule: RedisClientsModule;
   let LeaderElection: typeof import('~/cluster/LeaderElection').LeaderElection;
   let leaderInstance: InstanceType<typeof import('~/cluster/LeaderElection').LeaderElection>;
 
@@ -146,6 +149,7 @@ describe('MCPServersInitializer Redis Integration Tests', () => {
     MCPServerInspector = inspectorModule.MCPServerInspector;
     MCPConnectionFactory = connectionFactoryModule.MCPConnectionFactory;
     keyvRedisClient = redisClients.keyvRedisClient;
+    redisClientsModule = redisClients;
     LeaderElection = leaderElectionModule.LeaderElection;
 
     // Reset singleton and create new instance with mongoose
@@ -215,8 +219,8 @@ describe('MCPServersInitializer Redis Integration Tests', () => {
       const keysToDelete: string[] = [];
 
       // Collect all keys first
-      for await (const key of keyvRedisClient.scanIterator({ MATCH: pattern })) {
-        keysToDelete.push(key);
+      for await (const page of keyvRedisClient.scanIterator({ MATCH: pattern })) {
+        keysToDelete.push(...page);
       }
 
       // Delete in parallel for cluster mode efficiency
@@ -232,8 +236,9 @@ describe('MCPServersInitializer Redis Integration Tests', () => {
     // Resign as leader
     if (leaderInstance) await leaderInstance.resign();
 
-    // Close Redis connection
-    if (keyvRedisClient?.isOpen) await keyvRedisClient.disconnect();
+    // Close both Redis clients; pass the captured module since
+    // `jest.resetModules()` in beforeEach dropped it from the registry
+    await closeRedisClients(redisClientsModule);
   });
 
   describe('initialize()', () => {

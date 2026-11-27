@@ -1,9 +1,17 @@
+import { randomUUID } from 'crypto';
 import { unlink } from 'fs/promises';
 import { isMainThread } from 'worker_threads';
-import { tenantStorage, logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import {
+  tenantStorage,
+  getTenantId,
+  logger,
+  SYSTEM_TENANT_ID,
+  isReservedTenantId,
+} from '@librechat/data-schemas';
+import type { Response, NextFunction, RequestHandler } from 'express';
 import type { TenantContext } from '@librechat/data-schemas';
-import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
+import { buildSafeRequestLogContext } from './auth';
 
 type ContextUser = {
   tenantId?: string;
@@ -11,15 +19,23 @@ type ContextUser = {
   _id?: { toString: () => string };
 } | null;
 
-type ContextRequest = {
+export type ContextRequest = {
   headers: ServerRequest['headers'];
   tenantId?: string;
   user?: ContextUser;
   id?: string;
   requestId?: string;
+  method?: string;
+  path?: string;
+  originalUrl?: string;
+  url?: string;
+  baseUrl?: string;
+  route?: {
+    path?: string | RegExp | readonly (string | RegExp)[];
+  };
 };
 
-const REQUEST_ID_HEADERS = ['x-request-id', 'x-correlation-id'] as const;
+const SYSTEM_TENANT_REJECTION_MESSAGE = 'System tenant is not allowed for request-scoped routes';
 
 let _checkedThread = false;
 
@@ -34,27 +50,34 @@ export function _resetTenantMiddlewareStrictCache(): void {
   _strictMode = undefined;
 }
 
+export const TENANT_CONTEXT_REQUIRED = 'TENANT_CONTEXT_REQUIRED';
+
+/** Refuses user lookups before authentication when strict isolation has no request tenant. */
+export function createPreAuthTenantGuard(
+  options: { failureRedirect?: string } = {},
+): RequestHandler {
+  return (_req, res, next): void => {
+    const tenantId = getTenantId()?.trim();
+    if (!isStrict() || (tenantId && tenantId !== SYSTEM_TENANT_ID)) {
+      next();
+      return;
+    }
+    if (options.failureRedirect) {
+      res.redirect(options.failureRedirect);
+      return;
+    }
+    res.status(403).json({
+      message: 'Tenant context required in strict isolation mode',
+      code: TENANT_CONTEXT_REQUIRED,
+    });
+  };
+}
+
+export const requirePreAuthTenantContext: RequestHandler = createPreAuthTenantGuard();
+
 function normalizeContextValue(value?: string): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
-}
-
-function getHeaderValue(value: string | string[] | undefined): string | undefined {
-  return normalizeContextValue(Array.isArray(value) ? value[0] : value);
-}
-
-function getRequestId(req: ContextRequest): string | undefined {
-  const requestId = normalizeContextValue(req.requestId) ?? normalizeContextValue(req.id);
-  if (requestId) {
-    return requestId;
-  }
-  for (const header of REQUEST_ID_HEADERS) {
-    const value = getHeaderValue(req.headers[header]);
-    if (value) {
-      return value;
-    }
-  }
-  return undefined;
 }
 
 function getUserId(user: ContextUser): string | undefined {
@@ -62,18 +85,51 @@ function getUserId(user: ContextUser): string | undefined {
 }
 
 function hasTenantContext(context: TenantContext): boolean {
-  return Boolean(context.tenantId || context.userId || context.requestId);
+  return Boolean(
+    context.tenantId ||
+      context.userId ||
+      context.requestId ||
+      context.requestMethod ||
+      context.requestPath,
+  );
 }
 
 export function buildTenantContext(
   req: ContextRequest,
-  tenantId = req.tenantId ?? req.user?.tenantId,
+  tenantId: string | undefined = req.tenantId ?? req.user?.tenantId,
 ): TenantContext {
   return {
+    ...buildRequestContext(req),
     tenantId: normalizeContextValue(tenantId),
     userId: getUserId(req.user ?? null),
-    requestId: getRequestId(req),
   };
+}
+
+export function buildRequestContext(req: ContextRequest): TenantContext {
+  const requestContext = buildSafeRequestLogContext(req);
+
+  return {
+    requestId: requestContext.request_id,
+    requestMethod: requestContext.request_method,
+    requestPath: requestContext.request_path,
+  };
+}
+
+/**
+ * Establishes safe, request-level correlation before authentication. It carries
+ * no tenant or user identity, so strict tenant isolation remains fail-closed.
+ */
+export function requestContextMiddleware(
+  req: ContextRequest,
+  _res: Response,
+  next: NextFunction,
+): void {
+  const context = buildRequestContext(req);
+  if (!context.requestId) {
+    context.requestId = randomUUID();
+  }
+  req.requestId = context.requestId;
+  runWithTenantContext(context, next);
 }
 
 export function runWithTenantContext(context: TenantContext, next: NextFunction): void {
@@ -119,13 +175,24 @@ export function tenantContextMiddleware(
 
   const user = req.user;
   const context = buildTenantContext(req);
+  const { tenantId } = context;
+
+  if (tenantId === SYSTEM_TENANT_ID || isReservedTenantId(tenantId)) {
+    logger.warn('[tenantContextMiddleware] Rejected system tenant for request route', {
+      path: req.path,
+    });
+    res.status(403).json({
+      error: isReservedTenantId(tenantId)
+        ? 'Reserved tenant identifier'
+        : SYSTEM_TENANT_REJECTION_MESSAGE,
+    });
+    return;
+  }
 
   if (!user) {
     runWithTenantContext(context, next);
     return;
   }
-
-  const { tenantId } = context;
 
   if (!tenantId) {
     if (isStrict()) {
@@ -248,14 +315,16 @@ export function restoreTenantContextFromReq(
     return;
   }
 
-  if (resolvedTenantId === SYSTEM_TENANT_ID) {
+  if (resolvedTenantId === SYSTEM_TENANT_ID || isReservedTenantId(resolvedTenantId)) {
     logger.warn('[restoreTenantContextFromReq] Rejected system tenant for request route', {
       path: req.path,
     });
     return rejectRequestWithUploadCleanup(
       req,
       res,
-      'System tenant is not allowed for request-scoped routes',
+      isReservedTenantId(resolvedTenantId)
+        ? 'Reserved tenant identifier'
+        : SYSTEM_TENANT_REJECTION_MESSAGE,
     );
   }
 

@@ -7,14 +7,34 @@ import type {
   TAttachment,
   TMessage,
   TBanner,
+  ReasoningResponseKey,
+  ReasoningParameterFormat,
 } from './schemas';
-import type { RefillIntervalUnit } from './balance';
+import type {
+  CodeWorkspaceDescriptor,
+  CodeEnvironmentMode,
+  CodeWorkspaceOperation,
+  CodeWorkspaceSelection,
+} from './code/workspace';
+import type {
+  CodeEnvironmentUserConfigSchema,
+  CodeEnvironmentUserSettings,
+  TAgentsEndpoint,
+} from './config';
+import type { BalanceRefillMode, RefillIntervalUnit } from './balance';
+import type { StatefulCodeEnvironment } from './stateful-code';
+import type { CodeApprovalMode } from './code/approval';
+import type { EToolResources } from './types/tools';
 import type { SettingDefinition } from './generate';
 import type { TMinimalFeedback } from './feedback';
 import type { ContentTypes } from './types/runs';
-import type { Agent } from './types/assistants';
+import type { ProviderId } from './providers';
+import type { Agent } from './types/agents';
 
 export * from './schemas';
+export * from './types/subagents';
+export * from './types/background';
+export * from './types/pullRequest';
 
 export type TMessages = TMessage[];
 
@@ -51,6 +71,7 @@ export type TEndpointOption = Pick<
   | 'additionalModelRequestFields'
   // Anthropic-specific
   | 'promptCache'
+  | 'promptCacheTtl'
   | 'thinking'
   | 'thinkingBudget'
   | 'thinkingLevel'
@@ -69,6 +90,7 @@ export type TEndpointOption = Pick<
   | 'file_ids'
   // System field
   | 'system'
+  | 'chatProjectId'
   // Google examples
   | 'examples'
   // Context
@@ -104,12 +126,30 @@ export type TEphemeralAgent = {
   execute_code?: boolean;
   artifacts?: string;
   skills?: boolean;
+  memory?: boolean;
+  /** Equip the ephemeral agent with the `ask_user_question` HITL tool. */
+  ask_user_question?: boolean;
+  /**
+   * Let the model dispatch this ephemeral agent's eligible tool calls in the
+   * background (poll results via `check_background_task`). Requires the
+   * `run_in_background` agent capability to be enabled by the admin.
+   */
+  run_in_background?: boolean;
+  /**
+   * Inject the `intent` label param into this ephemeral agent's eligible
+   * tools so each call streams a live status label. Requires the
+   * `tool_intents` agent capability to be enabled by the admin.
+   */
+  describe_intent?: boolean;
 };
 
 export type TPayload = Partial<TMessage> &
   Partial<TEndpointOption> & {
     isContinued: boolean;
     isRegenerate?: boolean;
+    /** Manual context compaction: summarize the branch up to `parentMessageId`
+     *  and end without a reply. No user message is created. */
+    compact?: boolean;
     conversationId: string | null;
     messages?: TMessages;
     isTemporary: boolean;
@@ -124,6 +164,29 @@ export type TPayload = Partial<TMessage> &
      * before the LLM turn runs.
      */
     manualSkills?: string[];
+    /** Conversation-scoped preference for code tool approval behavior. */
+    codeApprovalMode?: CodeApprovalMode;
+    /** Immutable conversation choice for attached code execution. */
+    codeEnvironmentMode?: CodeEnvironmentMode;
+    /** Conversation-selected workspaces, with at most one binding per environment. */
+    codeWorkspaces?: CodeWorkspaceSelection[];
+    /** Browser IANA timezone (e.g. `America/New_York`) used to resolve local-time prompt variables server-side. */
+    timezone?: string;
+    /**
+     * Stable per-submission idempotency key (uuid) generated once per `ask()`. Identical
+     * across the client's start-generation network retries, unique per user action (including
+     * regenerate). The server dedups retried start requests on it so a lost/reset response
+     * cannot trigger a second billed generation.
+     */
+    clientRequestId?: string;
+    /** Parked steer source consumed only after this new turn's user message is
+     * durably saved. Separate from `clientRequestId`, which identifies one
+     * generation attempt and must rotate after a failed recovery. */
+    recoverySteerId?: string;
+    /** Optional optimistic-serialization fence for a queued follow-up. The
+     * server may create only if this observed predecessor is still current or
+     * the conversation is still idle after its cleanup. */
+    expectedPredecessorCreatedAt?: number;
   };
 
 export type TEditedContent =
@@ -144,17 +207,62 @@ export type TSubmission = {
   isContinued?: boolean;
   isTemporary: boolean;
   messages: TMessage[];
+  /** Client-only full message context used to restore branch siblings after scoped regenerate. */
+  regenerateMessages?: TMessage[];
   isRegenerate?: boolean;
+  /** Manual context compaction; shaped like a regenerate on the client (no new
+   *  user bubble) and sent to the server as a summarize-only turn. */
+  compact?: boolean;
   initialResponse?: TMessage;
   conversation: Partial<TConversation>;
   endpointOption: TEndpointOption;
   clientTimestamp?: string;
   ephemeralAgent?: TEphemeralAgent | null;
   editedContent?: TEditedContent | null;
+  /**
+   * Length of the retained content prefix for an edited resubmission, captured
+   * when the submission is built.
+   *
+   * The server indexes only NEW content, so the client offsets incoming
+   * indices by the prefix it kept. `initialResponse.content` cannot be used
+   * for that after a reconnect: the resume sync overwrites it with the
+   * server's completion-local snapshot, whose length is unrelated to the
+   * prefix. Recording the length up front keeps the offset stable across
+   * resumes for run steps and activity labels alike.
+   */
+  editPrefixLength?: number;
+  /** True once server index 0 text/reasoning actually merged into the retained tail. */
+  editPrefixFirstPartFolded?: boolean;
+  /**
+   * Set once a resume SYNC has replaced the response's retained prefix with
+   * the server's completion-local snapshot. From that point the prefix is
+   * gone from the rendered message and server indices are absolute in the
+   * new space, so {@link editPrefixLength} must NOT be applied — by run
+   * steps or by activity labels. Both event paths read this flag so a
+   * batch's tool cards and its header always land in one index space.
+   *
+   * Stamped per event by the resumable transport, which owns the SYNC
+   * boundary; the non-resumable path never sets it.
+   */
+  editPrefixCleared?: boolean;
   /** Added conversation for multi-convo feature */
   addedConvo?: TConversation;
   /** Skills the user invoked via the `$` popover for this submission. */
   manualSkills?: string[];
+  /** Conversation-scoped preference for code tool approval behavior. */
+  codeApprovalMode?: CodeApprovalMode;
+  /** Immutable conversation choice for attached code execution. */
+  codeEnvironmentMode?: CodeEnvironmentMode;
+  /** Conversation-selected workspaces, with at most one binding per environment. */
+  codeWorkspaces?: CodeWorkspaceSelection[];
+  /** Stable per-submission idempotency key (uuid) forwarded to the server to dedup retried start-generation requests. */
+  clientRequestId?: string;
+  /** Client-only carry-through for a receipt-bound queued recovery. */
+  recoverySteerId?: string;
+  expectedPredecessorCreatedAt?: number;
+  /** Opaque client-only queue restoration metadata; intentionally omitted by
+   * `createPayload`. */
+  queuedMessageOrigin?: unknown;
 };
 
 export type EventSubmission = Omit<TSubmission, 'initialResponse'> & { initialResponse: TMessage };
@@ -191,6 +299,8 @@ export type TMarketplaceCategory = TCategory & {
 export type TError = {
   message: string;
   code?: number | string;
+  file_id?: string;
+  tool_resource?: EToolResources;
   response?: {
     data?: {
       message?: string;
@@ -213,21 +323,25 @@ export type TUser = {
   avatar: string;
   role: string;
   provider: string;
+  tenantId?: string;
   plugins?: string[];
   twoFactorEnabled?: boolean;
   backupCodes?: TBackupCode[];
   personalization?: {
     memories?: boolean;
+    statefulCodeEnvironment?: StatefulCodeEnvironment;
   };
   createdAt: string;
   updatedAt: string;
 };
 
-export type TGetConversationsResponse = {
-  conversations: TConversation[];
-  pageNumber: string;
-  pageSize: string | number;
-  pages: string | number;
+export type TUpdateUserPreferencesRequest = {
+  statefulCodeEnvironment: StatefulCodeEnvironment;
+};
+
+export type TUpdateUserPreferencesResponse = {
+  updated: boolean;
+  preferences: TUpdateUserPreferencesRequest;
 };
 
 export type TUpdateMessageRequest = {
@@ -268,6 +382,8 @@ export type TAgentApiKeyListItem = {
   id: string;
   name: string;
   keyPrefix: string;
+  /** Issued to an integration, not the owner's personal key. It holds no MCP grants. */
+  bound?: boolean;
   lastUsedAt?: string;
   expiresAt?: string;
   createdAt: string;
@@ -275,6 +391,13 @@ export type TAgentApiKeyListItem = {
 
 export type TAgentApiKeyListResponse = {
   keys: TAgentApiKeyListItem[];
+  /** Runs started with a key may use only the MCP tools its owner granted it. */
+  grants?: boolean;
+};
+
+/** The agents an API key can be granted for: the ones its owner may run remotely. */
+export type TApiKeyAgentsResponse = {
+  agents: { id: string; name: string | null }[];
 };
 
 export type TUpdateConversationRequest = {
@@ -283,6 +406,59 @@ export type TUpdateConversationRequest = {
 };
 
 export type TUpdateConversationResponse = TConversation;
+
+export type TChatProject = {
+  _id: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  contextRevision?: number;
+  file_ids?: string[];
+  hasInstructions?: boolean;
+  fileCount?: number;
+  user?: string;
+  conversationCount: number;
+  lastConversationAt?: string | null;
+  lastConversationId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TCreateChatProjectRequest = {
+  name: string;
+  description?: string;
+  instructions?: string;
+};
+
+export type TUpdateChatProjectRequest = Partial<TCreateChatProjectRequest> & {
+  projectId: string;
+  /** Revision the edit was based on; a stale value is rejected with a 409 conflict. */
+  contextRevision?: number;
+};
+
+export type TChatProjectFile = {
+  file_id: string;
+  filename?: string;
+  type?: string;
+  bytes?: number;
+  availability: 'ready' | 'unavailable';
+};
+
+export type TDeleteChatProjectResponse = {
+  deletedCount: number;
+  modifiedCount: number;
+};
+
+export type TAssignConversationToProjectRequest = {
+  conversationId: string;
+  projectId: string | null;
+};
+
+export type TAssignConversationToProjectResponse = {
+  conversation: TConversation;
+  previousProjectId: string | null;
+  projectId: string | null;
+};
 
 export type TDeleteConversationRequest = {
   conversationId?: string;
@@ -307,8 +483,49 @@ export type TArchiveConversationRequest = {
 
 export type TArchiveConversationResponse = TConversation;
 
+export type TArchiveAllConversationsResponse = {
+  archivedCount: number;
+};
+
+export type TPinConversationRequest = {
+  conversationId: string;
+  pinned: boolean;
+};
+
+export type TPinConversationResponse = TConversation;
+
+export type TMarkConversationSeenRequest = {
+  conversationId: string;
+  /** The reply the client had on screen; the server acknowledges no newer one. */
+  lastResponseAt?: string;
+};
+
+export type TMarkConversationSeenResponse = {
+  modified: boolean;
+};
+
+export type TMarkConversationUnreadRequest = {
+  conversationId: string;
+};
+
+export type TMarkConversationUnreadResponse = {
+  modified: boolean;
+  /** The stamp the server settled on, so the client never has to invent its own marker. */
+  lastResponseAt?: string;
+  /** Durable messageId paired with a real reply stamp; absent for synthetic markers. */
+  lastResponseMessageId?: string;
+  /** True only when the settled stamp is the synthetic mark-unread marker. */
+  lastResponseIsManual?: boolean;
+  /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
+  isMarkedUnread?: boolean;
+};
+
 export type TSharedMessagesResponse = Omit<TSharedLink, 'messages'> & {
   messages: TMessage[];
+  langfuseSessionUrl?: string;
+  /** Whether the link was published with a configured sender label; withholds the
+   * model on hover. */
+  hasConfiguredSender?: boolean;
 };
 
 export type TCreateShareLinkRequest = Pick<TConversation, 'conversationId'>;
@@ -317,11 +534,15 @@ export type TUpdateShareLinkRequest = Pick<TSharedLink, 'shareId' | 'targetMessa
 
 export type TSharedLinkResponse = Pick<TSharedLink, 'shareId'> &
   Pick<TSharedLink, 'targetMessageId'> &
-  Pick<TConversation, 'conversationId'>;
+  Pick<TConversation, 'conversationId'> & {
+    _id?: string;
+  };
 
 export type TSharedLinkGetResponse = Omit<TSharedLinkResponse, 'shareId'> & {
   shareId: string | null;
   success: boolean;
+  /** Per-link "share files" choice; absent on legacy links (treated as enabled). */
+  snapshotFiles?: boolean;
 };
 
 // type for getting conversation tags
@@ -358,6 +579,8 @@ export type TForkConvoRequest = {
   option?: string;
   splitAtTarget?: boolean;
   latestMessageId?: string;
+  /** Copy without uploads or code outputs, and without the conversation's file list. */
+  excludeFiles?: boolean;
 };
 
 export type TForkConvoResponse = {
@@ -365,16 +588,105 @@ export type TForkConvoResponse = {
   messages: TMessage[];
 };
 
-export type TSearchResults = {
-  conversations: TConversation[];
-  messages: TMessage[];
-  pageNumber: string;
-  pageSize: string | number;
-  pages: string | number;
-  filter: object;
+export type TForkSharedConvoRequest = {
+  shareId: string;
+  /** Index of the viewer's active message within the shared payload; reduces the
+   *  fork to that branch. An index is used because shared ids are re-anonymized
+   *  per request and `createdAt` can collide, while the payload order is stable. */
+  targetMessageIndex?: number;
+  /** `updatedAt` of the shared payload being forked. The shareId survives an
+   *  owner update, so the server rejects a fork whose payload has since moved
+   *  instead of resolving the index against different messages. */
+  shareRevision?: string;
 };
 
+export type TPublicCodeEnvironment = {
+  id: string;
+  name: string;
+  type: 'managed' | 'attached';
+  default?: boolean;
+  pairingAvailable?: boolean;
+  configSchema?: CodeEnvironmentUserConfigSchema;
+  settings?: CodeEnvironmentUserSettings;
+};
+
+export type TCodeEnvironmentSummary = {
+  resourceId: string;
+  id: string;
+  name: string;
+  type: 'managed' | 'attached';
+  canEdit?: boolean;
+  canDelete: boolean;
+  configSchema?: CodeEnvironmentUserConfigSchema;
+  settings?: CodeEnvironmentUserSettings;
+};
+
+export type TCodeControlPlane = {
+  id: string;
+  name: string;
+  configSchema?: CodeEnvironmentUserConfigSchema;
+};
+
+export type TCodeEnvironmentsResponse = {
+  environments: TCodeEnvironmentSummary[];
+  controlPlanes: TCodeControlPlane[];
+};
+
+export type TCodeEnvironmentPairingResponse = {
+  environment: TCodeEnvironmentSummary;
+  pairing: {
+    workerId: string;
+    code: string;
+    expiresAt: string;
+    endpoint: string;
+  };
+};
+
+export type TCodeEnvironmentStatusResponse = {
+  environmentId: string;
+  status: 'offline' | 'starting' | 'ready';
+  statefulWorkspace?: boolean;
+  leaseExpiresInMs?: number;
+  sandboxProfile?: string;
+  runtimes?: string[];
+  operations?: CodeWorkspaceOperation[];
+  workspaces?: CodeWorkspaceDescriptor[];
+};
+
+/**
+ * Replaces a conversation's sealed code-environment decision: a move onto the environments its
+ * agents now use, an attach for a chat running without one, or a detach off an attached machine.
+ */
+export type TCodeEnvironmentMoveRequest = {
+  conversationId: string;
+  /** The persisted selections being replaced, empty for a chat without an attached environment;
+   *  a mismatch rejects the change as stale. */
+  from: CodeWorkspaceSelection[];
+  /** Empty to continue without an attached environment. */
+  to: CodeWorkspaceSelection[];
+};
+
+export type TCodeEnvironmentMoveResponse = {
+  conversationId: string;
+  codeEnvironmentMode: CodeEnvironmentMode;
+  /** Absent once the conversation continues without an attached environment. */
+  codeWorkspaces?: CodeWorkspaceSelection[];
+};
+
+/** Sanitized results of server request shaping for each saved toggle state. */
+export type ResponsesApiRoute = {
+  firstPartyEndpoint?: boolean;
+  default: boolean;
+  on: boolean;
+  off: boolean;
+  withWebSearch?: { default: boolean; on: boolean; off: boolean };
+};
+export type ResponsesApiRouting = Record<string, ResponsesApiRoute>;
+
 export type TConfig = {
+  responsesApiRouting?: ResponsesApiRouting;
+  /** Azure model name -> the `reasoning_effort` values its deployment declares. */
+  modelReasoningEfforts?: Record<string, string[]>;
   order: number;
   type?: EModelEndpoint;
   azure?: boolean;
@@ -384,16 +696,51 @@ export type TConfig = {
   plugins?: Record<string, string>;
   name?: string;
   iconURL?: string;
+  /** Canonical provider identity resolved at config load, used for branding. */
+  providerId?: ProviderId;
   version?: string;
   modelDisplayLabel?: string;
   userProvide?: boolean | null;
   userProvideURL?: boolean | null;
+  userProvideAccessKeyId?: boolean;
+  userProvideSecretAccessKey?: boolean;
+  userProvideSessionToken?: boolean;
+  userProvideBearerToken?: boolean;
   disableBuilder?: boolean;
   retrievalModels?: string[];
   capabilities?: string[];
+  statefulCodeSessions?: {
+    allowedEnvironments: StatefulCodeEnvironment[];
+    environments?: TPublicCodeEnvironment[];
+    approvalsEnabled?: boolean;
+    /** Allow new chats to choose among the agent's explicitly listed machines. */
+    allowEnvironmentSelection?: boolean;
+    maxEnvironmentChoices?: number;
+    /** Approval modes the endpoint policy permits the client to offer. */
+    approvalModes?: CodeApprovalMode[];
+  };
+  /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
+  maxSubagents?: number;
+  fileSharing?: TAgentsEndpoint['fileSharing'];
+  /** Rollout switches served to the Builder from `endpoints.agents.linkedInstructions`. */
+  linkedInstructions?: {
+    langfuse?: { enabled?: boolean };
+  };
+  /** Concurrent Code API uploads allowed per route and authenticated principal. */
+  codeApiUploadConcurrency?: number;
+  /** Milliseconds one operation may spend waiting on Code API rate limits. */
+  codeApiMaxRetryWaitMs?: number;
   customParams?: {
     defaultParamsEndpoint?: string;
+    reasoningFormat?: ReasoningParameterFormat;
+    reasoningKey?: ReasoningResponseKey;
+    includeReasoningContent?: boolean;
+    includeReasoningHistory?: boolean;
     paramDefinitions?: Partial<SettingDefinition>[];
+    reasoningCatalogTimeoutMs?: number;
+    reasoningCatalogMaxPages?: number;
+    reasoningCatalogFailureTtlMs?: number;
+    reasoningCatalogTtlMs?: number;
   };
 };
 
@@ -403,15 +750,44 @@ export type TEndpointsConfig =
 
 export type TModelsConfig = Record<string, string[]>;
 
-export type TUpdateTokenCountResponse = {
-  count: number;
+/** Server-resolved context window and pricing for one model. Rates are USD per 1M tokens. */
+export type TModelTokenomics = {
+  context?: number;
+  prompt?: number;
+  completion?: number;
+  cacheWrite?: number;
+  cacheRead?: number;
 };
 
-export type TMessageTreeNode = object;
+/**
+ * The reasoning efforts one model accepts, as the provider reports them
+ * (OpenRouter's per-model `reasoning.supported_efforts` and `reasoning.mandatory`).
+ */
+export type TModelReasoning = {
+  efforts: string[];
+  /** Reasoning cannot be turned off, so `none` is not a valid choice. */
+  mandatory?: boolean;
+};
 
-export type TSearchMessage = object;
+/**
+ * endpoint → model → reasoning efforts, from GET /api/endpoints/reasoning-capabilities. A model
+ * with an empty `efforts` list is listed by the provider and exposes no effort selection; a
+ * model absent from the map is unknown.
+ */
+export type TReasoningCapabilityMap = Record<string, Record<string, TModelReasoning>>;
 
-export type TSearchMessageTreeNode = object;
+/**
+ * What the capabilities route returns: the efforts, and how long the server will keep the catalog
+ * they came from. The client revalidates when that time has passed, so it never holds a list longer
+ * than the server does, however old the server's entry was when it was fetched.
+ */
+export type TReasoningCapabilitiesResponse = {
+  capabilities: TReasoningCapabilityMap;
+  expiresInMs: number;
+};
+
+/** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */
+export type TTokenConfigMap = Record<string, Record<string, TModelTokenomics>>;
 
 export type TRegisterUserResponse = {
   message: string;
@@ -437,7 +813,9 @@ export type TLoginResponse = {
   token?: string;
   user?: TUser;
   twoFAPending?: boolean;
+  twoFASetupRequired?: boolean;
   tempToken?: string;
+  code?: 'TWO_FACTOR_ENROLLMENT_REQUIRED';
 };
 
 /** Shared payload for any operation that requires OTP or backup-code verification. */
@@ -454,10 +832,55 @@ export type TEnable2FAResponse = {
   message?: string;
 };
 
+export type TEnable2FASetupRequest = {
+  tempToken: string;
+};
+
+export type TConfirm2FASetupRequest = {
+  tempToken: string;
+  token: string;
+};
+
+export type TConfirm2FASetupResponse = {
+  backupCodes: string[];
+  acknowledgementToken: string;
+};
+
+export type TAcknowledge2FASetupRequest = {
+  acknowledgementToken: string;
+};
+
+export type TAcknowledge2FASetupResponse = {
+  finalizationToken: string;
+};
+
+export type TFinalize2FASetupRequest = {
+  finalizationToken: string;
+};
+
+export type TFinalize2FASetupResponse = {
+  token: string;
+  user: TUser;
+};
+
+export type TCancel2FASetupRequest = {
+  tempToken: string;
+};
+
+export type TCancel2FASetupResponse = {
+  message: string;
+};
+
 export type TVerify2FARequest = TOTPVerificationPayload;
 
 export type TVerify2FAResponse = {
   message: string;
+};
+
+/** Opt-in confirmation retires every earlier session and hands back the one that replaces them. */
+export type TConfirm2FAResponse = {
+  token: string;
+  user: TUser;
 };
 
 /** For verifying 2FA during login with a temporary token. */
@@ -469,6 +892,153 @@ export type TVerify2FATempResponse = {
   token?: string;
   user?: TUser;
   message?: string;
+};
+
+/* Passkeys (WebAuthn) */
+
+/**
+ * WebAuthn ceremony payloads, mirroring the W3C `*JSON` dictionaries that the
+ * browser's `PublicKeyCredential` serializes to. They are declared here rather
+ * than imported so `librechat-data-provider` stays dependency-free; the client
+ * hands them straight to `@simplewebauthn/browser`, which validates the shape.
+ */
+export type TPasskeyTransport =
+  | 'ble'
+  | 'cable'
+  | 'hybrid'
+  | 'internal'
+  | 'nfc'
+  | 'smart-card'
+  | 'usb';
+
+export type TPasskeyCredentialDescriptor = {
+  id: string;
+  type: 'public-key';
+  transports?: TPasskeyTransport[];
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-publickeycredentialcreationoptionsjson */
+export type TPasskeyCreationOptions = {
+  rp: { id?: string; name: string };
+  user: { id: string; name: string; displayName: string };
+  challenge: string;
+  pubKeyCredParams: Array<{ alg: number; type: 'public-key' }>;
+  timeout?: number;
+  excludeCredentials?: TPasskeyCredentialDescriptor[];
+  authenticatorSelection?: {
+    authenticatorAttachment?: 'platform' | 'cross-platform';
+    residentKey?: 'discouraged' | 'preferred' | 'required';
+    requireResidentKey?: boolean;
+    userVerification?: 'discouraged' | 'preferred' | 'required';
+  };
+  attestation?: 'none' | 'indirect' | 'direct' | 'enterprise';
+  hints?: string[];
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-publickeycredentialrequestoptionsjson */
+export type TPasskeyRequestOptions = {
+  challenge: string;
+  timeout?: number;
+  rpId?: string;
+  allowCredentials?: TPasskeyCredentialDescriptor[];
+  userVerification?: 'discouraged' | 'preferred' | 'required';
+  hints?: string[];
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-registrationresponsejson */
+export type TPasskeyRegistrationResponse = {
+  id: string;
+  rawId: string;
+  type: 'public-key';
+  authenticatorAttachment?: 'platform' | 'cross-platform';
+  clientExtensionResults: Record<string, boolean | string | number | object>;
+  response: {
+    clientDataJSON: string;
+    attestationObject: string;
+    authenticatorData?: string;
+    transports?: TPasskeyTransport[];
+    publicKeyAlgorithm?: number;
+    publicKey?: string;
+  };
+};
+
+/** https://w3c.github.io/webauthn/#dictdef-authenticationresponsejson */
+export type TPasskeyAuthenticationResponse = {
+  id: string;
+  rawId: string;
+  type: 'public-key';
+  authenticatorAttachment?: 'platform' | 'cross-platform';
+  clientExtensionResults: Record<string, boolean | string | number | object>;
+  response: {
+    clientDataJSON: string;
+    authenticatorData: string;
+    signature: string;
+    userHandle?: string;
+  };
+};
+
+/**
+ * A registered credential as exposed to the client. Deliberately excludes the
+ * public key and credential ID: the UI only needs to identify and label it.
+ */
+export type TPasskey = {
+  id: string;
+  name: string;
+  deviceType: 'singleDevice' | 'multiDevice';
+  backedUp: boolean;
+  transports: TPasskeyTransport[];
+  createdAt: string;
+  lastUsedAt: string | null;
+};
+
+export type TPasskeysResponse = {
+  passkeys: TPasskey[];
+};
+
+export type TPasskeyResponse = {
+  passkey: TPasskey;
+};
+
+/**
+ * Enrollment is password-confirmed on both steps: a passkey is a durable
+ * single-factor login, so an access token alone must not be enough to mint one.
+ */
+export type TPasskeyRegistrationOptionsRequest = {
+  password: string;
+};
+
+export type TVerifyPasskeyRegistrationRequest = TPasskeyRegistrationOptionsRequest & {
+  credential: TPasskeyRegistrationResponse;
+  name?: string;
+};
+
+export type TPasskeyAuthenticationOptionsResponse = {
+  options: TPasskeyRequestOptions;
+  /** Opaque handle tying the assertion back to its server-side challenge. */
+  sessionId: string;
+};
+
+export type TVerifyPasskeyLoginRequest = {
+  credential: TPasskeyAuthenticationResponse;
+  sessionId: string;
+};
+
+export type TRenamePasskeyRequest = {
+  passkeyId: string;
+  name: string;
+};
+
+/**
+ * Removal is password-confirmed too: deleting a passkey takes a login factor
+ * away, so a bearer token alone must not be enough.
+ *
+ * `password` is optional because an account provisioned by an identity provider
+ * has no local password to confirm with, and its stranded credentials must stay
+ * removable. The server only waives the check when no password hash exists.
+ */
+export type TDeletePasskeyRequest = {
+  passkeyId: string;
+  password?: string;
 };
 
 export type TDisable2FARequest = TOTPVerificationPayload;
@@ -507,9 +1077,43 @@ export type TVerifyEmail = {
 
 export type TResendVerificationEmail = Omit<TVerifyEmail, 'token'>;
 
-export type TRefreshTokenResponse = {
+export type EmailChangeErrorCode =
+  | 'account_modified'
+  | 'current_password_invalid'
+  | 'email_change_disabled'
+  | 'email_delivery_failed'
+  | 'email_domain_not_allowed'
+  | 'email_in_use'
+  | 'email_service_unavailable'
+  | 'invalid_request'
+  | 'invalid_token'
+  | 'local_account_required'
+  | 'request_in_progress'
+  | 'same_email';
+
+export type TRequestEmailChange = {
+  currentPassword: string;
+  newEmail: string;
+};
+
+export type TConfirmEmailChange = {
+  email: string;
   token: string;
-  user: TUser;
+  userId: string;
+};
+
+export type TEmailChangeResponse = {
+  message: string;
+  code?: EmailChangeErrorCode;
+};
+
+export type TRefreshTokenResponse = {
+  token?: string;
+  user?: TUser;
+  twoFAPending?: boolean;
+  twoFASetupRequired?: boolean;
+  tempToken?: string;
+  code?: 'TWO_FACTOR_ENROLLMENT_REQUIRED';
 };
 
 export type TCheckUserKeyResponse = {
@@ -543,6 +1147,13 @@ export type TPrompt = {
   _id?: string;
 };
 
+export const PromptGroupSources = {
+  native: 'native',
+  langfuse: 'langfuse',
+} as const;
+
+export type TPromptGroupSource = (typeof PromptGroupSources)[keyof typeof PromptGroupSources];
+
 export type TPromptGroup = {
   name: string;
   numberOfGenerations?: number;
@@ -557,6 +1168,10 @@ export type TPromptGroup = {
   createdAt?: Date;
   updatedAt?: Date;
   _id?: string;
+  source: TPromptGroupSource;
+  sourcePromptName?: string;
+  sourceProjectId?: string;
+  sourceDestination?: string;
 };
 
 export type TCreatePrompt = {
@@ -602,7 +1217,10 @@ export type TCreatePromptResponse = {
   group?: TPromptGroup;
 };
 
-export type TUpdatePromptGroupPayload = Partial<TPromptGroup>;
+/** Source identity is set by the server and cannot be updated. */
+export type TUpdatePromptGroupPayload = Partial<
+  Omit<TPromptGroup, 'source' | 'sourcePromptName' | 'sourceProjectId' | 'sourceDestination'>
+>;
 
 export type TUpdatePromptGroupVariables = {
   id: string;
@@ -659,14 +1277,78 @@ export type TGetRandomPromptsRequest = {
   skip: number;
 };
 
+export type NativePromptSelection = { type: 'production' } | { type: 'exact'; promptId: string };
+
+export type LangfusePromptSelection = { type: 'production' } | { type: 'exact'; version: number };
+
+export type PromptSelection = NativePromptSelection | LangfusePromptSelection;
+
+/** `GET /api/prompts/groups/:groupId/resolve`. Native resolves the group's
+ *  production; Langfuse fetches text content live, by label `production` or
+ *  an exact `version`, with no cache. */
+export type TResolvedNativePrompt = {
+  source: 'native';
+  groupId: string;
+  promptId: string;
+  prompt: string;
+  type: TPrompt['type'];
+};
+
+export type TResolvedLangfusePrompt = {
+  source: 'langfuse';
+  groupId: string;
+  prompt: string;
+  type: 'text';
+  version: number;
+  labels: string[];
+  /** Deep link to this prompt in the Langfuse console. Present only when the
+   *  requesting user is an admin. */
+  sourceUrl?: string;
+};
+
+export type TResolvedPromptResponse = TResolvedNativePrompt | TResolvedLangfusePrompt;
+
+/** One revision choice: metadata only, no prompt content. */
+export type TPromptRevisionChoice =
+  | { source: 'native'; promptId: string; version: number; isProduction: boolean }
+  | { source: 'langfuse'; version: number };
+
+/** Only a native revision marks `isProduction`; Langfuse resolves Production live. */
+export type TPromptRevisionChoicesResponse = {
+  source: TPromptGroupSource;
+  groupId: string;
+  revisions: TPromptRevisionChoice[];
+};
+
+/** `code` values the `/resolve` route returns, including the Langfuse request
+ *  failure codes relayed through `toLangfusePromptErrorResponse` (`unauthorized`,
+ *  `timeout`, `upstream`, `invalid_response`). A `blocked_content` rejection uses
+ *  `ContentFilterBlockResponse` instead, which has no `code` field. Not every
+ *  error response carries a `code`: a rate-limited 429 or an unexpected 500
+ *  returns only `{ message }`, and the resource-access middleware's 403/404
+ *  returns `{ error, message }`. */
+export type TPromptResolveErrorCode =
+  | 'invalid_request'
+  | 'not_found'
+  | 'unsupported_type'
+  | 'not_available'
+  | 'not_configured'
+  | 'source_changed'
+  | 'unauthorized'
+  | 'timeout'
+  | 'upstream'
+  | 'invalid_response';
+
 export type TCustomConfigSpeechResponse = { [key: string]: string };
 
 export type TUserTermsResponse = {
   termsAccepted: boolean;
+  termsAcceptedAt: Date | string | null;
 };
 
 export type TAcceptTermsResponse = {
-  success: boolean;
+  message: string;
+  termsAcceptedAt: Date | string;
 };
 
 export type TBannerResponse = TBanner | null;
@@ -689,6 +1371,13 @@ export type TBalanceResponse = {
   refillIntervalUnit?: RefillIntervalUnit;
   lastRefill?: Date | string;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
+  /** ISO timestamp with offset that periods are aligned to; null or absent for rolling periods. */
+  refillAnchor?: string | null;
+  /** Credits granted at the start of the current period; absent on records not yet granted one. */
+  allotment?: number;
+  /** When `allotment` was granted; a later `lastRefill` means a writer replaced the period without it. */
+  allottedAt?: Date | string;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -741,4 +1430,161 @@ export type TUpdateSkillNodeRequest = {
   name?: string;
   parentId?: string | null;
   order?: number;
+};
+
+export type TLangfuseConnectionStatus = {
+  /** Whether connection editing and testing are available. Omitted by older servers. */
+  connectionAvailable?: boolean;
+  configured: boolean;
+  enabled: boolean;
+  destinations: TLangfuseDestinationOption[];
+  destination?: string;
+  publicKey?: string;
+  secretKeyPreview?: string;
+  updatedAt?: string;
+  promptSync: TLangfusePromptSyncStatus;
+};
+
+/** Whether DevOps made Langfuse prompt sync available, and whether the tenant admin turned it on. */
+export type TLangfusePromptSyncStatus = {
+  available: boolean;
+  enabled: boolean;
+};
+
+/**
+ * Why a deployment offers no Langfuse connection settings, from its environment:
+ * - `tracing_disabled`: `LANGFUSE_TRACING_ENABLED=false`, or `LANGFUSE_SAMPLE_RATE` is 0;
+ * - `env_credentials`: a single-tenant deployment traces with `LANGFUSE_PUBLIC_KEY` and
+ *   `LANGFUSE_SECRET_KEY`, which take the place of a stored connection;
+ * - `fanout_disabled`: traces route per tenant (`TENANT_ISOLATION_STRICT`) but the fanout
+ *   collector is off (`LANGFUSE_FANOUT_ENABLED` with `LANGFUSE_FANOUT_COLLECTOR_URL`);
+ * - `tenant_export_disabled`: the fanout collector runs, but
+ *   `LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED=true` stops the export to tenants' own projects.
+ */
+export type TLangfuseUnavailableReason =
+  | 'tracing_disabled'
+  | 'env_credentials'
+  | 'fanout_disabled'
+  | 'tenant_export_disabled';
+
+/** 404 from the admin Langfuse connection routes on a deployment that offers no connection. */
+export type TLangfuseUnavailableResponse = {
+  error: string;
+  code: 'LANGFUSE_UNAVAILABLE';
+  reason: TLangfuseUnavailableReason;
+};
+
+export type TLangfuseDestinationOption = {
+  key: string;
+  baseUrl: string;
+};
+
+export type TUpdateLangfuseConnectionRequest = {
+  enabled: boolean;
+  destination: string;
+  publicKey: string;
+  secretKey?: string;
+};
+
+export type TLangfuseConnectionTestRequest = {
+  destination: string;
+  publicKey: string;
+  secretKey?: string;
+};
+
+export type TLangfuseConnectionTestErrorCode =
+  | 'invalid_credentials'
+  | 'access_denied'
+  | 'rate_limited'
+  | 'server_error'
+  | 'timeout'
+  | 'unreachable'
+  | 'missing_secret'
+  | 'stored_secret_unavailable'
+  | 'unexpected_response';
+
+export type TLangfuseConnectionTestResponse =
+  | { success: true }
+  | { success: false; errorCode: TLangfuseConnectionTestErrorCode };
+
+export type TLangfuseSessionLinkResponse = {
+  url: string | null;
+  /** Opaque identity of the project `url` opens, so a caller can tell whether it holds what it showed. */
+  destinationId?: string;
+};
+
+export type TUpdateLangfusePromptSyncRequest = {
+  enabled: boolean;
+};
+
+export type TLangfusePromptListParams = {
+  name?: string;
+  label?: string;
+  tag?: string;
+  page?: number;
+  limit?: number;
+  fromUpdatedAt?: string;
+  toUpdatedAt?: string;
+};
+
+export type TLangfusePromptListItem = {
+  name: string;
+  type: 'text' | 'chat';
+  versions: number[];
+  labels: string[];
+  tags: string[];
+  lastUpdatedAt: string;
+};
+
+export type TLangfusePromptListResponse = {
+  items: TLangfusePromptListItem[];
+  meta: {
+    page: number;
+    limit: number;
+    totalItems: number;
+    totalPages: number;
+  };
+};
+
+export type TLangfusePromptGetParams = {
+  name: string;
+  version?: number;
+};
+
+export type TLangfusePromptGetResponse = {
+  name: string;
+  version: number;
+  labels: string[];
+  prompt: string;
+};
+
+export type TLangfusePromptErrorCode =
+  | 'not_configured'
+  | 'unauthorized'
+  | 'timeout'
+  | 'upstream'
+  | 'invalid_response'
+  | 'not_found'
+  | 'unsupported_type'
+  | 'invalid_request'
+  | 'already_running'
+  | 'lock_lost'
+  | 'internal';
+
+export type TLangfusePromptErrorBody = {
+  code: TLangfusePromptErrorCode;
+  status?: number;
+};
+
+export type TLangfusePromptSyncResult = {
+  created: number;
+  unchanged: number;
+  skipped: number;
+  /** False when the server's page cap stopped the run before every upstream page was read,
+   *  so the counts above are partial. A re-run with the same page limit re-lists from page 1
+   *  and reads the same pages again; the server's `langfuse.promptSync.maxPages` config must
+   *  be raised to import the rest. Optional for compatibility with an older server that has
+   *  not added this field yet: treat a missing value as `true`, matching that server's only
+   *  possible outcome. */
+  complete?: boolean;
 };

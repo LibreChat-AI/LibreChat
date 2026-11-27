@@ -136,6 +136,76 @@ describe('markdown artifacts', () => {
       expect(files['index.html']).toContain('prefers-color-scheme: dark');
     });
 
+    /** The base sheet picks its palette from the iframe's own
+     *  `prefers-color-scheme`, so the contrast block is appended unconditionally
+     *  and therefore also overrides that media query. */
+    it('appends a contrast override that outranks the media query', () => {
+      const standard = getMarkdownFiles('# Test')['index.html'];
+      expect(standard).toContain('prefers-color-scheme: dark');
+      expect(standard).not.toContain('background-color: #000000');
+
+      const contrastDark = getMarkdownFiles('# Test', true, true)['index.html'];
+      const overrideIndex = contrastDark.lastIndexOf('.markdown-body { color: #ffffff');
+      expect(overrideIndex).toBeGreaterThan(contrastDark.indexOf('prefers-color-scheme: dark'));
+      expect(contrastDark).toContain('background-color: #000000');
+      expect(contrastDark).toContain('color: #8cc8ff');
+
+      const contrastLight = getMarkdownFiles('# Test', false, true)['index.html'];
+      expect(contrastLight).toContain('.markdown-body { color: #000000');
+      expect(contrastLight).toContain('color: #0000cc');
+    });
+
+    /** Anything the base sheet colours inside the media query has to be answered
+     *  by the appended block, or an explicit contrast choice keeps a GitHub
+     *  palette value wherever the override forgot to reach. */
+    it('answers every media-query colour in the contrast block', () => {
+      const styleOf = (html: string) =>
+        html.slice(html.indexOf('<style>') + '<style>'.length, html.indexOf('</style>'));
+      const baseStyle = styleOf(getMarkdownFiles('# Test')['index.html']);
+      const override = styleOf(getMarkdownFiles('# Test', true, true)['index.html']).slice(
+        baseStyle.length,
+      );
+
+      /** `selector -> property` pairs, one per selector in a comma-separated list. */
+      const declarations = (css: string): string[] =>
+        [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body]) =>
+          selectors.split(',').flatMap((selector) =>
+            body
+              .split(';')
+              .map((declaration) => declaration.split(':')[0].trim())
+              .filter(Boolean)
+              .map((property) => `${selector.trim()} -> ${property}`),
+          ),
+        );
+
+      const answered = new Set(declarations(override));
+      const mediaBlocks = [
+        ...baseStyle.matchAll(/@media \(prefers-color-scheme: dark\) \{([\s\S]*?)\n\}/g),
+      ];
+      expect(mediaBlocks.length).toBeGreaterThan(0);
+
+      const unanswered = mediaBlocks
+        .flatMap(([, block]) => declarations(block))
+        .filter((declaration) => !answered.has(declaration));
+      expect(unanswered).toEqual([]);
+    });
+
+    /** A CDN outage inside a contrast mode is exactly when the message matters,
+     *  and an inline style would be the one colour the override cannot reach. */
+    it('themes the renderer failure message', () => {
+      const standard = getMarkdownFiles('# Test')['index.html'];
+      expect(standard).toContain('class="markdown-error"');
+      expect(standard).not.toMatch(/style="color:/);
+      expect(standard).toContain('color: #e53e3e');
+
+      expect(getMarkdownFiles('# Test', true, true)['index.html']).toContain(
+        '.markdown-error { color: #ff8f8f; }',
+      );
+      expect(getMarkdownFiles('# Test', false, true)['index.html']).toContain(
+        '.markdown-error { color: #a10000; }',
+      );
+    });
+
     describe('content escaping', () => {
       it('should escape backticks in markdown content', () => {
         const markdown = 'Here is some `inline code`';
@@ -270,7 +340,7 @@ describe('markdown artifacts', () => {
 
       expect(html).toContain("typeof marked === 'undefined'");
       expect(html).toContain('failed to load');
-      expect(html).toContain('style="color:#e53e3e;padding:1rem"');
+      expect(html).toContain('class="markdown-error"');
     });
 
     it('should strip raw HTML blocks via renderer override', () => {

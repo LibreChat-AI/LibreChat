@@ -1,15 +1,20 @@
 import React, { memo, useMemo, useRef, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
-import { useToastContext } from '@librechat/client';
+import { strongDirection } from '@librechat/chat';
 import { PermissionTypes, Permissions, apiBaseUrl } from 'librechat-data-provider';
+import type { Element, ElementContent } from 'hast';
+import {
+  handleDoubleClick,
+  triggerDownload,
+  resolveInlineMedia,
+  toAbsoluteFilePath,
+} from '~/utils';
 import Mermaid, { MermaidErrorBoundary } from '~/components/Messages/Content/Mermaid';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import { useCodeBlockContext, useMediaContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { useFileDownload } from '~/data-provider';
-import { useCodeBlockContext } from '~/Providers';
-import { handleDoubleClick, triggerDownload } from '~/utils';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 type TCodeProps = {
   inline?: boolean;
@@ -41,8 +46,12 @@ export const code: React.ElementType = memo(function MarkdownCode({
   const isMermaid = lang === 'mermaid';
   const isSingleLine = isSingleLineCode(children);
 
-  const { getNextIndex, resetCounter } = useCodeBlockContext();
+  const { getNextIndex, getNextMermaidIndex, resetCounter } = useCodeBlockContext();
   const blockIndex = useRef(getNextIndex(isMath || isMermaid || isSingleLine)).current;
+  /* Mermaid fences do not consume a code-block index, so every one of them in a
+   * message would otherwise share `blockIndex` and collapse onto a single
+   * artifact id. They carry their own sequence instead. */
+  const mermaidIndex = useRef(isMermaid ? getNextMermaidIndex() : -1).current;
 
   useEffect(() => {
     resetCounter();
@@ -54,7 +63,7 @@ export const code: React.ElementType = memo(function MarkdownCode({
     const content = typeof children === 'string' ? children : String(children);
     return (
       <MermaidErrorBoundary code={content}>
-        <Mermaid id={`mermaid-${blockIndex}`}>{content}</Mermaid>
+        <Mermaid id={`mermaid-${mermaidIndex}`}>{content}</Mermaid>
       </MermaidErrorBoundary>
     );
   } else if (isSingleLine) {
@@ -106,8 +115,9 @@ type TAnchorProps = {
 };
 
 export const a: React.ElementType = memo(function MarkdownAnchor({ href, children }: TAnchorProps) {
-  const user = useRecoilValue(store.user);
-  const { showToast } = useToastContext();
+  const { useUser, useToast } = useMessagePartsHost();
+  const user = useUser();
+  const showToast = useToast();
   const localize = useLocalize();
 
   const {
@@ -181,9 +191,91 @@ type TParagraphProps = {
 };
 
 export const p: React.ElementType = memo(function MarkdownParagraph({ children }: TParagraphProps) {
-  return <p className="mb-2 whitespace-pre-wrap">{children}</p>;
+  return (
+    <p dir="auto" className="mb-2 whitespace-pre-wrap">
+      {children}
+    </p>
+  );
 });
 p.displayName = 'MarkdownParagraph';
+
+type TBlockProps = React.HTMLAttributes<HTMLElement> & { node?: Element };
+
+/** Resolves direction per block so a mixed-language reply is not laid out by its first character. */
+const withAutoDir = (Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6') => {
+  const Block: React.ElementType = memo(function MarkdownBlock({
+    node: _node,
+    ...props
+  }: TBlockProps) {
+    return <Tag dir="auto" {...props} />;
+  });
+  Block.displayName = `Markdown${Tag.toUpperCase()}`;
+  return Block;
+};
+
+/** First strong direction of a subtree's text, skipping code, which is always left-to-right. */
+const nodeDirection = (node: Element | ElementContent): 'ltr' | 'rtl' | null => {
+  if (node.type === 'text') {
+    return strongDirection(node.value);
+  }
+  if (node.type !== 'element' || node.tagName === 'code' || node.tagName === 'pre') {
+    return null;
+  }
+  for (const child of node.children) {
+    const direction = nodeDirection(child);
+    if (direction != null) {
+      return direction;
+    }
+  }
+  return null;
+};
+
+/**
+ * Quotes and lists hold paragraphs that carry their own `dir="auto"`, and the browser's
+ * `dir="auto"` skips those, so a container would resolve to LTR whatever its text. Resolve it
+ * from the subtree instead, and inherit when there is no strong character. A list takes one
+ * direction so its markers and indent stay on the same side.
+ */
+const withContentDir = (Tag: 'ul' | 'ol' | 'blockquote') => {
+  const Block: React.ElementType = memo(function MarkdownContainer({
+    node,
+    ...props
+  }: TBlockProps) {
+    const dir = node != null ? (nodeDirection(node) ?? undefined) : undefined;
+    return <Tag dir={dir} {...props} />;
+  });
+  Block.displayName = `Markdown${Tag.toUpperCase()}`;
+  return Block;
+};
+
+export const ul = withContentDir('ul');
+export const ol = withContentDir('ol');
+export const h1 = withAutoDir('h1');
+export const h2 = withAutoDir('h2');
+export const h3 = withAutoDir('h3');
+export const h4 = withAutoDir('h4');
+export const h5 = withAutoDir('h5');
+export const h6 = withAutoDir('h6');
+export const blockquote = withContentDir('blockquote');
+
+type TTableProps = {
+  children: React.ReactNode;
+  node?: Element;
+};
+
+/** One direction for the whole table, so cell borders and corners stay on a single frame. */
+export const table: React.ElementType = memo(function MarkdownTable({
+  children,
+  node,
+}: TTableProps) {
+  const dir = node != null ? (nodeDirection(node) ?? undefined) : undefined;
+  return (
+    <div dir={dir} className="markdown-table-wrapper w-full max-w-full">
+      <table>{children}</table>
+    </div>
+  );
+});
+table.displayName = 'MarkdownTable';
 
 type TImageProps = {
   src?: string;
@@ -202,19 +294,17 @@ export const img: React.ElementType = memo(function MarkdownImage({
 }: TImageProps) {
   // Get the base URL from the API endpoints
   const baseURL = apiBaseUrl();
+  /** A model writing `![DTI](5_dti.png)` is naming a file its run produced,
+   *  not a path the browser can fetch. Resolving the reference against the
+   *  turn's attachments is what turns those into the chart instead of a
+   *  broken-image glyph; an unmatched source keeps its original behavior. */
+  const { attachmentsByName } = useMediaContext();
 
-  // If src starts with /images/, prepend the base URL
   const fixedSrc = useMemo(() => {
     if (!src) return src;
-
-    // If it's already an absolute URL or doesn't start with /images/, return as is
-    if (src.startsWith('http') || src.startsWith('data:') || !src.startsWith('/images/')) {
-      return src;
-    }
-
-    // Prepend base URL to the image path
-    return `${baseURL}${src}`;
-  }, [src, baseURL]);
+    const resolved = resolveInlineMedia(src, attachmentsByName)?.filepath ?? src;
+    return toAbsoluteFilePath(resolved, baseURL);
+  }, [src, baseURL, attachmentsByName]);
 
   return <img src={fixedSrc} alt={alt} title={title} className={className} style={style} />;
 });

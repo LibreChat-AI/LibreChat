@@ -7,13 +7,35 @@ on:
       - dev
       - dev-staging
       - release/*
+    # The tested modules import across packages/api (e.g. mcp/oauth pulls in
+    # flow/manager) and consume built data-provider and data-schemas, so the
+    # whole src trees must trigger — subdirectory filters silently skip
+    # regressions in imported files.
     paths:
-      - 'packages/api/src/cache/**'
-      - 'packages/api/src/cluster/**'
-      - 'packages/api/src/mcp/**'
-      - 'packages/api/src/stream/**'
+      - 'packages/api/src/**'
+      - 'packages/api/package.json'
+      - 'packages/data-provider/src/**'
+      - 'packages/data-provider/package.json'
+      - 'packages/data-schemas/src/**'
+      - 'packages/data-schemas/package.json'
       - 'redis-config/**'
+      - 'api/cache/getLogStores.js'
+      - 'api/server/index.js'
+      - 'api/server/experimental.js'
       - '.github/workflows/cache-integration-tests.yml'
+      - '.github/actions/redis-binaries/**'
+      - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   cache_integration_tests:
@@ -23,18 +45,23 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
+      - name: Use Node.js 24.22.3
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
-          cache: 'npm'
+          node-version: '24.22.3'
 
+      - name: Test Redis binary provisioning
+        run: node --test .github/actions/redis-binaries/provision.test.mjs
+
+      # The pinned redis-server and redis-cli come from the Actions cache, or
+      # are built from the pinned commit on a miss. apt is not involved: its
+      # lock contention and an unreachable Ubuntu mirror have each taken this
+      # job down before a single test ran.
       - name: Install Redis tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y redis-server redis-tools
+        timeout-minutes: 8
+        uses: ./.github/actions/redis-binaries
 
       - name: Start Single Redis Instance
         run: |
@@ -54,14 +81,54 @@ jobs:
           redis-cli -p 7002 cluster info || exit 1
           redis-cli -p 7003 cluster info || exit 1
 
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            api/node_modules
+            packages/api/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
+
       - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Build packages
-        run: |
-          npm run build:data-provider
-          npm run build:data-schemas
-          npm run build:api
+      - name: Restore data-provider build cache
+        id: cache-data-provider
+        uses: actions/cache@v5
+        with:
+          path: packages/data-provider/dist
+          key: build-data-provider-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-provider
+        if: steps.cache-data-provider.outputs.cache-hit != 'true'
+        run: npm run build:data-provider
+
+      - name: Restore data-schemas build cache
+        id: cache-data-schemas
+        uses: actions/cache@v5
+        with:
+          path: packages/data-schemas/dist
+          key: build-data-schemas-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-schemas
+        if: steps.cache-data-schemas.outputs.cache-hit != 'true'
+        run: npm run build:data-schemas
+
+      - name: Restore api build cache
+        id: cache-api
+        uses: actions/cache@v5
+        with:
+          path: packages/api/dist
+          key: build-api-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/api/src/**', 'packages/api/tsconfig*.json', 'packages/api/tsdown.config.mjs', 'packages/api/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json') }}
+
+      - name: Build api
+        if: steps.cache-api.outputs.cache-hit != 'true'
+        run: npm run build:api
 
       - name: Run all cache integration tests (Single Redis Node)
         working-directory: packages/api
@@ -71,6 +138,34 @@ jobs:
           USE_REDIS_CLUSTER: false
           REDIS_URI: redis://127.0.0.1:6379
         run: npm run test:cache-integration
+
+      - name: Start three independent regional Redis instances
+        run: |
+          for port in 6380 6381 6382; do
+            redis-server --daemonize yes --port "$port" --save '' --appendonly no
+            if ! timeout --kill-after=1s 10s bash -c '
+              until response=$(redis-cli --raw -p "$1" ping 2>&1) &&
+                [[ "$response" == PONG ]]; do
+                printf "%s\n" "$response" >&2
+                sleep 0.1
+              done
+            ' _ "$port"; then
+              echo "::error::Redis on port $port did not become ready within 10 seconds"
+              exit 1
+            fi
+          done
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
+
+      - name: Test role changes across three regional caches
+        working-directory: packages/api
+        env:
+          NODE_ENV: test
+          USE_REDIS: false
+          ROLE_CACHE_REQUIRE_INTEGRATION: '1'
+          ROLE_CACHE_REDIS_URLS: redis://127.0.0.1:6380,redis://127.0.0.1:6381,redis://127.0.0.1:6382
+        run: npm run test:roles-integration
 
       - name: Run all cache integration tests (Redis Cluster)
         working-directory: packages/api
@@ -89,3 +184,29 @@ jobs:
       - name: Stop Single Redis Instance
         if: always()
         run: redis-cli -p 6379 shutdown || true
+
+      - name: Stop regional Redis instances
+        if: always()
+        run: |
+          for port in 6380 6381 6382; do
+            redis-cli -p "$port" shutdown || true
+          done
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: cache-integration
+    needs: [cache_integration_tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every cache integration job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify

@@ -1,0 +1,218 @@
+import { logger } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
+import { getScoreDestinations, type LangfuseScoreDestination } from './destinations';
+import { isLangfuseTraceAllowed } from './policy';
+import { mergeHeaders } from '~/utils/headers';
+import { redirectPolicyFor } from './utils';
+
+export type LangfuseFeedback = {
+  rating?: 'thumbsUp' | 'thumbsDown';
+  tag?: string;
+  text?: string;
+};
+
+export type LangfuseFeedbackMetadata = Record<string, string | number | boolean | null | undefined>;
+
+export type SendFeedbackScoreParams = {
+  traceId: string;
+  /** Stable source-specific identity; omitted for the existing browser feedback score. */
+  scoreId?: string;
+  /** Retained provider identity date for durable channel feedback updates. */
+  scoreTimestamp?: string;
+  signal?: AbortSignal;
+  /** Internal dispatch fence for callers holding a bounded export lease. Never serialized. */
+  assertActive?: () => void;
+  sampled?: boolean;
+  destinationIds?: string[];
+  feedback?: LangfuseFeedback | null;
+  metadata?: LangfuseFeedbackMetadata;
+  observationId?: string;
+  appConfig?: AppConfig;
+  /**
+   * Must mirror the value used when the trace was generated. `destinationIds`
+   * only restricts feedback to destinations that carry a stable id, so a caller
+   * that opts out of central export has to re-assert it here for destinations
+   * whose project identity is unknown.
+   */
+  centralTraceExportEnabled?: boolean;
+  /**
+   * Whether the message belongs to a temporary chat. Checked on its own because
+   * a resumed turn's response stores no trace record to carry the decision.
+   */
+  isTemporary?: boolean | null;
+};
+
+const ENVIRONMENT = process.env.LANGFUSE_TRACING_ENVIRONMENT;
+
+type LangfuseScorePayload = {
+  id: string;
+  traceId: string;
+  name: 'user-feedback';
+  timestamp?: string;
+  value: number;
+  dataType: 'BOOLEAN';
+  comment?: string;
+  metadata: Record<string, string | number | boolean>;
+  observationId?: string;
+  environment?: string;
+};
+
+function cleanMetadata(
+  metadata: LangfuseFeedbackMetadata,
+): Record<string, string | number | boolean> {
+  return Object.entries(metadata).reduce<Record<string, string | number | boolean>>(
+    (result, [key, value]) => {
+      if (value == null || (typeof value === 'string' && value.trim() === '')) {
+        return result;
+      }
+      result[key] = value;
+      return result;
+    },
+    {},
+  );
+}
+
+async function deleteScore(
+  destination: LangfuseScoreDestination,
+  scoreId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(
+    `${destination.baseUrl}/api/public/scores/${encodeURIComponent(scoreId)}`,
+    {
+      method: 'DELETE',
+      signal,
+      headers: mergeHeaders(destination.headers, { Authorization: destination.authorization }),
+      ...redirectPolicyFor(destination.headers),
+    },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`score delete ${res.status}: ${await res.text()}`);
+  }
+}
+
+async function createScore(
+  destination: LangfuseScoreDestination,
+  payload: LangfuseScorePayload,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${destination.baseUrl}/api/public/scores`, {
+    method: 'POST',
+    signal,
+    headers: mergeHeaders(destination.headers, {
+      Authorization: destination.authorization,
+      'Content-Type': 'application/json',
+    }),
+    body: JSON.stringify(payload),
+    ...redirectPolicyFor(destination.headers),
+  });
+  if (!res.ok) {
+    throw new Error(`score create ${res.status}: ${await res.text()}`);
+  }
+}
+
+function buildScorePayload({
+  scoreId,
+  scoreTimestamp,
+  traceId,
+  feedback,
+  metadata,
+  observationId,
+}: {
+  scoreId: string;
+  scoreTimestamp?: string;
+  traceId: string;
+  feedback: LangfuseFeedback;
+  metadata: LangfuseFeedbackMetadata;
+  observationId?: string;
+}): LangfuseScorePayload {
+  return {
+    id: scoreId,
+    ...(scoreTimestamp ? { timestamp: scoreTimestamp } : {}),
+    traceId,
+    name: 'user-feedback',
+    value: feedback.rating === 'thumbsUp' ? 1 : 0,
+    dataType: 'BOOLEAN',
+    comment: [feedback.tag, feedback.text].filter(Boolean).join(' — ') || undefined,
+    metadata: cleanMetadata({ ...metadata, rating: feedback.rating, tag: feedback.tag }),
+    ...(observationId ? { observationId } : {}),
+    ...(ENVIRONMENT ? { environment: ENVIRONMENT } : {}),
+  };
+}
+
+export async function sendFeedbackScore({
+  traceId,
+  scoreId: requestedScoreId,
+  scoreTimestamp,
+  signal,
+  assertActive,
+  sampled,
+  destinationIds,
+  feedback,
+  metadata = {},
+  observationId,
+  appConfig,
+  centralTraceExportEnabled,
+  isTemporary,
+}: SendFeedbackScoreParams): Promise<void> {
+  assertActive?.();
+  signal?.throwIfAborted();
+  if (!traceId || !isLangfuseTraceAllowed(appConfig, isTemporary)) {
+    return;
+  }
+
+  const destinationIdSet = destinationIds == null ? undefined : new Set(destinationIds);
+  const destinations = (
+    await getScoreDestinations(appConfig, traceId, sampled, { centralTraceExportEnabled })
+  ).filter(({ id }) => destinationIdSet == null || (id != null && destinationIdSet.has(id)));
+  assertActive?.();
+  signal?.throwIfAborted();
+  if (destinations.length === 0) {
+    return;
+  }
+
+  const scoreId = requestedScoreId ?? `feedback-${traceId}`;
+  const payload = feedback?.rating
+    ? buildScorePayload({ scoreId, scoreTimestamp, traceId, feedback, metadata, observationId })
+    : undefined;
+
+  const results = await Promise.allSettled(
+    destinations.map((destination) =>
+      payload
+        ? createScore(destination, payload, signal)
+        : deleteScore(destination, scoreId, signal),
+    ),
+  );
+  const failures: string[] = [];
+
+  results.forEach((result, index) => {
+    const destination = destinations[index];
+    if (!destination) {
+      return;
+    }
+    if (result.status === 'fulfilled') {
+      logger.debug(
+        `[langfuse] ${destination.name} feedback score ${
+          payload ? 'sent' : 'deleted'
+        } for trace ${traceId} (${feedback?.rating ?? 'none'})`,
+      );
+      return;
+    }
+
+    logger.error(
+      `[langfuse] ${destination.name} feedback score ${
+        payload ? 'send' : 'delete'
+      } failed for trace ${traceId}:`,
+      result.reason,
+    );
+    failures.push(
+      `langfuse ${destination.name} score ${payload ? 'create' : 'delete'} failed: ${
+        result.reason instanceof Error ? result.reason.message : String(result.reason)
+      }`,
+    );
+  });
+
+  if (failures.length > 0) {
+    throw new Error(failures.join('; '));
+  }
+}

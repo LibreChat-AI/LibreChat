@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys } from 'librechat-data-provider';
 import { useToastContext } from '@librechat/client';
-import type { TSkillStatesResponse } from 'librechat-data-provider';
+import { useQueryClient } from '@tanstack/react-query';
+import type { TSkillStatesResponse, TSkillSummary } from 'librechat-data-provider';
 import {
   useGetSkillStatesQuery,
   useUpdateSkillStatesMutation,
@@ -12,6 +12,7 @@ import { useAuthContext, useLocalize } from '~/hooks';
 import { logger } from '~/utils';
 
 const EMPTY_STATES: TSkillStatesResponse = {};
+type SkillActiveTarget = Pick<TSkillSummary, '_id' | 'author' | 'source'>;
 
 interface WriteQueue {
   pending: TSkillStatesResponse | null;
@@ -65,19 +66,28 @@ function getWriteQueue(userId: string): WriteQueue {
 /**
  * Resolves the default active state for a skill the user has never toggled.
  *
+ * - Deployment skills default to **active** for every user.
  * - Owned skills (author === currentUser) default to **active**.
  * - Shared skills default to the `defaultActiveOnShare` config value (default `false`).
  */
-function resolveDefault(author: string, userId: string, defaultActiveOnShare: boolean): boolean {
-  return author === userId ? true : defaultActiveOnShare;
+export function resolveSkillDefaultActive(
+  skill: Pick<SkillActiveTarget, 'author' | 'source'>,
+  userId: string,
+  defaultActiveOnShare: boolean,
+): boolean {
+  if (skill.source === 'deployment' || skill.author === userId) {
+    return true;
+  }
+  return defaultActiveOnShare;
 }
 
 /**
  * Hook for managing per-user skill active/inactive state.
  *
  * The `skillStates` map stores explicit overrides (`{ [skillId]: boolean }`).
- * Skills absent from the map use the ownership-based default: owned -> active,
- * shared -> `defaultActiveOnShare` from the interface config. Toggles that
+ * Skills absent from the map use the source/ownership default: deployment and
+ * owned skills -> active, shared skills -> `defaultActiveOnShare` from the
+ * interface config. Toggles that
  * land on the resolved default remove the key from the map rather than
  * persisting a redundant entry, keeping `skillStates` strictly an exceptions
  * list (otherwise rapid round-trip toggles would exhaust the 200-entry cap).
@@ -165,18 +175,18 @@ export default function useSkillActiveState() {
   }, [userId, updateMutation, showToast, localize]);
 
   const isActive = useCallback(
-    (skill: { _id: string; author: string }): boolean => {
+    (skill: SkillActiveTarget): boolean => {
       const override = skillStates[skill._id];
       if (override !== undefined) {
         return override;
       }
-      return resolveDefault(skill.author, userId, defaultActiveOnShare);
+      return resolveSkillDefaultActive(skill, userId, defaultActiveOnShare);
     },
     [skillStates, userId, defaultActiveOnShare],
   );
 
   const toggle = useCallback(
-    (skill: { _id: string; author: string }) => {
+    (skill: SkillActiveTarget) => {
       if (!canToggle || !userId) {
         return;
       }
@@ -184,7 +194,7 @@ export default function useSkillActiveState() {
       const cached =
         queryClient.getQueryData<TSkillStatesResponse>([QueryKeys.skillStates]) ?? EMPTY_STATES;
       const baseline = queue.pending ?? cached;
-      const defaultValue = resolveDefault(skill.author, userId, defaultActiveOnShare);
+      const defaultValue = resolveSkillDefaultActive(skill, userId, defaultActiveOnShare);
       const override = baseline[skill._id];
       const currentActive = override !== undefined ? override : defaultValue;
       const nextValue = !currentActive;
@@ -202,13 +212,28 @@ export default function useSkillActiveState() {
     [queryClient, userId, defaultActiveOnShare, canToggle, flush],
   );
 
+  /** Both dependencies feed `isActive`: the override map and the interface
+   *  config behind `defaultActiveOnShare`. Until each resolves the map reads
+   *  empty and the default reads `false`, so they are reported as one signal.
+   *  A consumer gating on `isLoading`/`isError` then cannot silently miss a
+   *  dependency, and `isActive` is trustworthy exactly when both are clear. */
+  const isLoading = getQuery.isLoading || configQuery.isLoading;
+  const isError = getQuery.isError || configQuery.isError;
+  const refetchStates = getQuery.refetch;
+  const refetchConfig = configQuery.refetch;
+  const refetch = useCallback(async () => {
+    await Promise.all([refetchStates(), refetchConfig()]);
+  }, [refetchStates, refetchConfig]);
+
   return {
     skillStates,
     defaultActiveOnShare,
     isActive,
     toggle,
-    isLoading: getQuery.isLoading,
-    isError: getQuery.isError,
+    isLoading,
+    isError,
+    /** Lets a consumer that gates its own UI on resolved states retry both. */
+    refetch,
     isUpdating: updateMutation.isLoading,
   };
 }

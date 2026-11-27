@@ -1,9 +1,9 @@
 import { Schema } from 'mongoose';
 import { PrincipalType } from 'librechat-data-provider';
-import { isValidCapability } from '~/admin/capabilities';
 import type { ISystemGrant } from '~/types';
+import { isValidCapability } from '~/admin/capabilities';
 
-const systemGrantSchema = new Schema<ISystemGrant>(
+const systemGrantSchema: Schema<ISystemGrant> = new Schema<ISystemGrant>(
   {
     principalType: {
       type: String,

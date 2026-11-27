@@ -1,6 +1,15 @@
 import { EModelEndpoint, getEndpointField } from 'librechat-data-provider';
-import type { TEndpointsConfig, TConfig } from 'librechat-data-provider';
-import { getAvailableEndpoints, getEndpointsFilter, mapEndpoints } from './endpoints';
+import type { TEndpointsConfig, TConfig, TModelSpec } from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
+import {
+  getAvailableEndpoints,
+  getConvoSwitchLogic,
+  getEndpointsFilter,
+  getSpecAgentAvatarURL,
+  mapEndpoints,
+  normalizeModelSpecs,
+  switchesInPlace,
+} from './endpoints';
 
 const mockEndpointsConfig: TEndpointsConfig = {
   [EModelEndpoint.openAI]: { type: undefined, iconURL: 'openAI_icon.png', order: 0 },
@@ -81,5 +90,104 @@ describe('mapEndpoints', () => {
   it('returns sorted available endpoints', () => {
     const expectedOrder = [EModelEndpoint.openAI, EModelEndpoint.google, 'Mistral'];
     expect(mapEndpoints(mockEndpointsConfig)).toEqual(expectedOrder);
+  });
+});
+
+describe('normalizeModelSpecs', () => {
+  const spec = (overrides: Partial<TModelSpec>): TModelSpec =>
+    ({ name: 'spec-name', label: 'Spec Label', preset: {}, ...overrides }) as TModelSpec;
+
+  it('returns the same array reference when every spec has a label', () => {
+    const specs = [spec({}), spec({ name: 'other', label: 'Other' })];
+    expect(normalizeModelSpecs(specs)).toBe(specs);
+  });
+
+  it('fills a missing label from the name', () => {
+    const specs = [spec({ label: undefined as unknown as string })];
+    expect(normalizeModelSpecs(specs)[0].label).toBe('spec-name');
+  });
+
+  it('fills an empty label from the name', () => {
+    expect(normalizeModelSpecs([spec({ label: '' })])[0].label).toBe('spec-name');
+  });
+
+  /** Memoized consumers must not see a new identity for specs that were already valid. */
+  it('preserves the identity of specs that already have a label', () => {
+    const valid = spec({});
+    const invalid = spec({ name: 'blank', label: '' });
+    const result = normalizeModelSpecs([valid, invalid]);
+    expect(result[0]).toBe(valid);
+    expect(result[1]).not.toBe(invalid);
+  });
+});
+
+describe('getSpecAgentAvatarURL', () => {
+  const agentsMap = {
+    agent_obj: { id: 'agent_obj', avatar: { filepath: '/images/obj.png', source: 'local' } },
+    agent_str: { id: 'agent_str', avatar: '/images/legacy.png' },
+  } as unknown as Parameters<typeof getSpecAgentAvatarURL>[1];
+
+  const agentSpec = (agent_id?: string, endpoint: string = EModelEndpoint.agents): TModelSpec =>
+    ({ name: 'n', label: 'l', preset: { endpoint, agent_id } }) as TModelSpec;
+
+  it('resolves an object avatar', () => {
+    expect(getSpecAgentAvatarURL(agentSpec('agent_obj'), agentsMap)).toBe('/images/obj.png');
+  });
+
+  /** Agents persisted before the object format still store the URL as a string. */
+  it('resolves a legacy string avatar', () => {
+    expect(getSpecAgentAvatarURL(agentSpec('agent_str'), agentsMap)).toBe('/images/legacy.png');
+  });
+
+  /** A leftover agent_id must not surface an unrelated agent on a non-agent spec. */
+  it('ignores agent_id when the spec targets another endpoint', () => {
+    expect(
+      getSpecAgentAvatarURL(agentSpec('agent_obj', EModelEndpoint.openAI), agentsMap),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for an unknown or absent agent', () => {
+    expect(getSpecAgentAvatarURL(agentSpec('missing'), agentsMap)).toBeUndefined();
+    expect(getSpecAgentAvatarURL(agentSpec(undefined), agentsMap)).toBeUndefined();
+  });
+});
+
+describe('switchesInPlace', () => {
+  const open = (endpoint: string, conversationId = 'c-1') =>
+    ({ conversationId, endpoint }) as TConversation;
+  const decide = (
+    conversation: TConversation | null,
+    newEndpoint: string,
+    modularChat = true,
+  ): boolean =>
+    switchesInPlace(
+      getConvoSwitchLogic({
+        newEndpoint,
+        modularChat,
+        conversation,
+        endpointsConfig: mockEndpointsConfig,
+      }),
+    );
+
+  it('changes an open conversation between endpoints that share a conversation', () => {
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.google)).toBe(true);
+    expect(decide(open(EModelEndpoint.openAI), 'Mistral')).toBe(true);
+    expect(decide(open('Mistral'), EModelEndpoint.agents)).toBe(true);
+  });
+
+  it('changes only within the same endpoint when modular chat is off', () => {
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.openAI, false)).toBe(true);
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.google, false)).toBe(false);
+  });
+
+  it('starts another conversation for an assistant, unless it is the same assistants endpoint', () => {
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.assistants)).toBe(false);
+    expect(decide(open(EModelEndpoint.assistants), EModelEndpoint.openAI)).toBe(false);
+    expect(decide(open(EModelEndpoint.assistants), EModelEndpoint.assistants)).toBe(true);
+  });
+
+  it('has nothing to change before a conversation is saved', () => {
+    expect(decide(null, EModelEndpoint.openAI)).toBe(false);
+    expect(decide(open(EModelEndpoint.openAI, 'new'), EModelEndpoint.openAI)).toBe(false);
   });
 });

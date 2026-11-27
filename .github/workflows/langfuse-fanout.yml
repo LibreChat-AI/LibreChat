@@ -1,0 +1,58 @@
+name: Langfuse Fanout
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/langfuse-fanout.yml'
+      - 'otel/langfuse-fanout/**'
+      - '!**.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: langfuse-fanout-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-tests:
+    name: Go tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: otel/langfuse-fanout/go.mod
+          cache-dependency-path: otel/langfuse-fanout/go.sum
+
+      - name: Check Go formatting
+        working-directory: otel/langfuse-fanout
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::Go files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run Go checks
+        working-directory: otel/langfuse-fanout
+        run: |
+          go test ./...
+          go vet ./...
+
+      - name: Build runtime image
+        run: docker build --pull -f otel/langfuse-fanout/Dockerfile -t langfuse-fanout:test .
+
+      - name: Run tests in runtime image
+        working-directory: otel/langfuse-fanout
+        run: |
+          CGO_ENABLED=0 go test -c -o "$RUNNER_TEMP/langfuse-fanout.test" ./cmd/langfuse-fanout
+          docker run --rm --network none \
+            --mount "type=bind,src=$RUNNER_TEMP/langfuse-fanout.test,dst=/verification/langfuse-fanout.test,readonly" \
+            --entrypoint /verification/langfuse-fanout.test \
+            langfuse-fanout:test -test.v

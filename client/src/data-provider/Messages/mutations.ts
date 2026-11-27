@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { dataService, QueryKeys, Constants } from 'librechat-data-provider';
+import { dataService, QueryKeys, MutationKeys, Constants } from 'librechat-data-provider';
 import type { UseMutationResult, UseMutationOptions } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
 
@@ -25,6 +25,7 @@ export const useEditArtifact = (
     t.TEditArtifactRequest,
     EditArtifactContext
   > = {
+    mutationKey: [MutationKeys.editArtifact],
     mutationFn: (variables: t.TEditArtifactRequest) => dataService.editArtifact(variables),
     /**
      * onMutate: No optimistic updates for artifact editing

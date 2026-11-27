@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { createSearchParams } from 'react-router-dom';
+import { LocalStorageKeys, isEphemeralAgentId, Constants } from 'librechat-data-provider';
 import {
   atom,
-  selector,
   atomFamily,
   DefaultValue,
   selectorFamily,
@@ -10,15 +10,7 @@ import {
   useSetRecoilState,
   useRecoilCallback,
 } from 'recoil';
-import { LocalStorageKeys, isEphemeralAgentId, Constants } from 'librechat-data-provider';
-import type {
-  EModelEndpoint,
-  TConversation,
-  TSubmission,
-  TMessage,
-  TPreset,
-} from 'librechat-data-provider';
-import type { TOptionSettings, ExtendedFile } from '~/common';
+import type { EModelEndpoint, TConversation } from 'librechat-data-provider';
 import {
   clearModelForNonEphemeralAgent,
   createChatSearchParams,
@@ -27,58 +19,6 @@ import {
 } from '~/utils';
 import { useSetConvoContext } from '~/Providers/SetConvoContext';
 
-const latestMessageKeysAtom = atom<(string | number)[]>({
-  key: 'latestMessageKeys',
-  default: [],
-});
-
-const submissionKeysAtom = atom<(string | number)[]>({
-  key: 'submissionKeys',
-  default: [],
-});
-
-const latestMessageFamily = atomFamily<TMessage | null, string | number | null>({
-  key: 'latestMessageByIndex',
-  default: null,
-  effects: [
-    ({ onSet, node }) => {
-      onSet(async (newValue) => {
-        const key = Number(node.key.split(Constants.COMMON_DIVIDER)[1]);
-        logger.log('Recoil Effect: Setting latestMessage', { key, newValue });
-      });
-    },
-  ] as const,
-});
-
-const submissionByIndex = atomFamily<TSubmission | null, string | number>({
-  key: 'submissionByIndex',
-  default: null,
-});
-
-const latestMessageKeysSelector = selector<(string | number)[]>({
-  key: 'latestMessageKeysSelector',
-  get: ({ get }) => {
-    const keys = get(conversationKeysAtom);
-    return keys.filter((key) => get(latestMessageFamily(key)) !== null);
-  },
-  set: ({ set }, newKeys) => {
-    logger.log('setting latestMessageKeys', { newKeys });
-    set(latestMessageKeysAtom, newKeys);
-  },
-});
-
-const submissionKeysSelector = selector<(string | number)[]>({
-  key: 'submissionKeysSelector',
-  get: ({ get }) => {
-    const keys = get(conversationKeysAtom);
-    return keys.filter((key) => get(submissionByIndex(key)) !== null);
-  },
-  set: ({ set }, newKeys) => {
-    logger.log('setting submissionKeysAtom', newKeys);
-    set(submissionKeysAtom, newKeys);
-  },
-});
-
 const conversationByIndex = atomFamily<TConversation | null, string | number>({
   key: 'conversationByIndex',
   default: null,
@@ -86,7 +26,11 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
     ({ onSet, node }) => {
       onSet(async (newValue, oldValue) => {
         const index = Number(node.key.split('__')[1]);
-        logger.log('conversation', 'Setting conversation:', { index, newValue, oldValue });
+        logger.log('conversation', 'Setting conversation:', {
+          index,
+          newValue,
+          oldValue,
+        });
         if (newValue?.assistant_id != null && newValue.assistant_id) {
           localStorage.setItem(
             `${LocalStorageKeys.ASST_ID_PREFIX}${index}${newValue.endpoint}`,
@@ -129,31 +73,25 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
 
         if (shouldUpdateParams) {
           const newParams = createChatSearchParams(newValue);
+          if (newValue.chatProjectId) {
+            newParams.set('projectId', newValue.chatProjectId);
+          }
           const searchParams = createSearchParams(newParams);
           const url = `${window.location.pathname}?${searchParams.toString()}`;
-          window.history.pushState({}, '', url);
+          /** Mirror, not navigation: Back-worthy entries are minted by real
+           * `navigate()` calls (useNewConvo), and in-place writers like
+           * ProjectLandingChip deliberately replace. Pushing here buried the
+           * Back target under one inert entry per draft edit. */
+          window.history.replaceState({}, '', url);
         }
       });
     },
   ] as const,
 });
 
-const filesByIndex = atomFamily<Map<string, ExtendedFile>, string | number>({
-  key: 'filesByIndex',
-  default: new Map(),
-});
-
 const conversationKeysAtom = atom<(string | number)[]>({
   key: 'conversationKeys',
   default: [],
-});
-
-const allConversationsSelector = selector({
-  key: 'allConversationsSelector',
-  get: ({ get }) => {
-    const keys = get(conversationKeysAtom);
-    return keys.map((key) => get(conversationByIndex(key))).map((convo) => convo?.conversationId);
-  },
 });
 
 const conversationIdByIndex = selectorFamily<string | null, string | number>({
@@ -215,71 +153,6 @@ const conversationAssistantIdByIndex = selectorFamily<string | null, string | nu
       get(conversationByIndex(index))?.assistant_id ?? null,
 });
 
-const presetByIndex = atomFamily<TPreset | null, string | number>({
-  key: 'presetByIndex',
-  default: null,
-});
-
-const textByIndex = atomFamily<string, string | number>({
-  key: 'textByIndex',
-  default: '',
-});
-
-const showStopButtonByIndex = atomFamily<boolean, string | number>({
-  key: 'showStopButtonByIndex',
-  default: false,
-});
-
-const abortScrollFamily = atomFamily<boolean, string | number>({
-  key: 'abortScrollByIndex',
-  default: false,
-  effects: [
-    ({ onSet, node }) => {
-      onSet(async (newValue) => {
-        const key = Number(node.key.split(Constants.COMMON_DIVIDER)[1]);
-        logger.log('message_scrolling', 'Recoil Effect: Setting abortScrollByIndex', {
-          key,
-          newValue,
-        });
-      });
-    },
-  ] as const,
-});
-
-const isSubmittingFamily = atomFamily({
-  key: 'isSubmittingByIndex',
-  default: false,
-  effects: [
-    ({ onSet, node }) => {
-      onSet(async (newValue) => {
-        const key = Number(node.key.split(Constants.COMMON_DIVIDER)[1]);
-        logger.log('message_stream', 'Recoil Effect: Setting isSubmittingByIndex', {
-          key,
-          newValue,
-        });
-      });
-    },
-  ],
-});
-
-const anySubmittingSelector = selector<boolean>({
-  key: 'anySubmittingSelector',
-  get: ({ get }) => {
-    const keys = get(conversationKeysAtom);
-    return keys.some((key) => get(isSubmittingFamily(key)) === true);
-  },
-});
-
-const optionSettingsFamily = atomFamily<TOptionSettings, string | number>({
-  key: 'optionSettingsByIndex',
-  default: {},
-});
-
-const showPopoverFamily = atomFamily({
-  key: 'showPopoverByIndex',
-  default: false,
-});
-
 const activePromptByIndex = atomFamily<string | undefined, string | number | null>({
   key: 'activePromptByIndex',
   default: undefined,
@@ -300,23 +173,23 @@ const showPromptsPopoverFamily = atomFamily<boolean, string | number | null>({
   default: false,
 });
 
-const showSkillsPopoverFamily = atomFamily<boolean, string | number | null>({
-  key: 'showSkillsPopoverByIndex',
-  default: false,
-});
-
 /**
- * Per-conversation queue of skill names the user invoked manually via the
- * `$` popover for the next submission. Structured channel that the submit
- * pipeline (`useChatFunctions.ask`) drains and pins onto the user message's
- * `manualSkills` field (also echoed at the top of the payload for the
- * runtime resolver), then resets to `[]`. Compose-time chips above the
- * textarea read this atom directly so users see (and can dismiss) their
- * current selection before hitting send.
+ * Text handed to a conversation's composer by a surface the user is leaving —
+ * today, a subagent thread continued into a chat of its own, where the panel
+ * and its composer unmount as the destination opens.
+ *
+ * Keyed by conversation rather than by composer index because the handoff
+ * outlives the navigation that carries it: a first visit resolves its record
+ * before the route moves, so the destination's composer mounts commits later.
+ * `useTextarea` drains it when that conversation's composer is on screen.
+ *
+ * Deliberately in memory rather than in the composer draft store: nothing the
+ * user has not sent should be written to storage they asked not to use, and
+ * draft restoration is itself gated on the Save Drafts preference.
  */
-const pendingManualSkillsByConvoId = atomFamily<string[], string>({
-  key: 'pendingManualSkillsByConvoId',
-  default: [],
+const pendingComposerTextByConvoId = atomFamily<string | undefined, string>({
+  key: 'pendingComposerTextByConvoId',
+  default: undefined,
 });
 
 const globalAudioURLFamily = atomFamily<string | null, string | number | null>({
@@ -334,25 +207,18 @@ const globalAudioPlayingFamily = atomFamily<boolean, string | number | null>({
   default: false,
 });
 
-const activeRunFamily = atomFamily<string | null, string | number | null>({
-  key: 'activeRunByIndex',
-  default: null,
-});
-
 const audioRunFamily = atomFamily<string | null, string | number | null>({
   key: 'audioRunByIndex',
   default: null,
 });
 
-const messagesSiblingIdxFamily = atomFamily<number, string | null | undefined>({
-  key: 'messagesSiblingIdx',
-  default: 0,
-});
-
-function useCreateConversationAtom(key: string | number) {
+/** Setter-only access to the conversation atom: registers the key like
+ * `useCreateConversationAtom` but never subscribes to the value, so callers
+ * that only write (navigation, per-row actions) don't re-render on every
+ * conversation update. */
+function useSetConversationAtom(key: string | number) {
   const hasSetConversation = useSetConvoContext();
   const setKeys = useSetRecoilState(conversationKeysAtom);
-  const conversation = useRecoilValue(conversationByIndex(key));
   const setConversation = useSetRecoilState(conversationByIndex(key));
 
   useEffect(() => {
@@ -364,12 +230,14 @@ function useCreateConversationAtom(key: string | number) {
     });
   }, [key, setKeys]);
 
-  return { hasSetConversation, conversation, setConversation };
+  return { hasSetConversation, setConversation };
 }
 
-function useSetConversationAtom(key: string | number) {
-  const { setConversation } = useCreateConversationAtom(key);
-  return { setConversation };
+function useCreateConversationAtom(key: string | number) {
+  const { hasSetConversation, setConversation } = useSetConversationAtom(key);
+  const conversation = useRecoilValue(conversationByIndex(key));
+
+  return { hasSetConversation, conversation, setConversation };
 }
 
 function useClearConvoState() {
@@ -385,11 +253,6 @@ function useClearConvoState() {
           }
 
           reset(conversationByIndex(conversationKey));
-
-          const conversation = await snapshot.getPromise(conversationByIndex(conversationKey));
-          if (conversation) {
-            reset(latestMessageFamily(conversationKey));
-          }
         }
 
         reset(conversationKeysAtom);
@@ -401,57 +264,6 @@ function useClearConvoState() {
 }
 
 const conversationByKeySelector = conversationByIndex;
-
-function useClearSubmissionState() {
-  const clearAllSubmissions = useRecoilCallback(
-    ({ reset, set, snapshot }) =>
-      async (skipFirst?: boolean) => {
-        const submissionKeys = await snapshot.getPromise(submissionKeysSelector);
-        logger.log('submissionKeys', submissionKeys);
-
-        for (const key of submissionKeys) {
-          if (skipFirst === true && key == 0) {
-            continue;
-          }
-
-          logger.log('resetting submission', key);
-          reset(submissionByIndex(key));
-        }
-
-        set(submissionKeysSelector, []);
-      },
-    [],
-  );
-
-  return clearAllSubmissions;
-}
-
-function useClearLatestMessages(context?: string) {
-  const clearAllLatestMessages = useRecoilCallback(
-    ({ reset, set, snapshot }) =>
-      async (skipFirst?: boolean) => {
-        const latestMessageKeys = await snapshot.getPromise(latestMessageKeysSelector);
-        logger.log('[clearAllLatestMessages] latestMessageKeys', latestMessageKeys);
-        if (context != null && context) {
-          logger.log(`[clearAllLatestMessages] context: ${context}`);
-        }
-
-        for (const key of latestMessageKeys) {
-          if (skipFirst === true && key == 0) {
-            continue;
-          }
-
-          logger.log(`[clearAllLatestMessages] resetting latest message; key: ${key}`);
-          reset(latestMessageFamily(key));
-        }
-
-        set(latestMessageKeysSelector, []);
-      },
-    [],
-  );
-
-  return clearAllLatestMessages;
-}
 
 const updateConversationSelector = selectorFamily({
   key: 'updateConversationSelector',
@@ -481,19 +293,6 @@ const updateConversationSelector = selectorFamily({
 export default {
   conversationKeysAtom,
   conversationByIndex,
-  filesByIndex,
-  presetByIndex,
-  submissionByIndex,
-  textByIndex,
-  showStopButtonByIndex,
-  abortScrollFamily,
-  isSubmittingFamily,
-  optionSettingsFamily,
-  showPopoverFamily,
-  latestMessageFamily,
-  messagesSiblingIdxFamily,
-  anySubmittingSelector,
-  allConversationsSelector,
   conversationIdByIndex,
   conversationEndpointByIndex,
   effectiveEndpointByIndex,
@@ -507,16 +306,12 @@ export default {
   useSetConversationAtom,
   showMentionPopoverFamily,
   globalAudioURLFamily,
-  activeRunFamily,
   audioRunFamily,
   globalAudioPlayingFamily,
   globalAudioFetchingFamily,
   showPlusPopoverFamily,
   activePromptByIndex,
-  useClearSubmissionState,
-  useClearLatestMessages,
   showPromptsPopoverFamily,
-  showSkillsPopoverFamily,
-  pendingManualSkillsByConvoId,
+  pendingComposerTextByConvoId,
   updateConversationSelector,
 };

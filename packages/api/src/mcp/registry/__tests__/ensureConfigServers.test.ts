@@ -1,3 +1,5 @@
+import { PrincipalType } from 'librechat-data-provider';
+import type { AppConfig, ConfigOverrideLayer } from '@librechat/data-schemas';
 import type * as t from '~/mcp/types';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
@@ -22,24 +24,21 @@ const mockMongoose = {} as typeof import('mongoose');
 const sseConfig: t.MCPOptions = {
   type: 'sse',
   url: 'https://mcp.example.com/sse',
-} as unknown as t.MCPOptions;
+};
 
 const altSseConfig: t.MCPOptions = {
   type: 'sse',
   url: 'https://mcp.other-tenant.com/sse',
-} as unknown as t.MCPOptions;
+};
 
 const yamlConfig: t.MCPOptions = {
   type: 'stdio',
   command: 'node',
   args: ['tools.js'],
-} as unknown as t.MCPOptions;
+};
 
 function makeParsedConfig(overrides: Partial<t.ParsedServerConfig> = {}): t.ParsedServerConfig {
   return {
-    type: 'sse',
-    url: 'https://mcp.example.com/sse',
-    requiresOAuth: false,
     tools: 'tool_a, tool_b',
     capabilities: '{}',
     initDuration: 42,
@@ -91,8 +90,27 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
     ).toEqual({});
   });
 
-  it('should exclude YAML servers from config-source detection', async () => {
+  it('routes each config-source initialization through the supplied limiter', async () => {
+    let limitCalls = 0;
+    const limit = async <T>(task: () => Promise<T>): Promise<T> => {
+      limitCalls += 1;
+      return task();
+    };
+
+    const result = await registry.ensureConfigServers(
+      { first: sseConfig, second: altSseConfig },
+      limit,
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({ first: expect.any(Object), second: expect.any(Object) }),
+    );
+    expect(limitCalls).toBe(2);
+  });
+
+  it('should skip unchanged YAML-named servers but still process config-only servers', async () => {
     await registry.addServer('yaml_server', yamlConfig, 'CACHE');
+    inspectSpy.mockClear();
 
     const result = await registry.ensureConfigServers({
       yaml_server: yamlConfig,
@@ -101,9 +119,17 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
 
     expect(result).toHaveProperty('config_server');
     expect(result).not.toHaveProperty('yaml_server');
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+    expect(inspectSpy).toHaveBeenCalledWith(
+      'config_server',
+      { ...sseConfig, source: 'config' },
+      undefined,
+      undefined,
+      undefined,
+    );
   });
 
-  it('should return empty when all servers are YAML', async () => {
+  it('should skip lazy-init for YAML-named servers with no admin override', async () => {
     await registry.addServer('yaml_a', yamlConfig, 'CACHE');
     await registry.addServer('yaml_b', yamlConfig, 'CACHE');
     inspectSpy.mockClear();
@@ -113,8 +139,110 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
       yaml_b: yamlConfig,
     });
 
-    expect(result).toEqual({});
+    expect(result).not.toHaveProperty('yaml_a');
+    expect(result).not.toHaveProperty('yaml_b');
     expect(inspectSpy).not.toHaveBeenCalled();
+  });
+
+  it('should lazy-init YAML-named server when admin override changes a field', async () => {
+    await registry.addServer('yaml_a', yamlConfig, 'CACHE');
+    inspectSpy.mockClear();
+
+    const overrideConfig: t.MCPOptions = { ...yamlConfig, iconPath: 'https://x.com/icon.svg' };
+    const result = await registry.ensureConfigServers({
+      yaml_a: overrideConfig,
+    });
+
+    expect(result).toHaveProperty('yaml_a');
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should lazy-init YAML server when admin overrides only the proxy field', async () => {
+    await registry.addServer('yaml_remote', sseConfig, 'CACHE');
+    inspectSpy.mockClear();
+
+    const overrideConfig: t.MCPOptions = {
+      ...sseConfig,
+      proxy: 'http://proxy.example.com:8080',
+    } as t.MCPOptions;
+    const result = await registry.ensureConfigServers({
+      yaml_remote: overrideConfig,
+    });
+
+    expect(result).toHaveProperty('yaml_remote');
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should lazy-init YAML server when admin overrides only the requestHeaders field', async () => {
+    await registry.addServer('yaml_remote', sseConfig, 'CACHE');
+    inspectSpy.mockClear();
+
+    const overrideConfig: t.MCPOptions = {
+      ...sseConfig,
+      requestHeaders: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+    };
+    const result = await registry.ensureConfigServers({
+      yaml_remote: overrideConfig,
+    });
+
+    expect(result).toHaveProperty('yaml_remote');
+    expect(
+      (result.yaml_remote as { requestHeaders?: Record<string, string> }).requestHeaders,
+    ).toEqual({
+      'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+    });
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should lazy-init YAML server when admin overrides only the OBO field', async () => {
+    await registry.addServer('yaml_remote', sseConfig, 'CACHE');
+    inspectSpy.mockClear();
+
+    const overrideConfig: t.MCPOptions = {
+      ...sseConfig,
+      obo: { scopes: 'api://mcp-server/Mcp.Tools.ReadWrite' },
+    };
+    const result = await registry.ensureConfigServers({
+      yaml_remote: overrideConfig,
+    });
+
+    expect(result).toHaveProperty('yaml_remote');
+    expect(result.yaml_remote.obo).toEqual({ scopes: 'api://mcp-server/Mcp.Tools.ReadWrite' });
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should not re-init YAML server when only the difference is an inspector-derived field absent from rawConfig', async () => {
+    const yamlWithInferred: t.MCPOptions = {
+      ...sseConfig,
+      requiresOAuth: false,
+    } as t.MCPOptions;
+    await registry.addServer('yaml_remote', yamlWithInferred, 'CACHE');
+    inspectSpy.mockClear();
+
+    const result = await registry.ensureConfigServers({
+      yaml_remote: sseConfig,
+    });
+
+    expect(result).not.toHaveProperty('yaml_remote');
+    expect(inspectSpy).not.toHaveBeenCalled();
+  });
+
+  it('should issue a single batched YAML cache read regardless of how many servers are checked', async () => {
+    await registry.addServer('yaml_a', yamlConfig, 'CACHE');
+    await registry.addServer('yaml_b', yamlConfig, 'CACHE');
+    await registry.addServer('yaml_c', yamlConfig, 'CACHE');
+    const cacheGetSpy = jest.spyOn(registry['cacheConfigsRepo'], 'get');
+    const cacheGetAllSpy = jest.spyOn(registry['cacheConfigsRepo'], 'getAll');
+
+    await registry.ensureConfigServers({
+      yaml_a: yamlConfig,
+      yaml_b: yamlConfig,
+      yaml_c: yamlConfig,
+      config_only: sseConfig,
+    });
+
+    expect(cacheGetSpy).not.toHaveBeenCalled();
+    expect(cacheGetAllSpy).toHaveBeenCalledTimes(1);
   });
 
   it('should lazy-initialize a config-source server and tag source as config', async () => {
@@ -125,7 +253,7 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
     expect(inspectSpy).toHaveBeenCalledTimes(1);
     expect(inspectSpy).toHaveBeenCalledWith(
       'my_server',
-      sseConfig,
+      { ...sseConfig, source: 'config' },
       undefined,
       undefined,
       undefined,
@@ -221,7 +349,7 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
   });
 
   describe('merge order', () => {
-    it('should merge YAML → config → user with correct precedence in getAllServerConfigs', async () => {
+    it('should keep operator-managed servers authoritative in getAllServerConfigs', async () => {
       await registry.addServer('yaml_srv', yamlConfig, 'CACHE');
 
       const configServers = await registry.ensureConfigServers({ config_srv: sseConfig });
@@ -305,6 +433,89 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
       expect(config?.source).toBe('config');
     });
 
+    it('should surface inspectionFailed stub for config-only server when no YAML/DB fallback exists', async () => {
+      inspectSpy.mockRejectedValueOnce(new Error('connection refused'));
+      const configServers = await registry.ensureConfigServers({ bad_config_only: sseConfig });
+      expect(configServers.bad_config_only.inspectionFailed).toBe(true);
+
+      const config = await registry.getServerConfig('bad_config_only', undefined, configServers);
+      expect(config).toBeDefined();
+      expect(config?.inspectionFailed).toBe(true);
+      expect(config?.source).toBe('config');
+    });
+
+    it('should prefer healthy YAML entry over inspectionFailed config-tier stub on the same name', async () => {
+      await registry.addServer('shared_name', yamlConfig, 'CACHE');
+
+      inspectSpy.mockRejectedValueOnce(new Error('connection refused'));
+      const configServers = await registry.ensureConfigServers({ shared_name: sseConfig });
+      expect(configServers.shared_name.inspectionFailed).toBe(true);
+
+      const config = await registry.getServerConfig('shared_name', undefined, configServers);
+      expect(config).toBeDefined();
+      expect(config?.inspectionFailed).toBeUndefined();
+      expect(config?.source).toBe('yaml');
+    });
+
+    it('should prefer the user-tier DB entry over a config-tier candidate on the same name', async () => {
+      const dbConfig = makeParsedConfig({
+        source: 'user',
+        title: 'User Slack',
+      } as Partial<t.ParsedServerConfig>);
+      jest.spyOn(registry['dbConfigsRepo'], 'get').mockResolvedValue(dbConfig);
+
+      const configCandidate = makeParsedConfig({
+        source: 'config',
+        title: 'Config Slack',
+      } as Partial<t.ParsedServerConfig>);
+
+      const result = await registry.getServerConfig('slack', 'user-1', {
+        slack: configCandidate,
+      });
+      expect(result?.source).toBe('user');
+      expect((result as unknown as { title: string }).title).toBe('User Slack');
+    });
+
+    it('should overlay healthy admin override fields onto a YAML base while preserving yaml source', async () => {
+      const yamlEntry = makeParsedConfig({
+        ...sseConfig,
+        source: 'yaml',
+        title: 'YAML Title',
+      } as unknown as Partial<t.ParsedServerConfig>);
+      await registry['cacheConfigsRepo'].add('shared', yamlEntry);
+
+      const adminOverride = makeParsedConfig({
+        ...sseConfig,
+        source: 'config',
+        title: 'Admin Title',
+      } as unknown as Partial<t.ParsedServerConfig>);
+
+      const result = await registry.getServerConfig('shared', undefined, {
+        shared: adminOverride,
+      });
+      expect(result?.source).toBe('yaml');
+      expect((result as unknown as { title: string }).title).toBe('Admin Title');
+    });
+
+    it('should not leak a tenant-scoped failure stub into subsequent no-configServers calls', async () => {
+      inspectSpy.mockRejectedValueOnce(new Error('connection refused'));
+      const tenantA = await registry.ensureConfigServers({ tenant_a_only: sseConfig });
+      expect(tenantA.tenant_a_only.inspectionFailed).toBe(true);
+
+      const firstLookup = await registry.getServerConfig('tenant_a_only', undefined, tenantA);
+      expect(firstLookup?.inspectionFailed).toBe(true);
+      expect(firstLookup?.source).toBe('config');
+
+      const leakedLookup = await registry.getServerConfig('tenant_a_only');
+      expect(leakedLookup).toBeUndefined();
+
+      const tenantB = await registry.ensureConfigServers({ tenant_a_only: altSseConfig });
+      const tenantBLookup = await registry.getServerConfig('tenant_a_only', undefined, tenantB);
+      expect((tenantBLookup as unknown as { url: string }).url).toBe(
+        'https://mcp.other-tenant.com/sse',
+      );
+    });
+
     it('should not cross-contaminate between tenant configServers maps', async () => {
       const tenantA = await registry.ensureConfigServers({ srv: sseConfig });
       const tenantB = await registry.ensureConfigServers({ srv: altSseConfig });
@@ -314,6 +525,165 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
 
       expect((configA as unknown as { url: string }).url).toBe('https://mcp.example.com/sse');
       expect((configB as unknown as { url: string }).url).toBe('https://mcp.other-tenant.com/sse');
+    });
+  });
+
+  describe('librechat.yaml values removed by tombstones', () => {
+    const remoteYaml = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      timeout: 30000,
+      headers: { Authorization: 'Bearer {{PAT}}', 'X-Team': 'core' },
+      customUserVars: { PAT: { title: 'Token', description: 'Personal access token' } },
+    } as t.MCPOptions;
+    const allowlists = { allowedDomains: undefined, allowedAddresses: undefined };
+
+    /** Boot as `MCPServersInitializer.initialize` does: record the raw options, then inspect. */
+    async function loadYamlServer(derived: Partial<t.ParsedServerConfig> = {}): Promise<void> {
+      registry.setYamlServerOptions({ yaml_remote: remoteYaml });
+      inspectSpy.mockImplementationOnce(async (_name: string, rawConfig: t.MCPOptions) =>
+        makeParsedConfig({ ...rawConfig, ...derived } as unknown as Partial<t.ParsedServerConfig>),
+      );
+      await registry.addServer('yaml_remote', remoteYaml, 'CACHE');
+      inspectSpy.mockClear();
+    }
+
+    function without(field: string): t.MCPOptions {
+      return Object.fromEntries(
+        Object.entries(remoteYaml).filter(([key]) => key !== field),
+      ) as t.MCPOptions;
+    }
+
+    it.each(['timeout', 'headers', 'customUserVars'])(
+      'serves the server without a %s field a tombstone removed',
+      async (field) => {
+        await loadYamlServer();
+        const resolved = without(field);
+
+        const configServers = await registry.ensureConfigServers({ yaml_remote: resolved });
+
+        expect(inspectSpy).toHaveBeenCalledTimes(1);
+        expect(configServers.yaml_remote).not.toHaveProperty(field);
+        const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+        expect(effective).not.toHaveProperty(field);
+        expect(effective?.source).toBe('yaml');
+        await expect(
+          registry.resolveCachedAppServerConfig({
+            serverName: 'yaml_remote',
+            userId: 'user-1',
+            mcpConfig: { yaml_remote: resolved },
+            ...allowlists,
+          }),
+        ).resolves.toEqual(
+          expect.objectContaining({
+            serverConfig: expect.not.objectContaining({ [field]: expect.anything() }),
+          }),
+        );
+      },
+    );
+
+    it('keeps an unchanged server on librechat.yaml, so the App path agrees', async () => {
+      await loadYamlServer();
+
+      await expect(registry.ensureConfigServers({ yaml_remote: remoteYaml })).resolves.toEqual({});
+      expect(inspectSpy).not.toHaveBeenCalled();
+      await expect(
+        registry.resolveCachedAppServerConfig({
+          serverName: 'yaml_remote',
+          userId: 'user-1',
+          mcpConfig: { yaml_remote: remoteYaml },
+          ...allowlists,
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({ serverConfig: expect.objectContaining({ timeout: 30000 }) }),
+      );
+    });
+
+    it('treats an inspector-derived field librechat.yaml never set as unmodified', async () => {
+      await loadYamlServer({ requiresOAuth: true });
+
+      await expect(registry.ensureConfigServers({ yaml_remote: remoteYaml })).resolves.toEqual({});
+      await expect(
+        registry.ensureConfigServers({ yaml_remote: { ...remoteYaml, requiresOAuth: true } }),
+      ).resolves.toEqual({});
+      expect(inspectSpy).not.toHaveBeenCalled();
+    });
+
+    it('drops one inherited header key and keeps its siblings', async () => {
+      await loadYamlServer();
+      const resolved = { ...remoteYaml, headers: { 'X-Team': 'core' } } as t.MCPOptions;
+
+      const configServers = await registry.ensureConfigServers({ yaml_remote: resolved });
+
+      const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+      expect(effective).toEqual(expect.objectContaining({ headers: { 'X-Team': 'core' } }));
+    });
+
+    it('counts a record emptied by key tombstones as a modification', async () => {
+      await loadYamlServer();
+      const resolved = { ...remoteYaml, headers: {} } as t.MCPOptions;
+
+      const configServers = await registry.ensureConfigServers({ yaml_remote: resolved });
+
+      expect(inspectSpy).toHaveBeenCalledTimes(1);
+      const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+      expect(effective).toEqual(expect.objectContaining({ headers: {} }));
+    });
+
+    describe('when inspecting the reduced server fails', () => {
+      const failInspection = () =>
+        inspectSpy.mockRejectedValueOnce(new Error('401 Unauthorized without the header'));
+
+      it.each([
+        ['a removed header key', { ...remoteYaml, headers: { 'X-Team': 'core' } }],
+        ['a removed headers field', without('headers')],
+      ])('keeps %s removed instead of falling back to librechat.yaml', async (_case, resolved) => {
+        await loadYamlServer();
+        failInspection();
+
+        const configServers = await registry.ensureConfigServers({
+          yaml_remote: resolved as t.MCPOptions,
+        });
+
+        expect(configServers.yaml_remote).toEqual(
+          expect.objectContaining({ inspectionFailed: true, source: 'config' }),
+        );
+        const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+        const listed = (await registry.getAllServerConfigs('user-1', configServers)).yaml_remote;
+        for (const entry of [effective, listed]) {
+          expect(entry).toEqual(
+            expect.objectContaining({ inspectionFailed: true, source: 'config' }),
+          );
+          expect(entry).not.toHaveProperty(['headers', 'Authorization']);
+        }
+        /** A failed config-tier entry waits for its own retry; it never reinspects librechat.yaml. */
+        await expect(
+          registry.recoverServerConfig('yaml_remote', effective!, 'user-1'),
+        ).resolves.toBeUndefined();
+      });
+
+      it('still falls back to librechat.yaml for a change that removes nothing', async () => {
+        await loadYamlServer();
+        failInspection();
+
+        const configServers = await registry.ensureConfigServers({
+          yaml_remote: { ...remoteYaml, timeout: 60000 } as t.MCPOptions,
+        });
+
+        expect(configServers.yaml_remote?.inspectionFailed).toBe(true);
+        const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+        const listed = (await registry.getAllServerConfigs('user-1', configServers)).yaml_remote;
+        for (const entry of [effective, listed]) {
+          expect(entry).toEqual(
+            expect.objectContaining({
+              source: 'yaml',
+              timeout: 30000,
+              headers: expect.objectContaining({ Authorization: 'Bearer {{PAT}}' }),
+            }),
+          );
+          expect(entry).not.toHaveProperty('inspectionFailed');
+        }
+      });
     });
   });
 
@@ -329,6 +699,75 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
       const config = await registry.getServerConfig('stub_srv');
       expect(config?.source).toBe('yaml');
       expect(config?.inspectionFailed).toBe(true);
+    });
+  });
+
+  describe('credentials an admin config override stores', () => {
+    const CREDS_KEY = 'ab'.repeat(32);
+    let previousKey: string | undefined;
+
+    beforeAll(() => {
+      previousKey = process.env.CREDS_KEY;
+      process.env.CREDS_KEY = CREDS_KEY;
+    });
+
+    afterAll(() => {
+      if (previousKey === undefined) {
+        delete process.env.CREDS_KEY;
+      } else {
+        process.env.CREDS_KEY = previousKey;
+      }
+    });
+
+    it('initializes the server with the decrypted key, never the ciphertext', async () => {
+      /** Loaded under `CREDS_KEY`: the encryption key is read when data-schemas loads. */
+      let encryptV3!: typeof import('@librechat/data-schemas').encryptV3;
+      let resolveConfigOverrides!: typeof import('~/app/overrides').resolveConfigOverrides;
+      let createEnvReferencePolicy!: typeof import('~/app/allowlist').createEnvReferencePolicy;
+      await jest.isolateModulesAsync(async () => {
+        ({ encryptV3 } = await import('@librechat/data-schemas'));
+        ({ resolveConfigOverrides } = await import('~/app/overrides'));
+        ({ createEnvReferencePolicy } = await import('~/app/allowlist'));
+      });
+
+      const ciphertext = encryptV3('sk-admin-stored-key');
+      const layer = {
+        principalType: PrincipalType.ROLE,
+        principalId: 'USER',
+        priority: 10,
+        overrides: {
+          mcpServers: {
+            remote: {
+              type: 'streamable-http',
+              url: 'https://mcp.example.com/mcp',
+              apiKey: {
+                source: 'admin',
+                authorization_type: 'bearer',
+                key: ciphertext,
+                keyPreview: '...-key',
+              },
+            },
+          },
+        },
+      } as unknown as ConfigOverrideLayer;
+      const appConfig = resolveConfigOverrides({ config: {} } as AppConfig, [layer], {
+        envPolicy: createEnvReferencePolicy({}),
+      });
+
+      const result = await registry.ensureConfigServers(
+        appConfig.mcpConfig as Record<string, t.MCPOptions>,
+      );
+
+      expect(result).toHaveProperty('remote');
+      expect(inspectSpy).toHaveBeenCalledTimes(1);
+      const [name, rawConfig] = inspectSpy.mock.calls[0] as [string, t.MCPOptions];
+      expect(name).toBe('remote');
+      expect(rawConfig.apiKey).toMatchObject({
+        source: 'admin',
+        authorization_type: 'bearer',
+        key: 'sk-admin-stored-key',
+      });
+      expect(JSON.stringify(inspectSpy.mock.calls)).not.toContain(ciphertext);
     });
   });
 });

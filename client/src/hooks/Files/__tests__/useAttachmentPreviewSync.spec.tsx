@@ -16,11 +16,28 @@
  */
 
 import { useEffect } from 'react';
+import { Tools } from 'librechat-data-provider';
 import { renderHook } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import {
+  Provider as JotaiProvider,
+  getDefaultStore,
+  createStore,
+  useSetAtom,
+  useAtomValue,
+} from 'jotai';
+import type {
+  TAttachment,
+  TFile,
+  TAttachmentMetadata,
+  TFilePreview,
+} from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { TAttachment, TFilePreview } from 'librechat-data-provider';
+import { MessageContext } from '~/Providers/MessageContext';
 import store from '~/store';
+
+type AttachmentFixture = TFile & TAttachmentMetadata;
 
 const mockUseFilePreview = jest.fn();
 jest.mock('~/data-provider', () => ({
@@ -28,25 +45,35 @@ jest.mock('~/data-provider', () => ({
 }));
 
 import useAttachmentPreviewSync from '../useAttachmentPreviewSync';
+import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 
-const wrapper = ({ children }: { children: ReactNode }) => <RecoilRoot>{children}</RecoilRoot>;
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <RecoilRoot>
+    <JotaiProvider>{children}</JotaiProvider>
+  </RecoilRoot>
+);
 
 const messageId = 'msg-1';
 const fileId = 'fid-1';
 
-function makeAttachment(overrides: Partial<TAttachment> = {}): TAttachment {
+function makeAttachment(overrides: Partial<AttachmentFixture> = {}): AttachmentFixture {
   return {
+    user: 'user-1',
+    object: 'file',
+    bytes: 1024,
+    embedded: false,
+    usage: 0,
     file_id: fileId,
     filename: 'data.xlsx',
     filepath: '/uploads/data.xlsx',
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    type: Tools.execute_code,
     messageId,
     toolCallId: 'tc-1',
-    text: null,
-    textFormat: null,
+    text: undefined,
+    textFormat: undefined,
     status: 'pending',
     ...overrides,
-  } as unknown as TAttachment;
+  };
 }
 
 /** Read messageAttachmentsMap and bridge it out via a mutable ref. */
@@ -56,6 +83,7 @@ function setup({
   preview,
   isFetching = false,
   seedLiveMap = true,
+  seedEntries,
 }: {
   attachment: TAttachment;
   isSubmitting: boolean;
@@ -67,6 +95,9 @@ function setup({
    * upsert must INSERT (not just update) the resolved record into the
    * live map so the parent's `useAttachments` merge picks it up. */
   seedLiveMap?: boolean;
+  /* Overrides the seeded live entries (defaults to `[attachment]`) —
+   * used to simulate sibling tool calls sharing the same file_id. */
+  seedEntries?: TAttachment[];
 }) {
   mockUseFilePreview.mockReset();
   mockUseFilePreview.mockReturnValue({ data: preview, isFetching });
@@ -84,17 +115,17 @@ function setup({
      * for tests that simulate `isAnySubmitting` toggling — the
      * selector reads `conversationKeysAtom` × `isSubmittingFamily(key)`
      * so we have to populate both for the selector to fire. */
-    const setMap = useSetRecoilState(store.messageAttachmentsMap);
+    const setMap = useSetAtom(messageAttachmentsMapAtom);
     const setKeys = useSetRecoilState(store.conversationKeysAtom);
-    const setSubmitting = useSetRecoilState(store.isSubmittingFamily(0));
+    const setSubmitting = useSetAtom(isSubmittingFamily(0));
     useEffect(() => {
       if (seedLiveMap) {
-        setMap({ [messageId]: [attachment] });
+        setMap({ [messageId]: seedEntries ?? [attachment] });
       }
       setKeys([0]);
       setSubmitting(isSubmitting);
     }, [setMap, setKeys, setSubmitting]);
-    const map = useRecoilValue(store.messageAttachmentsMap);
+    const map = useAtomValue(messageAttachmentsMapAtom);
     ref.current = map;
     return null;
   };
@@ -109,7 +140,9 @@ function setup({
           children: (
             <>
               <Bridge />
-              {children}
+              <MessageContext.Provider value={{ messageId, isExpanded: true, isSubmitting }}>
+                {children}
+              </MessageContext.Provider>
             </>
           ),
         }),
@@ -134,14 +167,17 @@ function setup({
  * flag so the test can assert the hook flipped it on the edge.
  *
  * `isSubmittingAtMount` seeds `isSubmittingFamily(0)` *before* the hook
- * runs (via `initializeState`) so the hook's mount-time snapshot read
+ * runs (on the store the provider reads) so the hook's mount-time snapshot read
  * captures the intended value. Setting it after mount via a child
  * effect would race with the hook's first render and the gate would
  * see the default (`false`), defeating the whole point of the test.
  */
 function setupWithTransitions(
   initialPreview?: TFilePreview,
-  { isSubmittingAtMount = true }: { isSubmittingAtMount?: boolean } = {},
+  {
+    isSubmittingAtMount = true,
+    messageIsSubmittingAtMount = isSubmittingAtMount,
+  }: { isSubmittingAtMount?: boolean; messageIsSubmittingAtMount?: boolean } = {},
 ) {
   let currentPreview = initialPreview;
   mockUseFilePreview.mockReset();
@@ -157,25 +193,29 @@ function setupWithTransitions(
      * the transition. (A non-subscribing snapshot read inside an
      * effect would capture the value as of the previous commit, which
      * misses the flag set fired in *this* render's effect tick.) */
-    const flag = useRecoilValue(store.previewJustResolved(id));
+    const flag = useRecoilValue(store.previewJustResolved([messageId, id]));
     useEffect(() => {
       flagRef.current = flag;
     }, [flag]);
     return null;
   };
 
+  const jotaiStore = createStore();
+  jotaiStore.set(isSubmittingFamily(0), isSubmittingAtMount);
   const { rerender } = renderHook(
     ({ attachment }: { attachment: TAttachment }) => useAttachmentPreviewSync(attachment),
     {
       initialProps: { attachment: makeAttachment({ status: 'pending' }) },
       wrapper: ({ children }: { children: ReactNode }) => (
-        <RecoilRoot
-          initializeState={(snap) => {
-            snap.set(store.isSubmittingFamily(0), isSubmittingAtMount);
-          }}
-        >
-          <FlagProbe id={fileId} />
-          {children}
+        <RecoilRoot>
+          <JotaiProvider store={jotaiStore}>
+            <FlagProbe id={fileId} />
+            <MessageContext.Provider
+              value={{ messageId, isExpanded: true, isSubmitting: messageIsSubmittingAtMount }}
+            >
+              {children}
+            </MessageContext.Provider>
+          </JotaiProvider>
         </RecoilRoot>
       ),
     },
@@ -191,6 +231,10 @@ function setupWithTransitions(
     },
   };
 }
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('useAttachmentPreviewSync', () => {
   it('enables polling whenever status=pending (no longer gated on isSubmitting)', () => {
@@ -261,7 +305,7 @@ describe('useAttachmentPreviewSync', () => {
         textFormat: 'html',
       },
     });
-    const updated = ctx.map[messageId]?.[0] as TAttachment & { text?: string };
+    const updated = ctx.map[messageId]?.[0] as AttachmentFixture;
     expect(updated.status).toBe('ready');
     expect(updated.text).toBe('<table>final</table>');
     expect(ctx.result.current.status).toBe('ready');
@@ -277,11 +321,37 @@ describe('useAttachmentPreviewSync', () => {
         previewError: 'parser-error',
       },
     });
-    const updated = ctx.map[messageId]?.[0] as TAttachment & { previewError?: string };
+    const updated = ctx.map[messageId]?.[0] as AttachmentFixture;
     expect(updated.status).toBe('failed');
     expect(updated.previewError).toBe('parser-error');
     expect(ctx.result.current.status).toBe('failed');
     expect(ctx.result.current.previewError).toBe('parser-error');
+  });
+
+  it('fans the resolved preview out to EVERY sibling entry sharing the file_id', () => {
+    const first = makeAttachment({ status: 'pending', toolCallId: 'tc-1' });
+    const sibling = makeAttachment({ status: 'pending', toolCallId: 'tc-2' });
+    const other = makeAttachment({ file_id: 'fid-other', status: 'pending', toolCallId: 'tc-3' });
+    const ctx = setup({
+      attachment: first,
+      isSubmitting: true,
+      seedEntries: [first, sibling, other],
+      preview: {
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>final</table>',
+        textFormat: 'html',
+      },
+    });
+    const list = (ctx.map[messageId] ?? []) as AttachmentFixture[];
+    expect(list).toHaveLength(3);
+    expect(list[0].status).toBe('ready');
+    expect(list[0].text).toBe('<table>final</table>');
+    expect(list[1].status).toBe('ready');
+    expect(list[1].text).toBe('<table>final</table>');
+    expect(list[1].toolCallId).toBe('tc-2');
+    expect(list[2].status).toBe('pending');
+    expect(list[2].text).toBeUndefined();
   });
 
   it('does NOT upsert while the polled status is still pending', () => {
@@ -293,7 +363,7 @@ describe('useAttachmentPreviewSync', () => {
     /* Map should be unchanged from the initial seed — no patch. */
     const list = ctx.map[messageId] ?? [];
     expect(list).toHaveLength(1);
-    expect((list[0] as TAttachment & { status?: string }).status).toBe('pending');
+    expect((list[0] as AttachmentFixture).status).toBe('pending');
   });
 
   it('reports isPolling true when the query is fetching and the gate is open', () => {
@@ -336,7 +406,7 @@ describe('useAttachmentPreviewSync', () => {
     });
     const list = ctx.map[messageId] ?? [];
     expect(list).toHaveLength(1);
-    const inserted = list[0] as TAttachment & { text?: string; textFormat?: string };
+    const inserted = list[0] as AttachmentFixture;
     expect(inserted.file_id).toBe(fileId);
     expect(inserted.status).toBe('ready');
     expect(inserted.text).toBe('<table>resolved-on-reload</table>');
@@ -361,7 +431,7 @@ describe('useAttachmentPreviewSync', () => {
     });
     const list = ctx.map[messageId] ?? [];
     expect(list).toHaveLength(1);
-    const inserted = list[0] as TAttachment & { previewError?: string };
+    const inserted = list[0] as AttachmentFixture;
     expect(inserted.status).toBe('failed');
     expect(inserted.previewError).toBe('render-timeout');
   });
@@ -370,10 +440,10 @@ describe('useAttachmentPreviewSync', () => {
     /* The signal is the bridge to ToolArtifactCard's auto-open path:
      * the card mounts after the routing re-runs (post-transition), so
      * it can't observe the transition itself. Setting a one-shot flag
-     * keyed by file_id lets the card consume the signal on its very
-     * first effect tick. We assert on the flag directly here; the
+     * keyed by message and file lets only the owner consume the signal
+     * on its first effect tick. We assert on the flag directly here; the
      * consume+open behavior lives in `ToolArtifactCard`'s coverage. */
-    it('flips the per-file_id flag on the pending→ready transition', () => {
+    it('flips the owning message and file flag on the pending→ready transition', () => {
       const ctx = setupWithTransitions({ file_id: fileId, status: 'pending' });
       expect(ctx.justResolved).toBe(false);
       ctx.setPreview({
@@ -383,6 +453,108 @@ describe('useAttachmentPreviewSync', () => {
         textFormat: 'html',
       });
       expect(ctx.justResolved).toBe(true);
+    });
+
+    it('does not flag a previous response preview as newly resolved during regeneration', () => {
+      const ctx = setupWithTransitions(
+        { file_id: fileId, status: 'pending' },
+        { isSubmittingAtMount: true, messageIsSubmittingAtMount: false },
+      );
+      ctx.setPreview({
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>old response</table>',
+        textFormat: 'html',
+      });
+      expect(ctx.justResolved).toBe(false);
+    });
+
+    it('reclassifies a reused pending file when its owning response changes to the live one', () => {
+      let preview: TFilePreview | undefined = { file_id: fileId, status: 'pending' };
+      let owner = 'historical-response';
+      let isSubmitting = false;
+      mockUseFilePreview.mockReset();
+      mockUseFilePreview.mockImplementation(() => ({ data: preview, isFetching: false }));
+
+      const flags = { live: false, history: false };
+      const FlagProbe = () => {
+        flags.live = useRecoilValue(store.previewJustResolved(['live-response', fileId]));
+        flags.history = useRecoilValue(store.previewJustResolved(['historical-response', fileId]));
+        return null;
+      };
+      const { rerender } = renderHook(
+        ({ attachment }: { attachment: TAttachment }) => useAttachmentPreviewSync(attachment),
+        {
+          initialProps: { attachment: makeAttachment({ messageId: owner }) },
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <RecoilRoot>
+              <JotaiProvider>
+                <FlagProbe />
+                <MessageContext.Provider
+                  value={{ messageId: owner, isExpanded: true, isSubmitting }}
+                >
+                  {children}
+                </MessageContext.Provider>
+              </JotaiProvider>
+            </RecoilRoot>
+          ),
+        },
+      );
+      owner = 'live-response';
+      isSubmitting = true;
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      preview = {
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>new answer</table>',
+        textFormat: 'html',
+      };
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      expect(flags.live).toBe(true);
+      expect(flags.history).toBe(false);
+    });
+
+    it('does not flag a live file that becomes history before its preview resolves', () => {
+      let preview: TFilePreview | undefined = { file_id: fileId, status: 'pending' };
+      let owner = 'live-response';
+      let isSubmitting = true;
+      mockUseFilePreview.mockReset();
+      mockUseFilePreview.mockImplementation(() => ({ data: preview, isFetching: false }));
+
+      let historyFlag = false;
+      const FlagProbe = () => {
+        historyFlag = useRecoilValue(store.previewJustResolved(['historical-response', fileId]));
+        return null;
+      };
+      const { rerender } = renderHook(
+        ({ attachment }: { attachment: TAttachment }) => useAttachmentPreviewSync(attachment),
+        {
+          initialProps: { attachment: makeAttachment({ messageId: owner }) },
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <RecoilRoot>
+              <JotaiProvider>
+                <FlagProbe />
+                <MessageContext.Provider
+                  value={{ messageId: owner, isExpanded: true, isSubmitting }}
+                >
+                  {children}
+                </MessageContext.Provider>
+              </JotaiProvider>
+            </RecoilRoot>
+          ),
+        },
+      );
+      owner = 'historical-response';
+      isSubmitting = false;
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      preview = {
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>old answer</table>',
+        textFormat: 'html',
+      };
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      expect(historyFlag).toBe(false);
     });
 
     it('does NOT flip the flag when the polled status is "failed"', () => {

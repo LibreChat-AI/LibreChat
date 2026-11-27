@@ -1,14 +1,37 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { FilesHostProvider } from '@librechat/chat/react';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { TAttachment } from 'librechat-data-provider';
+import type { FilesHost, MessagePartsFilePreviewProps } from '@librechat/chat/react';
+import type { TAttachment, TFile } from 'librechat-data-provider';
+import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import RetrievalCall from '../RetrievalCall';
+
+const knownFiles: { current: TFile[] } = { current: [] };
+
+const filesHost: FilesHost = {
+  renderEndpointIcon: () => null,
+  useDeleteFile: () => () => undefined,
+  getPreviewUrl: () => undefined,
+  useKnownFiles: () => knownFiles.current,
+};
+
+const partsHost = {
+  ...appMessagePartsHost,
+  renderFilePreview: ({ open, fileId, fileName, fileSource }: MessagePartsFilePreviewProps) =>
+    open ? (
+      <div data-testid="file-preview-dialog" data-file-id={fileId} data-file-source={fileSource}>
+        {fileName}
+      </div>
+    ) : null,
+};
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => {
     const translations: Record<string, string> = {
-      com_ui_searching_files: 'Searching files...',
-      com_ui_retrieved_files: 'Retrieved files',
+      com_ui_searching_files: 'Searching your files',
+      com_ui_retrieved_files: 'Searched your files',
       com_ui_retrieval_failed: 'failed',
       com_ui_tool_failed: 'failed',
       com_ui_preview: 'Preview',
@@ -17,13 +40,21 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: isExpanded
       ? { display: 'grid', gridTemplateRows: '1fr', opacity: 1 }
       : { display: 'grid', gridTemplateRows: '0fr', opacity: 0 },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
 jest.mock('../ProgressText', () => ({
@@ -73,18 +104,25 @@ jest.mock('../ToolOutput', () => ({
 
 jest.mock('~/utils', () => ({
   cn: (...classes: (string | boolean | undefined)[]) => classes.filter(Boolean).join(' '),
+  sortPagesByRelevance: (pages: number[]) => pages,
   logger: { error: jest.fn(), debug: jest.fn() },
-}));
-
-jest.mock('~/data-provider', () => ({
-  useGetFiles: jest.fn(() => ({ data: [] })),
 }));
 
 jest.mock('../FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileId, fileName }: { open: boolean; fileId?: string; fileName: string }) =>
+  default: ({
+    open,
+    fileId,
+    fileName,
+    fileSource,
+  }: {
+    open: boolean;
+    fileId?: string;
+    fileName: string;
+    fileSource?: string;
+  }) =>
     open ? (
-      <div data-testid="file-preview-dialog" data-file-id={fileId}>
+      <div data-testid="file-preview-dialog" data-file-id={fileId} data-file-source={fileSource}>
         {fileName}
       </div>
     ) : null,
@@ -99,15 +137,17 @@ const renderRetrievalCall = (
   props: Partial<typeof defaultProps & { output?: string; attachments?: TAttachment[] }> = {},
 ) =>
   render(
-    <RecoilRoot>
-      <RetrievalCall {...defaultProps} {...props} />
-    </RecoilRoot>,
+    <MessagePartsHostProvider host={partsHost}>
+      <FilesHostProvider host={filesHost}>
+        <RecoilRoot>
+          <RetrievalCall {...defaultProps} {...props} />
+        </RecoilRoot>
+      </FilesHostProvider>
+    </MessagePartsHostProvider>,
   );
 
-const mockedUseGetFiles = jest.requireMock('~/data-provider').useGetFiles as jest.Mock;
-
 beforeEach(() => {
-  mockedUseGetFiles.mockReturnValue({ data: [] });
+  knownFiles.current = [];
 });
 
 describe('RetrievalCall - LGCY-02: Modern visual patterns', () => {
@@ -158,14 +198,59 @@ describe('RetrievalCall - LGCY-02: Collapsible output panel', () => {
     expect(screen.queryByText('file results here')).not.toBeInTheDocument();
   });
 
-  it('does not show panel when output contains error', () => {
+  it('does not offer expansion when output has no renderable results', () => {
     renderRetrievalCall({
-      output: 'error processing tool',
+      output: 'Search completed without matches',
       initialProgress: 1,
       isSubmitting: false,
     });
 
-    expect(screen.queryByText('error processing tool')).not.toBeInTheDocument();
+    const progressText = screen.getByTestId('progress-text');
+    expect(progressText).toHaveAttribute('data-has-input', 'false');
+
+    fireEvent.click(progressText);
+    expect(progressText).toHaveAttribute('data-expanded', 'false');
+  });
+
+  it('offers attachment results even when the tool has no text output', () => {
+    renderRetrievalCall({
+      initialProgress: 1,
+      isSubmitting: false,
+      attachments: [
+        {
+          type: 'file_search',
+          toolCallId: 'call-1',
+          file_search: {
+            sources: [
+              {
+                fileId: 'file-123',
+                fileName: 'notes.txt',
+                relevance: 0.8,
+                content: 'Attachment result content',
+                pages: [],
+                pageRelevance: {},
+              },
+            ],
+          },
+        },
+      ] as unknown as TAttachment[],
+    });
+
+    const progressText = screen.getByTestId('progress-text');
+    expect(progressText).toHaveAttribute('data-has-input', 'true');
+
+    fireEvent.click(progressText);
+    expect(screen.getByText('Attachment result content')).toBeInTheDocument();
+  });
+
+  it('does not show panel when output contains error', () => {
+    renderRetrievalCall({
+      output: 'Error processing tool',
+      initialProgress: 1,
+      isSubmitting: false,
+    });
+
+    expect(screen.queryByText('Error processing tool')).not.toBeInTheDocument();
   });
 });
 
@@ -174,14 +259,14 @@ describe('RetrievalCall - LGCY-03: Localization', () => {
     renderRetrievalCall({ initialProgress: 0.5, isSubmitting: true });
 
     const progressText = screen.getByTestId('progress-text');
-    expect(progressText).toHaveAttribute('data-in-progress', 'Searching files...');
+    expect(progressText).toHaveAttribute('data-in-progress', 'Searching your files');
   });
 
   it('uses localized finished text', () => {
     renderRetrievalCall({ initialProgress: 1, isSubmitting: false });
 
     const progressText = screen.getByTestId('progress-text');
-    expect(progressText).toHaveAttribute('data-finished', 'Retrieved files');
+    expect(progressText).toHaveAttribute('data-finished', 'Searched your files');
   });
 
   it('does not contain hardcoded "Searching my knowledge" text', () => {
@@ -213,16 +298,15 @@ describe('RetrievalCall - A11Y-04: screen reader status announcements', () => {
 
 describe('RetrievalCall - file preview resolution', () => {
   it('resolves parsed filenames against known files and opens preview', () => {
-    mockedUseGetFiles.mockReturnValue({
-      data: [
-        {
-          file_id: 'file-123',
-          filename: 'Tutorial Imazing.pdf',
-          bytes: 2048,
-          type: 'application/pdf',
-        },
-      ],
-    });
+    knownFiles.current = [
+      {
+        file_id: 'file-123',
+        filename: 'Tutorial Imazing.pdf',
+        bytes: 2048,
+        type: 'application/pdf',
+        source: 'text',
+      } as TFile,
+    ];
 
     renderRetrievalCall({
       initialProgress: 1,
@@ -235,6 +319,7 @@ describe('RetrievalCall - file preview resolution', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview: Tutorial Imazing.pdf' }));
 
     expect(screen.getByTestId('file-preview-dialog')).toHaveAttribute('data-file-id', 'file-123');
+    expect(screen.getByTestId('file-preview-dialog')).toHaveAttribute('data-file-source', 'text');
   });
 
   it('keeps multiple parsed results clickable when only one attachment source is available', () => {
@@ -273,4 +358,23 @@ describe('RetrievalCall - file preview resolution', () => {
       2,
     );
   });
+});
+
+it('shows file search results directly beneath a generated single-tool title', () => {
+  render(
+    <MessagePartsHostProvider host={partsHost}>
+      <FilesHostProvider host={filesHost}>
+        <RecoilRoot>
+          <GeneratedToolLabelContext.Provider value>
+            <RetrievalCall
+              initialProgress={1}
+              isSubmitting={false}
+              output="File: notes.txt\nRelevance: 0.8\nContent: file results here"
+            />
+          </GeneratedToolLabelContext.Provider>
+        </RecoilRoot>
+      </FilesHostProvider>
+    </MessagePartsHostProvider>,
+  );
+  expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
 });

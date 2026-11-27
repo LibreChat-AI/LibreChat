@@ -117,6 +117,26 @@ describe('resizeAvatar — fetchAvatarBuffer', () => {
       expect(agentFn(new URL('http://anything'))).toEqual({ __kind: 'http' });
       expect(createSSRFSafeAgents).toHaveBeenCalledTimes(1);
     });
+
+    it('passes configured fetch headers while preserving shared fetch controls', async () => {
+      fetch.mockResolvedValueOnce(makeResponse({ body: Buffer.from('rawimg') }));
+      await resizeAvatar({
+        userId: 'u1',
+        input: 'https://cdn.example.com/avatar.png',
+        fetchOptions: {
+          headers: {
+            Authorization: 'Bearer avatar-token',
+          },
+        },
+      });
+
+      const opts = fetch.mock.calls[0][1];
+      expect(opts.headers).toEqual({ Authorization: 'Bearer avatar-token' });
+      expect(opts.redirect).toBe('error');
+      expect(opts.timeout).toBe(5000);
+      expect(opts.size).toBe(10 * 1024 * 1024);
+      expect(typeof opts.agent).toBe('function');
+    });
   });
 
   describe('rejects unsafe responses', () => {

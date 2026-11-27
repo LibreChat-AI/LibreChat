@@ -1,30 +1,97 @@
 import { logger } from '@librechat/data-schemas';
-import type { AppConfig } from '@librechat/data-schemas';
 import {
-  Tools,
   Constants,
   isAgentsEndpoint,
   isEphemeralAgentId,
+  getEphemeralSender,
   appendAgentIdSuffix,
+  resolveSpecArtifacts,
   encodeEphemeralAgentId,
+  resolveMCPAppsPolicy,
+  resolveSpecUserToggles,
+  resolveSpecSkillsEnabled,
 } from 'librechat-data-provider';
-import type { Agent, TConversation } from 'librechat-data-provider';
+import type { Agent, TModelSpec, TConversation, TEphemeralAgent } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
+import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
+import type { ParsedServerConfig } from '~/mcp/types';
+import {
+  resolveEphemeralTools,
+  resolveEphemeralMCPServers,
+  synthesizeToggleToolOptions,
+} from '~/agents/toggles';
+import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
+import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
+import { mapWithConcurrency } from '~/utils/promise';
 
 const { mcp_all, mcp_delimiter } = Constants;
 
 export const ADDED_AGENT_ID = 'added_agent';
 
+function applyModelSpecSkills(
+  result: Record<string, unknown>,
+  modelSpec: Pick<TModelSpec, 'skills'> | null | undefined,
+  ephemeralSkills: boolean | undefined,
+): void {
+  if (!modelSpec || !Object.prototype.hasOwnProperty.call(modelSpec, 'skills')) {
+    /** With no spec default to resolve against there is still a decision to
+     *  record: the run-level `ephemeralSkillsToggle` this pane would otherwise
+     *  fall back to belongs to the PRIMARY request, so leaving `skills_enabled`
+     *  unset lets the other pane's badge scope this one. */
+    if (typeof ephemeralSkills === 'boolean') {
+      result.skills_enabled = ephemeralSkills;
+      if (!ephemeralSkills) {
+        result.skills = [];
+      }
+    }
+    return;
+  }
+  const skillsEnabled = resolveSpecSkillsEnabled(ephemeralSkills, modelSpec.skills);
+  result.skills_enabled = skillsEnabled;
+  if (!skillsEnabled || Array.isArray(modelSpec.skills)) {
+    result.skills = [];
+    return;
+  }
+  delete result.skills;
+}
+
+function applyModelSpecSubagents(
+  result: Record<string, unknown>,
+  modelSpec: Pick<TModelSpec, 'subagents'> | null | undefined,
+): void {
+  if (modelSpec?.subagents) {
+    result.subagents = modelSpec.subagents;
+  }
+}
+
 export interface LoadAddedAgentDeps {
-  getAgent: (searchParameter: { id: string }) => Promise<Agent | null>;
+  /** Resolves the agent without its `versions` history; `version` carries the count. */
+  getAgent: (searchParameter: {
+    id: string;
+  }) => Promise<(Agent & { version?: number; versions?: { length: number } }) | null>;
   getMCPServerTools: (
     userId: string,
     serverName: string,
+    serverConfig?: ParsedServerConfig,
+    capabilityProfile?: MCPClientCapabilityProfile,
   ) => Promise<Record<string, unknown> | null>;
+  /** The MCP servers this user can reach, with the registry's tier precedence
+   *  already applied — the resolution behind the client's catalog. Omitted, the
+   *  chat selection is used as sent. */
+  getAccessibleMCPServers?: (
+    userId: string,
+    role?: string,
+  ) => Promise<Record<string, ParsedServerConfig>>;
 }
 
 interface LoadAddedAgentParams {
-  req: { user?: { id?: string }; config?: Record<string, unknown> };
+  req: {
+    user?: { id?: string; role?: string };
+    config?: Record<string, unknown>;
+    body?: { ephemeralAgent?: TEphemeralAgent };
+  };
   conversation: TConversation | null;
   primaryAgent?: Agent | null;
 }
@@ -52,9 +119,8 @@ export async function loadAddedAgent(
       return null;
     }
 
-    const agentRecord = agent as Record<string, unknown>;
-    const versions = agentRecord.versions as unknown[] | undefined;
-    agentRecord.version = versions ? versions.length : 0;
+    const agentRecord = agent as Agent & { version?: number; versions?: { length: number } };
+    agentRecord.version ??= agentRecord.versions?.length ?? 0;
     agent.id = appendAgentIdSuffix(agent.id, 1);
     return agent;
   }
@@ -63,13 +129,7 @@ export async function loadAddedAgent(
     promptPrefix?: string;
     spec?: string;
     modelLabel?: string;
-    ephemeralAgent?: {
-      mcp?: string[];
-      execute_code?: boolean;
-      file_search?: boolean;
-      web_search?: boolean;
-      artifacts?: unknown;
-    };
+    ephemeralAgent?: TEphemeralAgent;
     [key: string]: unknown;
   };
 
@@ -79,6 +139,26 @@ export async function loadAddedAgent(
   }
 
   const appConfig = req.config as AppConfig | undefined;
+  const capabilityProfile = resolveMCPClientCapabilityProfile(
+    resolveMCPAppsPolicy(appConfig?.mcpSettings?.apps),
+  );
+  const modelSpecs = (appConfig?.modelSpecs as { list?: TModelSpec[] })?.list;
+  const modelSpec: TModelSpec | null =
+    spec != null && spec !== '' ? (modelSpecs?.find((s) => s.name === spec) ?? null) : null;
+
+  /** An added pane carries no toggles of its own — one badge row is shared by
+   *  both panes and submits a single `ephemeralAgent` — so the request's state
+   *  stands in, field by field, for whatever the pane leaves unset. Merged
+   *  rather than substituted so a pane that does carry a partial object still
+   *  inherits the toggles it omits.
+   *
+   *  A pane whose spec gives the user no control over its tools is exempt:
+   *  those toggles were never offered for it, so the other pane's choices must
+   *  not silently strip the capabilities its spec configured. */
+  const requestAgent = resolveSpecUserToggles(req.body?.ephemeralAgent, modelSpec);
+  const paneAgent = resolveSpecUserToggles(rest.ephemeralAgent, modelSpec);
+  const ephemeralAgent: TEphemeralAgent | undefined =
+    requestAgent || paneAgent ? { ...requestAgent, ...paneAgent } : undefined;
 
   const primaryIsEphemeral = primaryAgent && isEphemeralAgentId(primaryAgent.id);
   if (primaryIsEphemeral && Array.isArray(primaryAgent.tools)) {
@@ -95,84 +175,69 @@ export async function loadAddedAgent(
       }
     }
 
-    const modelSpecs = (appConfig?.modelSpecs as { list?: Array<{ name: string; label?: string }> })
-      ?.list;
-    const modelSpec = spec != null && spec !== '' ? modelSpecs?.find((s) => s.name === spec) : null;
-    const sender =
-      rest.modelLabel ??
-      modelSpec?.label ??
-      (endpointConfig?.modelDisplayLabel as string | undefined) ??
-      '';
+    const sender = getEphemeralSender({
+      modelLabel: rest.modelLabel,
+      specLabel: modelSpec?.label,
+      modelDisplayLabel: endpointConfig?.modelDisplayLabel as string | undefined,
+    });
     const ephemeralId = encodeEphemeralAgentId({ endpoint, model, sender, index: 1 });
 
-    return {
+    const result: Record<string, unknown> = {
       id: ephemeralId,
       instructions: promptPrefix || '',
       provider: endpoint,
       model_parameters: {},
       model,
       tools: [...primaryAgent.tools],
-    } as unknown as Agent;
+    };
+    applyModelSpecSkills(result, modelSpec, ephemeralAgent?.skills);
+    applyModelSpecSubagents(result, modelSpec);
+    const mirroredArtifacts = resolveSpecArtifacts(ephemeralAgent?.artifacts, modelSpec?.artifacts);
+    if (mirroredArtifacts != null) {
+      result.artifacts = mirroredArtifacts;
+    }
+    const primaryToggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+    if (primaryToggleToolOptions) {
+      result.tool_options = primaryToggleToolOptions;
+    }
+    return result as unknown as Agent;
   }
 
-  const ephemeralAgent = rest.ephemeralAgent as
-    | {
-        mcp?: string[];
-        execute_code?: boolean;
-        file_search?: boolean;
-        web_search?: boolean;
-        artifacts?: unknown;
-      }
-    | undefined;
-  const mcpServers = new Set<string>(ephemeralAgent?.mcp);
   const userId = req.user?.id ?? '';
+  const mcpServers = new Set<string>(
+    await resolveEphemeralMCPServers({
+      selected: ephemeralAgent?.mcp,
+      specServers: modelSpec?.mcpServers,
+      userId,
+      role: req.user?.role,
+      getAccessibleMCPServers: deps.getAccessibleMCPServers,
+    }),
+  );
 
-  const modelSpecs = (
-    appConfig?.modelSpecs as {
-      list?: Array<{
-        name: string;
-        label?: string;
-        mcpServers?: string[];
-        executeCode?: boolean;
-        fileSearch?: boolean;
-        webSearch?: boolean;
-      }>;
-    }
-  )?.list;
-  let modelSpec: (typeof modelSpecs extends Array<infer T> | undefined ? T : never) | null = null;
-  if (spec != null && spec !== '') {
-    modelSpec = modelSpecs?.find((s) => s.name === spec) ?? null;
-  }
-  if (modelSpec?.mcpServers) {
-    for (const mcpServer of modelSpec.mcpServers) {
-      mcpServers.add(mcpServer);
-    }
-  }
+  /** Mirror the primary ephemeral loader (`loadEphemeralAgent`): spec flags are
+   *  defaults an explicit conversation toggle overrides, and downstream
+   *  `createRun` gating (hitlCapable, non-subagent, admin filter) is uniform. */
+  const tools: string[] = resolveEphemeralTools(ephemeralAgent, modelSpec);
 
-  const tools: string[] = [];
-  if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
-    tools.push(Tools.execute_code);
-  }
-  if (ephemeralAgent?.file_search === true || modelSpec?.fileSearch === true) {
-    tools.push(Tools.file_search);
-  }
-  if (ephemeralAgent?.web_search === true || modelSpec?.webSearch === true) {
-    tools.push(Tools.web_search);
-  }
-
-  const addedServers = new Set<string>();
-  for (const mcpServer of mcpServers) {
-    if (addedServers.has(mcpServer)) {
-      continue;
-    }
-    const serverTools = await deps.getMCPServerTools(userId, mcpServer);
-    if (!serverTools) {
-      tools.push(`${mcp_all}${mcp_delimiter}${mcpServer}`);
-      addedServers.add(mcpServer);
-      continue;
-    }
-    tools.push(...Object.keys(serverTools));
-    addedServers.add(mcpServer);
+  const serverToolKeys = await mapWithConcurrency(
+    [...mcpServers],
+    getLookupConcurrency(appConfig, 'mcpCatalogLookups'),
+    async (mcpServer): Promise<string[]> => {
+      /** Address durable catalogs by the effective request overlay; request-scoped
+       *  overlays still expand fresh through `mcp_all`. */
+      const rawOverlayConfig = appConfig?.mcpConfig?.[mcpServer];
+      const overlayConfig = rawOverlayConfig
+        ? validateMCPServerConfig(rawOverlayConfig)
+        : undefined;
+      const serverTools =
+        overlayConfig && requiresEphemeralUserConnection(overlayConfig)
+          ? null
+          : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
+      return serverTools ? Object.keys(serverTools) : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
+    },
+  );
+  for (const keys of serverToolKeys) {
+    tools.push(...keys);
   }
 
   const model_parameters: Record<string, unknown> = {};
@@ -206,11 +271,11 @@ export async function loadAddedAgent(
     }
   }
 
-  const sender =
-    rest.modelLabel ??
-    modelSpec?.label ??
-    (endpointConfig?.modelDisplayLabel as string | undefined) ??
-    '';
+  const sender = getEphemeralSender({
+    modelLabel: rest.modelLabel,
+    specLabel: modelSpec?.label,
+    modelDisplayLabel: endpointConfig?.modelDisplayLabel as string | undefined,
+  });
   const ephemeralId = encodeEphemeralAgentId({ endpoint, model, sender, index: 1 });
 
   const result: Record<string, unknown> = {
@@ -222,8 +287,16 @@ export async function loadAddedAgent(
     tools,
   };
 
-  if (ephemeralAgent?.artifacts != null && ephemeralAgent.artifacts) {
-    result.artifacts = ephemeralAgent.artifacts;
+  const artifacts = resolveSpecArtifacts(ephemeralAgent?.artifacts, modelSpec?.artifacts);
+  if (artifacts != null) {
+    result.artifacts = artifacts;
+  }
+  applyModelSpecSubagents(result, modelSpec);
+  applyModelSpecSkills(result, modelSpec, ephemeralAgent?.skills);
+
+  const toggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+  if (toggleToolOptions) {
+    result.tool_options = toggleToolOptions;
   }
 
   return result as unknown as Agent;

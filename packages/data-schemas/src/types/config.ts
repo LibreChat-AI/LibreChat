@@ -18,10 +18,14 @@ export type Config = {
   priority: number;
   /** Configuration overrides matching librechat.yaml structure */
   overrides: Partial<TCustomConfig>;
+  /** Dot-paths that suppress inherited config values during resolution */
+  tombstones?: string[];
   /** Whether this config override is currently active */
   isActive: boolean;
   /** Version number for cache invalidation, auto-increments on overrides change */
   configVersion: number;
+  /** Storage detail of the Mongoose binding: set when `overrides` keys are stored encoded */
+  keyEncoding?: number;
   /** Tenant identifier for multi-tenancy isolation */
   tenantId?: string;
   /** When this config was created */

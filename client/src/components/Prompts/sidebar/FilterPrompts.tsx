@@ -7,15 +7,19 @@ import type { Option } from '~/common';
 import { useLocalize, useCategories, useDebounce } from '~/hooks';
 import CreatePromptButton from '../buttons/CreatePromptButton';
 import { usePromptGroupsContext } from '~/Providers';
+import { PanelHeader } from '~/components/ui';
 import { cn } from '~/utils';
 import store from '~/store';
 
 export default function FilterPrompts({
   className = '',
   dropdownClassName = '',
+  children,
 }: {
   className?: string;
   dropdownClassName?: string;
+  /** Panel-specific controls that sit under the search, e.g. the auto-send toggle */
+  children?: React.ReactNode;
 }) {
   const localize = useLocalize();
   const { name, setName, hasAccess, promptGroups } = usePromptGroupsContext() ?? {};
@@ -30,17 +34,17 @@ export default function FilterPrompts({
       {
         value: SystemCategories.ALL,
         label: localize('com_ui_all_proper'),
-        icon: <ListFilter className="h-4 w-4 text-text-primary" />,
+        icon: <ListFilter className="text-text-primary h-4 w-4" />,
       },
       {
         value: SystemCategories.MY_PROMPTS,
         label: localize('com_ui_my_prompts'),
-        icon: <User className="h-4 w-4 text-text-primary" />,
+        icon: <User className="text-text-primary h-4 w-4" />,
       },
       {
         value: SystemCategories.SHARED_PROMPTS,
         label: localize('com_ui_shared_prompts'),
-        icon: <Share2 className="h-4 w-4 text-text-primary" />,
+        icon: <Share2 className="text-text-primary h-4 w-4" />,
       },
       { divider: true, value: null },
     ];
@@ -98,28 +102,38 @@ export default function FilterPrompts({
   }, [debouncedSearchTerm, resultCount, localize]);
 
   return (
-    <div role="search" className={cn('flex items-center gap-2', className)}>
-      <div aria-live="polite" aria-atomic="true" className="sr-only">
-        {searchResultsAnnouncement}
-      </div>
-      <Dropdown
-        value={categoryFilter || SystemCategories.ALL}
-        onChange={onSelect}
-        options={filterOptions}
-        className={cn('shrink-0 rounded-lg bg-transparent [&>button]:size-9', dropdownClassName)}
-        icon={<ListFilter className="h-4 w-4" />}
-        label="Filter: "
-        ariaLabel={localize('com_ui_filter_prompts')}
-        iconOnly
-      />
-      <FilterInput
-        inputId="prompts-filter"
-        label={localize('com_ui_filter_prompts_name')}
-        value={searchTerm}
-        onChange={handleSearchChange}
-        containerClassName="flex-1"
-      />
-      <CreatePromptButton />
-    </div>
+    <PanelHeader
+      className={className}
+      title={localize('com_ui_prompts')}
+      action={<CreatePromptButton />}
+      search={
+        <div role="search" className="flex items-center gap-2">
+          <div aria-live="polite" aria-atomic="true" className="sr-only">
+            {searchResultsAnnouncement}
+          </div>
+          <Dropdown
+            value={categoryFilter || SystemCategories.ALL}
+            onChange={onSelect}
+            options={filterOptions}
+            className={cn('shrink-0 [&>button]:size-9', dropdownClassName)}
+            shape="default"
+            triggerClassName="bg-transparent"
+            icon={<ListFilter className="h-4 w-4" />}
+            label="Filter: "
+            ariaLabel={localize('com_ui_filter_prompts')}
+            iconOnly
+          />
+          <FilterInput
+            inputId="prompts-filter"
+            label={localize('com_ui_filter_prompts_name')}
+            value={searchTerm}
+            onChange={handleSearchChange}
+            containerClassName="flex-1"
+          />
+        </div>
+      }
+    >
+      {children}
+    </PanelHeader>
   );
 }

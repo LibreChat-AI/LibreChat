@@ -10,7 +10,7 @@
   "com_ui_confirm_bulk_delete": "Are you sure you want to delete the selected items? This action cannot be undone.",
   "com_ui_delete_success": "Items deleted successfully",
   "com_ui_retry": "Retry",
-  "com_ui_selected_count": "{count} selected",
+  "com_ui_selected_count": "{{count}} selected",
   "com_ui_data_table": "Data Table",
   "com_ui_no_data": "No data",
   "com_ui_delete_selected": "Delete Selected",
@@ -28,5 +28,7 @@
   "com_ui_disabled": "Disabled",
   "com_ui_toggle_theme": "Toggle theme",
   "com_ui_dark_theme_enabled": "Dark theme enabled",
-  "com_ui_light_theme_enabled": "Light theme enabled"
+  "com_ui_light_theme_enabled": "Light theme enabled",
+  "com_ui_high_contrast_dark_theme_enabled": "High contrast dark theme enabled",
+  "com_ui_high_contrast_light_theme_enabled": "High contrast light theme enabled"
 }

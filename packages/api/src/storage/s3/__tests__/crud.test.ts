@@ -48,6 +48,7 @@ jest.mock('@librechat/data-schemas', () => ({
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { deleteRagFile } from '~/files';
 import { logger } from '@librechat/data-schemas';
+import { createStoredUploadDelete } from '~/files/orphan';
 
 describe('S3 CRUD', () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -580,7 +581,10 @@ describe('S3 CRUD', () => {
         fileName: 'downloaded.jpg',
       });
 
-      expect(global.fetch).toHaveBeenCalledWith('https://example.com/image.jpg');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://example.com/image.jpg',
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
       expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
       expect(result).toBe('https://bucket.s3.amazonaws.com/test-key?signed=true');
     });
@@ -593,7 +597,10 @@ describe('S3 CRUD', () => {
         fileName: 'downloaded.jpg',
       });
 
-      expect(global.fetch).toHaveBeenCalledWith('https://example.com/image.jpg');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://example.com/image.jpg',
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
       expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
       expect(result).toEqual({
         filepath: 'https://bucket.s3.amazonaws.com/test-key?signed=true',
@@ -761,6 +768,32 @@ describe('S3 CRUD', () => {
       expect(putInput.Body).toEqual(Buffer.from('decoded'));
     });
 
+    it('rejects instead of crashing when the response body fails mid-stream', async () => {
+      (global.fetch as unknown as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        headers: {
+          get: (name: string) => (name.toLowerCase() === 'content-type' ? 'image/png' : null),
+        },
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(Buffer.from('partial'));
+            controller.error(new Error('socket reset'));
+          },
+        }),
+        arrayBuffer: jest.fn(),
+      });
+
+      const { saveURLToS3WithMetadata } = await import('../crud');
+      await expect(
+        saveURLToS3WithMetadata({
+          userId: 'user123',
+          URL: 'https://example.com/image.jpg',
+          fileName: 'downloaded.jpg',
+        }),
+      ).rejects.toThrow('socket reset');
+      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    });
+
     it('throws error on non-ok response', async () => {
       (global.fetch as unknown as jest.Mock).mockResolvedValueOnce({
         ok: false,
@@ -777,6 +810,47 @@ describe('S3 CRUD', () => {
           fileName: 'missing.jpg',
         }),
       ).rejects.toThrow('Failed to fetch URL');
+    });
+
+    it('rejects non-http remote file URLs before fetching', async () => {
+      const { saveURLToS3 } = await import('../crud');
+      await expect(
+        saveURLToS3({
+          userId: 'user123',
+          URL: 'file:///etc/passwd',
+          fileName: 'passwd',
+        }),
+      ).rejects.toThrow('Refusing to fetch remote file over file:');
+
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects remote responses larger than the configured cap', async () => {
+      process.env.REMOTE_FILE_FETCH_MAX_BYTES = '4';
+      try {
+        (global.fetch as unknown as jest.Mock).mockResolvedValueOnce({
+          ok: true,
+          headers: {
+            get: (name: string) =>
+              ({
+                'content-length': '8',
+                'content-type': 'image/jpeg',
+              })[name.toLowerCase()] ?? null,
+          },
+          arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+        });
+
+        const { saveURLToS3 } = await import('../crud');
+        await expect(
+          saveURLToS3({
+            userId: 'user123',
+            URL: 'https://example.com/image.jpg',
+            fileName: 'downloaded.jpg',
+          }),
+        ).rejects.toThrow('Remote file response too large: 8 bytes');
+      } finally {
+        delete process.env.REMOTE_FILE_FETCH_MAX_BYTES;
+      }
     });
 
     it('handles fetch errors', async () => {
@@ -813,6 +887,106 @@ describe('S3 CRUD', () => {
       expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user123', file: mockFile });
       expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(1);
       expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+    });
+
+    it('does not mark deletion when HeadObject times out', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      const failure = Object.assign(new Error('head response lost'), { code: 'ETIMEDOUT' });
+      s3Mock.on(HeadObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+      expect(deleteRagFile).not.toHaveBeenCalled();
+    });
+
+    it('marks a lost DeleteObject response without confirming deletion', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('delete response lost'), { code: 'ETIMEDOUT' });
+      s3Mock.on(DeleteObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete.mock.calls).toEqual([[]]);
+      expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user123', file: mockFile });
+    });
+
+    it('keeps DeleteObject undispatched when RAG cleanup is denied', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('RAG denied'), { status: 403 });
+      jest.mocked(deleteRagFile).mockImplementationOnce(async () => {
+        expect(onDelete).not.toHaveBeenCalled();
+        throw failure;
+      });
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+    });
+
+    it('reports a definitive DeleteObject denial', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('delete denied'), {
+        $metadata: { httpStatusCode: 403 },
+      });
+      s3Mock.on(DeleteObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete.mock.calls).toEqual([[], ['rejected']]);
+    });
+
+    it.each([FileSources.s3, FileSources.cloudfront])(
+      'deletes an unrecorded %s upload independently of vector rollback',
+      async (source) => {
+        const mockFile = {
+          filepath: 'images/user123/file.jpg',
+          user: 'user123',
+          file_id: 'failed-upload',
+          source,
+          embedded: true,
+          metadata: { embeddedEntities: ['agent-a'] },
+        } as TFile;
+        s3Mock.on(HeadObjectCommand).resolves({});
+        jest
+          .mocked(deleteRagFile)
+          .mockImplementationOnce(async ({ file }) => file.embedded !== true);
+        const { deleteFileFromS3 } = await import('../crud');
+        const failure = new Error('Vector deletion was not confirmed');
+        const vectors = jest.fn().mockRejectedValue(failure);
+        const remove = createStoredUploadDelete({
+          source,
+          getDeleteFile: (destination) =>
+            destination === FileSources.vectordb
+              ? vectors
+              : async (_req, file) => deleteFileFromS3(mockReq, { ...mockFile, ...file, source }),
+        });
+        await expect(remove(mockReq as never, { ...mockFile, source })).rejects.toBe(failure);
+        expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+        expect(deleteRagFile).toHaveBeenCalledWith({
+          userId: 'user123',
+          file: { ...mockFile, embedded: false },
+        });
+        expect(vectors).toHaveBeenCalledWith(mockReq, mockFile);
+        expect(mockFile.embedded).toBe(true);
+        expect(mockFile.metadata?.embeddedEntities).toEqual(['agent-a']);
+      },
+    );
+
+    it('keeps the S3 object when vector cleanup returns false', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      s3Mock.on(HeadObjectCommand).resolves({});
+      jest.mocked(deleteRagFile).mockResolvedValueOnce(false);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile)).rejects.toThrow(
+        'Vector deletion was not confirmed',
+      );
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
     });
 
     it('uses the file owner for RAG cleanup when a different authorized user deletes', async () => {
@@ -1069,6 +1243,34 @@ describe('S3 CRUD', () => {
 
       expect(result).toBeInstanceOf(Readable);
       expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(1);
+    });
+
+    it('requests the decoded key for a non-ASCII file name', async () => {
+      const { getS3FileStream } = await import('../crud');
+      await getS3FileStream(
+        {} as ServerRequest,
+        'https://test-bucket.s3.amazonaws.com/images/user123/%D0%94%D0%BE%D0%B3%D0%BE%D0%B2%D0%BE%D1%80.pdf',
+      );
+
+      const [call] = s3Mock.commandCalls(GetObjectCommand);
+      expect(call.args[0].input.Key).toBe(
+        'images/user123/\u0414\u043e\u0433\u043e\u0432\u043e\u0440.pdf',
+      );
+    });
+
+    it('streams by the recorded key even when the stored URL no longer parses', async () => {
+      const { getS3FileStream } = await import('../crud');
+      const { resolveDownloadPath } = await import('~/storage/path');
+      const file = {
+        filepath: 'not a url: presigned link expired and was overwritten',
+        storageKey: 'uploads/user123/Ársreikningur 2025.pdf',
+      };
+
+      await getS3FileStream({} as ServerRequest, resolveDownloadPath(file));
+
+      const [call] = s3Mock.commandCalls(GetObjectCommand);
+      expect(call.args[0].input.Key).toBe(file.storageKey);
+      expect(logger.error).not.toHaveBeenCalled();
     });
 
     it('handles errors when retrieving stream', async () => {
@@ -1410,10 +1612,46 @@ describe('S3 CRUD', () => {
 
     it('handles URL with query parameters', async () => {
       const { extractKeyFromS3Url } = await import('../crud');
-      const key = extractKeyFromS3Url(
-        'https://bucket.s3.amazonaws.com/images/user123/file.png?X-Amz-Signature=abc',
-      );
+      const signedUrl =
+        'https://bucket.s3.amazonaws.com/images/user123/file.png?X-Amz-Signature=abc';
+      const key = extractKeyFromS3Url(signedUrl);
       expect(key).toBe('images/user123/file.png');
+      expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(signedUrl);
+      expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(key);
+    });
+
+    it('decodes percent-encoded keys from virtual-hosted-style URLs', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url(
+        'https://bucket.s3.amazonaws.com/uploads/user123/abc__%C3%81rsreikningur_2025.pdf',
+      );
+      expect(key).toBe('uploads/user123/abc__Ársreikningur_2025.pdf');
+    });
+
+    it('decodes percent-encoded keys from path-style URLs', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url(
+        'https://s3.us-west-2.amazonaws.com/test-bucket/uploads/user123/%E6%97%A5%E6%9C%AC%E8%AA%9E.pdf',
+      );
+      expect(key).toBe('uploads/user123/日本語.pdf');
+    });
+
+    it('preserves a literal percent in a filename (round-trip through %25)', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url('https://bucket.s3.amazonaws.com/uploads/100%25_done.pdf');
+      expect(key).toBe('uploads/100%_done.pdf');
+    });
+
+    it('returns a raw key untouched even when it contains a percent sign', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = 'uploads/user123/100%_done.pdf';
+      expect(extractKeyFromS3Url(key)).toBe(key);
+    });
+
+    it('falls back to the raw value on a malformed escape sequence', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url('https://bucket.s3.amazonaws.com/uploads/bad%E0%A4A.pdf');
+      expect(key).toBe('uploads/bad%E0%A4A.pdf');
     });
 
     it('extracts key from path-style regional endpoint', async () => {
@@ -1464,12 +1702,13 @@ describe('S3 CRUD', () => {
       expect(key).toBe('folder/file.txt');
     });
 
-    it('handles URLs with encoded characters', async () => {
+    it('decodes URLs with encoded characters back to the stored key', async () => {
       const { extractKeyFromS3Url } = await import('../crud');
       const key = extractKeyFromS3Url(
         'https://bucket.s3.amazonaws.com/test-bucket/images/user123/my%20file%20name.jpg',
       );
-      expect(key).toBe('images/user123/my%20file%20name.jpg');
+      /** The object was stored under `my file name.jpg`; `%20` is URL transport, not part of the key. */
+      expect(key).toBe('images/user123/my file name.jpg');
     });
 
     it('handles deep nested paths', async () => {
@@ -1496,12 +1735,12 @@ describe('S3 CRUD', () => {
       expect(result).toBe(malformedUrl);
     });
 
-    it('strips bucket from custom endpoint URLs (MinIO, R2)', async () => {
+    it('decodes a signed path-style custom endpoint URL for a legacy record', async () => {
       const { extractKeyFromS3Url } = await import('../crud');
       const key = extractKeyFromS3Url(
-        'https://minio.example.com/test-bucket/images/user123/file.jpg',
+        'https://minio.example.com/test-bucket/images/user123/my%20file.jpg?X-Amz-Credential=secret&X-Amz-Signature=signed',
       );
-      expect(key).toBe('images/user123/file.jpg');
+      expect(key).toBe('images/user123/my file.jpg');
     });
   });
 

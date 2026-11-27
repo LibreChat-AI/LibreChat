@@ -1,5 +1,5 @@
 import z from 'zod';
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, supportsContext1m, gptPointReleaseFamily } from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
 /**
@@ -55,10 +55,21 @@ const openAIModels = {
   'gpt-5.1': 400000,
   'gpt-5.2': 400000,
   'gpt-5.3': 400000,
-  'gpt-5.4': 272000, // standard context; 1M experimental available via API opt-in (2x rate)
-  'gpt-5.4-pro': 272000, // same window as gpt-5.4
+  'gpt-5.4': 1050000, // >272K input prices at the long-context tier (2x input, 1.5x output)
+  'gpt-5.4-pro': 1050000,
+  'gpt-5.4-mini': 400000,
+  'gpt-5.4-nano': 400000,
   'gpt-5.5': 1050000,
   'gpt-5.5-pro': 1050000,
+  'gpt-5.6': 1050000,
+  'gpt-5.6-terra': 1050000,
+  'gpt-5.6-luna': 1050000,
+  'gpt-6-cyber': 1050000,
+  'gpt-6-astra': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6-sol': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6.1-terra': 1050000,
+  'gpt-6-luna': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'chat-latest': 400000,
   'gpt-5-mini': 400000,
   'gpt-5-nano': 400000,
   'gpt-5-pro': 400000,
@@ -81,6 +92,11 @@ const mistralModels = {
   'mistral-nemo': 131000,
   'pixtral-large': 131000,
   codestral: 256000,
+  'mistral-medium-3': 131000,
+  'mistral-medium-3.5': 262144,
+  'mistral-medium-3-5': 262144,
+  'ministral-8b-2512': 262144,
+  'ministral-14b-2512': 262144,
 };
 
 const cohereModels = {
@@ -91,14 +107,25 @@ const cohereModels = {
   'command-text': 4086, // -10 from max
   'command-r': 127500, // -500 from max
   'command-r-plus': 127500, // -500 from max
+  'command-a': 255500, // -500 from max
+  'command-a-plus': 127500, // -500 from max
 };
 
 const googleModels = {
   /* Max I/O is combined so we subtract the amount from max response tokens for actual total */
-  gemma: 8196,
+  gemma: 32768,
   'gemma-2': 32768,
   'gemma-3': 32768,
   'gemma-3-27b': 131072,
+  'gemma4:31b': 256000,
+  'gemma4-31b': 256000,
+  'gemma-4-31b': 256000,
+  'gemma4:26b': 256000,
+  'gemma4-26b': 256000,
+  'gemma-4-26b-a4b': 256000,
+  'gemma-4-26b': 256000,
+  gemma4: 128000,
+  'gemma-4': 128000,
   gemini: 30720, // -2048 from max
   'gemini-pro-vision': 12288,
   'gemini-1.5': 1000000,
@@ -117,6 +144,14 @@ const googleModels = {
   'gemini-3-pro-image': 1000000,
   'gemini-3.1': 1000000,
   'gemini-3.1-flash-lite': 1000000,
+  'gemini-3.5-flash': 1048576,
+  'gemini-3.5-flash-lite': 1048576,
+  'gemini-3.6-flash': 1048576,
+  'gemini-3.7-flash': 1048576,
+  'gemini-3.8-flash': 1048576,
+  /** Shared across input, thinking and output; output is still capped by `maxOutputTokens`. */
+  'gemini-4-argon': 1048576,
+  'gemini-4-hydrogen': 1048576,
 };
 
 const anthropicModels = {
@@ -138,14 +173,56 @@ const anthropicModels = {
   'claude-3.7-sonnet': 200000,
   'claude-4': 200000,
   'claude-haiku-4-5': 200000,
+  'claude-haiku-5-5': 1000000,
+  'claude-haiku-5.5': 1000000,
   'claude-opus-4': 200000,
   'claude-opus-4-5': 200000,
   'claude-sonnet-4': 200000,
   'claude-sonnet-4-5': 200000,
   'claude-sonnet-4-6': 1000000,
+  'claude-sonnet-4.6': 1000000,
+  'claude-sonnet-4-7': 1000000,
+  'claude-sonnet-4.7': 1000000,
+  'claude-sonnet-4-8': 1000000,
+  'claude-sonnet-4.8': 1000000,
+  'claude-sonnet-4-9': 1000000,
+  'claude-sonnet-4.9': 1000000,
+  'claude-sonnet-5': 1000000,
+  'claude-sonnet-5-5': 1000000,
+  'claude-sonnet-5.5': 1000000,
   'claude-opus-4-6': 1000000,
   'claude-opus-4-7': 1000000,
+  'claude-opus-4-8': 1000000,
+  'claude-opus-5-5': 1000000,
+  'claude-opus-5.5': 1000000,
+  'claude-opus-5': 1000000,
+  'claude-fable-5': 1000000,
+  'claude-mythos-5': 1000000,
+  'claude-mythos-preview': 1000000,
+  'claude-fable-5-1': 1000000,
+  'claude-fable-5-2': 1000000,
+  'claude-mythos-5-1': 1000000,
+  'claude-mythos-5-2': 1000000,
 };
+
+const ANTHROPIC_CONTEXT_1M = 1000000;
+
+function usesAnthropicContextMap(endpoint: EModelEndpoint): boolean {
+  return (
+    endpoint === EModelEndpoint.anthropic ||
+    endpoint === EModelEndpoint.bedrock ||
+    endpoint === EModelEndpoint.openAI ||
+    endpoint === EModelEndpoint.agents ||
+    endpoint === EModelEndpoint.custom
+  );
+}
+
+function getAnthropicContext1m(modelName: string, endpoint: EModelEndpoint): number | undefined {
+  if (!usesAnthropicContextMap(endpoint) || !supportsContext1m(modelName)) {
+    return undefined;
+  }
+  return ANTHROPIC_CONTEXT_1M;
+}
 
 const deepseekModels = {
   deepseek: 128000,
@@ -154,6 +231,12 @@ const deepseekModels = {
   'deepseek.r1': 128000,
   'deepseek-r1': 128000,
   'deepseek-reasoner': 128000,
+  'deepseek-v3.1': 163840,
+  'deepseek-v3.2': 163840,
+  'deepseek-v3.2-speciale': 131072,
+  'deepseek-v4': 1048576,
+  'deepseek-v4-flash': 1048576,
+  'deepseek-v4-pro': 1048576,
 };
 
 const moonshotModels = {
@@ -183,6 +266,9 @@ const moonshotModels = {
   'kimi-k2-thinking': 262144,
   'kimi-k2-thinking-turbo': 262144,
   'kimi-k2.5': 262144,
+  'kimi-k2.6': 262144,
+  'kimi-k2.7': 262144,
+  'kimi-k3': 1048576,
   // Bedrock moonshot models
   'moonshot.kimi-k2-0711': 131072,
   'moonshot.kimi': 262144,
@@ -191,6 +277,8 @@ const moonshotModels = {
   'moonshotai.kimi': 262144,
   'moonshot.kimi-k2.5': 262144,
   'moonshotai.kimi-k2.5': 262144,
+  'moonshot.kimi-k3': 1048576,
+  'moonshotai.kimi-k3': 1048576,
 };
 
 const metaModels = {
@@ -236,13 +324,28 @@ const metaModels = {
   'llama-3.2-3b': 127500,
   'llama-3.2-11b': 127500,
   'llama-3.2-90b': 127500,
-  // Llama 3.3 (newest)
+  // Llama 3.3
   'llama3.3': 127500,
   'llama3-3': 127500,
   'llama-3.3': 127500,
   'llama3.3:70b': 127500,
   'llama3-3-70b': 127500,
   'llama-3.3-70b': 127500,
+  /* Llama 4. Scout's native ceiling is 10M, but no host serves anywhere near it,
+     so capping at 1M keeps pruning useful instead of never firing. */
+  llama4: 1048576,
+  'llama-4': 1048576,
+  'llama4-scout': 1048576,
+  'llama-4-scout': 1048576,
+  'llama4-maverick': 1048576,
+  'llama-4-maverick': 1048576,
+  // Muse (newest)
+  musespark: 1000000,
+  'muse-spark': 1000000,
+  'muse-spark-1.1': 1000000,
+  'muse-spark-1.2': 1000000,
+  'muse-glimmer': 131072,
+  'muse-glimmer-30b': 131072,
 };
 
 const qwenModels = {
@@ -269,6 +372,21 @@ const qwenModels = {
   'qwen3-coder-plus': 128000,
   'qwen3-coder-flash': 128000,
   'qwen3-next-80b-a3b': 262144,
+  'qwen3-coder-next': 262144,
+  /* Qwen3.5 onward: every open-weight size ships a 262K native window, while the
+     hosted plus/flash tiers serve 1M. */
+  'qwen3.5': 262144,
+  'qwen3.5-plus': 1000000,
+  'qwen3.5-flash': 1000000,
+  'qwen3.6': 262144,
+  'qwen3.6-plus': 1000000,
+  'qwen3.6-flash': 1000000,
+  'qwen3.7': 262144,
+  'qwen3.7-plus': 1000000,
+  'qwen3.7-flash': 1000000,
+  'qwen3.8': 262144,
+  'qwen3.8-plus': 1000000,
+  'qwen3.8-flash': 1000000,
 };
 
 const ai21Models = {
@@ -288,11 +406,71 @@ const amazonModels = {
   'nova-lite': 295000, // -5000 from max
   'nova-pro': 295000, // -5000 from max
   'nova-premier': 995000, // -5000 from max
+  'nova-2-lite': 995000, // -5000 from max
+  'nova-2-pro': 995000, // -5000 from max
 };
+
+/** Bedrock can reject near-limit GPT prompts before its published window is reached. */
+const bedrockOpenAIContext = 950000;
 
 const openAIBedrockModels = {
   'openai.gpt-oss-20b': 128000,
   'openai.gpt-oss-120b': 128000,
+  'openai.gpt-5.6': bedrockOpenAIContext,
+  'openai.gpt-6-astra': bedrockOpenAIContext,
+  'openai.gpt-6-sol': bedrockOpenAIContext,
+  'openai.gpt-6-luna': bedrockOpenAIContext,
+  'openai.gpt-5.4': bedrockOpenAIContext,
+  'openai.gpt-5.5': bedrockOpenAIContext,
+  'openai.gpt-6.1-terra': bedrockOpenAIContext,
+  'openai.gpt-oss-safeguard-20b': 128000,
+  'openai.gpt-oss-safeguard-120b': 128000,
+};
+
+/* Bedrock serves these under vendor-prefixed ids that no generic key reaches,
+   so each needs its own entry to avoid the 32K fallback.
+   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html */
+const vendorBedrockModels = {
+  'ai21.jamba-1-5-large': 256000,
+  'ai21.jamba-1-5-mini': 256000,
+  'google.gemma-3-4b-it': 128000,
+  'google.gemma-3-12b-it': 128000,
+  'google.gemma-3-27b-it': 128000,
+  'minimax.minimax-m2': 1000000,
+  'minimax.minimax-m2.1': 196000,
+  'minimax.minimax-m2.5': 196000,
+  'mistral.devstral-2-123b': 256000,
+  'mistral.magistral-small-2509': 128000,
+  'mistral.ministral-3-3b-instruct': 128000,
+  'mistral.ministral-3-8b-instruct': 128000,
+  'mistral.ministral-3-14b-instruct': 128000,
+  'mistral.voxtral-mini-3b-2507': 32768,
+  'mistral.voxtral-small-24b-2507': 32768,
+  'qwen.qwen3-32b': 32768,
+  'qwen.qwen3-235b-a22b-2507': 262144,
+  'qwen.qwen3-coder-30b-a3b': 262144,
+  'qwen.qwen3-coder-480b-a35b': 262144,
+  'qwen.qwen3-coder-next': 262144,
+  'qwen.qwen3-next-80b-a3b': 256000,
+  'qwen.qwen3-vl-235b-a22b': 256000,
+  'writer.palmyra-vision-7b': 4096,
+  'writer.palmyra-x4': 128000,
+  'writer.palmyra-x5': 128000,
+  'xai.grok-4.6': 500000,
+  'xai.grok-4.7': 524288,
+  'zai.glm-4.7': 203000,
+  'zai.glm-4.7-flash': 203000,
+  'zai.glm-5': 200000,
+  'zai.glm-5.3': 1000000,
+};
+
+// NVIDIA Nemotron models on Bedrock
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
+const nvidiaBedrockModels = {
+  'nvidia.nemotron-nano-9b-v2': 128000,
+  'nvidia.nemotron-nano-12b-v2': 128000,
+  'nvidia.nemotron-nano-3-30b': 256000,
+  'nvidia.nemotron-super-3-120b': 256000,
 };
 
 const bedrockModels = {
@@ -304,6 +482,8 @@ const bedrockModels = {
   ...ai21Models,
   ...amazonModels,
   ...openAIBedrockModels,
+  ...nvidiaBedrockModels,
+  ...vendorBedrockModels,
   ...anthropicModels,
 };
 
@@ -325,6 +505,12 @@ const xAIModels = {
   'grok-4': 256000, // 256K context
   'grok-4-fast': 2000000, // 2M context
   'grok-4-1-fast': 2000000, // 2M context (covers reasoning & non-reasoning variants)
+  'grok-4.5': 500000,
+  'grok-4-5': 500000,
+  'grok-4.6': 500000,
+  'grok-4-6': 500000,
+  'grok-4.7': 500000,
+  'grok-4-7': 500000,
 };
 
 const aggregateModels = {
@@ -336,6 +522,17 @@ const aggregateModels = {
   'glm-4.5-air': 131000,
   'glm-4.5v': 66000,
   'glm-4.6': 200000,
+  'glm-4.7': 204800,
+  'glm-4.7-flash': 202752,
+  'glm-5': 204800,
+  'glm-5.1': 204800,
+  'glm-5.2': 1048576,
+  'glm-5.3': 1048576,
+  // MiniMax
+  'minimax-m1': 1000000,
+  'minimax-m2': 204800,
+  'minimax-m2.7': 204800,
+  'minimax-m3': 1048576,
   // GPT-OSS
   'gpt-oss': 131000,
   'gpt-oss:20b': 131000,
@@ -350,7 +547,7 @@ const aggregateModels = {
   ...openAIModels,
 };
 
-export const maxTokensMap = {
+export const maxTokensMap: Record<string, Record<string, number>> = {
   [EModelEndpoint.azureOpenAI]: openAIModels,
   [EModelEndpoint.openAI]: aggregateModels,
   [EModelEndpoint.agents]: aggregateModels,
@@ -360,84 +557,77 @@ export const maxTokensMap = {
   [EModelEndpoint.bedrock]: bedrockModels,
 };
 
-export const modelMaxOutputs = {
-  o1: 32268, // -500 from max: 32,768
-  'o1-mini': 65136, // -500 from max: 65,536
-  'o1-preview': 32268, // -500 from max: 32,768
-  'gpt-5': 128000,
-  'gpt-5.1': 128000,
-  'gpt-5.2': 128000,
-  'gpt-5.3': 128000,
-  'gpt-5.4': 128000,
-  'gpt-5.4-pro': 128000,
-  'gpt-5.5': 128000,
-  'gpt-5.5-pro': 128000,
-  'gpt-5-mini': 128000,
-  'gpt-5-nano': 128000,
-  'gpt-5-pro': 128000,
-  'gpt-5.2-pro': 128000,
-  'gpt-oss-20b': 131000,
-  'gpt-oss-120b': 131000,
-  system_default: 32000,
-};
+/**
+ * Any model-keyed map. Matching reads keys only and never inspects a value, so
+ * the value type is deliberately open rather than a union that every caller has
+ * to cast into.
+ */
+type ModelKeyedMap = Readonly<Record<string, unknown>>;
 
-/** Outputs from https://docs.anthropic.com/en/docs/about-claude/models/all-models#model-names */
-const anthropicMaxOutputs = {
-  'claude-3-haiku': 4096,
-  'claude-3-sonnet': 4096,
-  'claude-3-opus': 4096,
-  'claude-haiku-4-5': 64000,
-  'claude-sonnet-4': 64000,
-  'claude-sonnet-4-6': 64000,
-  'claude-opus-4': 32000,
-  'claude-opus-4-5': 64000,
-  'claude-opus-4-6': 128000,
-  'claude-opus-4-7': 128000,
-  'claude-3.5-sonnet': 8192,
-  'claude-3-5-sonnet': 8192,
-  'claude-3.7-sonnet': 128000,
-  'claude-3-7-sonnet': 128000,
-};
-
-/** Outputs from https://api-docs.deepseek.com/quick_start/pricing */
-const deepseekMaxOutputs = {
-  deepseek: 8000, // deepseek-chat default: 4K, max: 8K
-  'deepseek-chat': 8000,
-  'deepseek-reasoner': 64000, // default: 32K, max: 64K
-  'deepseek-r1': 64000,
-  'deepseek-v3': 8000,
-  'deepseek.r1': 64000,
-};
-
-export const maxOutputTokensMap = {
-  [EModelEndpoint.anthropic]: anthropicMaxOutputs,
-  [EModelEndpoint.azureOpenAI]: modelMaxOutputs,
-  [EModelEndpoint.openAI]: { ...modelMaxOutputs, ...deepseekMaxOutputs },
-  [EModelEndpoint.custom]: { ...modelMaxOutputs, ...deepseekMaxOutputs },
-};
-
-/** Finds the longest matching key in the tokens map via substring match. */
-export function findMatchingPattern(
-  modelName: string,
-  tokensMap: Record<string, number> | EndpointTokenConfig,
-): string | null {
+function findLongestKey(lowerModelName: string, tokensMap: ModelKeyedMap): string | null {
   const keys = Object.keys(tokensMap);
-  const lowerModelName = modelName.toLowerCase();
   let bestMatch: string | null = null;
   let bestLength = 0;
   for (let i = keys.length - 1; i >= 0; i--) {
     const key = keys[i];
     const lowerKey = key.toLowerCase();
-    if (lowerKey.length > bestLength && lowerModelName.includes(lowerKey)) {
-      if (lowerKey.length === lowerModelName.length) {
-        return key;
-      }
-      bestMatch = key;
-      bestLength = lowerKey.length;
+    if (lowerKey.length <= bestLength) {
+      continue;
     }
+    const keyIndex = lowerModelName.indexOf(lowerKey);
+    if (keyIndex === -1) {
+      continue;
+    }
+    if (lowerKey.length === lowerModelName.length) {
+      return key;
+    }
+    // A minor version must not match the beginning of a snapshot date.
+    const nextCharacter = lowerModelName.charCodeAt(keyIndex + lowerKey.length);
+    if (nextCharacter >= 48 && nextCharacter <= 57 && /\d$/.test(lowerKey)) {
+      continue;
+    }
+    bestMatch = key;
+    bestLength = lowerKey.length;
   }
 
   return bestMatch;
+}
+
+/**
+ * Finds the longest matching key in the tokens map via substring match.
+ *
+ * A vendor prefix can outrank the id it precedes: `moonshotai/kimi-k2` matched
+ * `moonshot` (8) over `kimi-k2` (7) and reported half the real window. When the
+ * whole id resolves to a prefix-only match, retry against the model segment.
+ *
+ * A key that carries the vendor itself is already the most specific answer and
+ * is kept. `EndpointTokenConfig` is an arbitrary record, and one built from
+ * OpenRouter is keyed by `org/model`, so those must still beat a bare `model`.
+ *
+ * A GPT point release with no key of its own (`gpt-6.1-sol`) resolves to its
+ * family's (`gpt-6-sol`), for context windows, output limits and pricing alike.
+ */
+export function findMatchingPattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
+  const direct = findVendorAwarePattern(modelName, tokensMap);
+  if (direct != null) {
+    return direct;
+  }
+  const family = gptPointReleaseFamily(modelName);
+  return family == null ? null : findVendorAwarePattern(family, tokensMap);
+}
+
+function findVendorAwarePattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
+  const lowerModelName = modelName.toLowerCase();
+  const slashIndex = lowerModelName.lastIndexOf('/');
+  if (slashIndex === -1) {
+    return findLongestKey(lowerModelName, tokensMap);
+  }
+
+  const fullMatch = findLongestKey(lowerModelName, tokensMap);
+  if (fullMatch != null && fullMatch.includes('/')) {
+    return fullMatch;
+  }
+  return findLongestKey(lowerModelName.slice(slashIndex + 1), tokensMap) ?? fullMatch;
 }
 
 /**
@@ -494,29 +684,27 @@ export function getModelTokenValue(
  */
 export function getModelMaxTokens(
   modelName: string,
-  endpoint = EModelEndpoint.openAI,
+  endpoint: EModelEndpoint = EModelEndpoint.openAI,
   endpointTokenConfig?: EndpointTokenConfig,
 ): number | undefined {
-  const tokensMap = endpointTokenConfig ?? maxTokensMap[endpoint as keyof typeof maxTokensMap];
-  return getModelTokenValue(modelName, tokensMap);
-}
+  if (typeof modelName !== 'string') {
+    return undefined;
+  }
 
-/**
- * Retrieves the maximum output tokens for a given model name.
- *
- * @param modelName - The name of the model to look up.
- * @param endpoint - The endpoint (default is 'openAI').
- * @param [endpointTokenConfig] - Token Config for current endpoint to use for max tokens lookup
- * @returns The maximum output tokens for the given model or undefined if no match is found.
- */
-export function getModelMaxOutputTokens(
-  modelName: string,
-  endpoint = EModelEndpoint.openAI,
-  endpointTokenConfig?: EndpointTokenConfig,
-): number | undefined {
-  const tokensMap =
-    endpointTokenConfig ?? maxOutputTokensMap[endpoint as keyof typeof maxOutputTokensMap];
-  return getModelTokenValue(modelName, tokensMap, 'output');
+  /** A partial override only covers the models it lists; fall back to the
+   *  built-in map for unlisted models instead of dropping to the default
+   *  budget (matches buildTokenConfigMap and getMultiplier). */
+  if (endpointTokenConfig != null) {
+    const overrideValue = getModelTokenValue(modelName, endpointTokenConfig);
+    if (overrideValue != null) {
+      return overrideValue;
+    }
+  }
+  const context1mValue = getAnthropicContext1m(modelName, endpoint);
+  if (context1mValue != null) {
+    return context1mValue;
+  }
+  return getModelTokenValue(modelName, maxTokensMap[endpoint as keyof typeof maxTokensMap]);
 }
 
 /**
@@ -534,7 +722,7 @@ export function getModelMaxOutputTokens(
  */
 export function matchModelName(
   modelName: string,
-  endpoint = EModelEndpoint.openAI,
+  endpoint: EModelEndpoint = EModelEndpoint.openAI,
 ): string | undefined {
   if (typeof modelName !== 'string') {
     return undefined;
@@ -550,10 +738,23 @@ export function matchModelName(
   }
 
   const matchedPattern = findMatchingPattern(modelName, tokensMap);
+  if (
+    (matchedPattern === 'claude-sonnet-4' || matchedPattern === 'claude-4') &&
+    getAnthropicContext1m(modelName, endpoint) != null
+  ) {
+    return modelName;
+  }
   return matchedPattern || modelName;
 }
 
-export const modelSchema = z.object({
+export const modelSchema: z.ZodObject<{
+  id: z.ZodString;
+  pricing: z.ZodObject<{
+    prompt: z.ZodString;
+    completion: z.ZodString;
+  }>;
+  context_length: z.ZodNumber;
+}> = z.object({
   id: z.string(),
   pricing: z.object({
     prompt: z.string(),
@@ -562,7 +763,9 @@ export const modelSchema = z.object({
   context_length: z.number(),
 });
 
-export const inputSchema = z.object({
+export const inputSchema: z.ZodObject<{
+  data: z.ZodArray<typeof modelSchema>;
+}> = z.object({
   data: z.array(modelSchema),
 });
 

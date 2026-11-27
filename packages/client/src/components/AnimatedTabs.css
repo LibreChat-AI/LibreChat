@@ -55,3 +55,28 @@
 .animated-panels [data-open] ~ .animated-tab-panel {
   translate: 100%;
 }
+
+.animated-panels:dir(rtl):has(> [data-was-open]) > .animated-tab-panel {
+  translate: 100%;
+}
+
+.animated-panels:dir(rtl) [data-was-open] ~ .animated-tab-panel,
+.animated-panels:dir(rtl) [data-open] ~ .animated-tab-panel {
+  translate: -100%;
+}
+
+/* Chrome and Edge before 120 drop the `:dir()` rules; they read the nearest direction from the
+ * `--dir-fallback` property tokens.css sets on every `dir` attribute. A panel's container is
+ * `.animated-panels`, so the query reads the panels' direction. */
+@supports not selector(:dir(rtl)) {
+  @container style(--dir-fallback: rtl) {
+    .animated-panels:has(> [data-was-open]) > .animated-tab-panel:not([dir='ltr']) {
+      translate: 100%;
+    }
+
+    .animated-panels [data-was-open] ~ .animated-tab-panel:not([dir='ltr']),
+    .animated-panels [data-open] ~ .animated-tab-panel:not([dir='ltr']) {
+      translate: -100%;
+    }
+  }
+}

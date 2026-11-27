@@ -10,6 +10,7 @@ export interface IToolCallData extends Document {
   attachments?: TAttachment[];
   blockIndex?: number;
   partIndex?: number;
+  expiredAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
   tenantId?: string;
@@ -50,10 +51,16 @@ const toolCallSchema: Schema<IToolCallData> = new Schema(
       type: String,
       index: true,
     },
+    expiredAt: {
+      type: Date,
+    },
   },
   { timestamps: true },
 );
 
+toolCallSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+/** Serves the user-only `deleteToolCalls` (account and bulk cleanup) without a collection scan. */
+toolCallSchema.index({ user: 1 });
 toolCallSchema.index({ messageId: 1, user: 1, tenantId: 1 });
 toolCallSchema.index({ conversationId: 1, user: 1, tenantId: 1 });
 

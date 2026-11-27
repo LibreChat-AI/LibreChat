@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useId, useState, useEffect } from 'react';
+import { Info } from 'lucide-react';
 import { Input } from '@librechat/client';
 import { useLocalize } from '~/hooks';
-import { Info } from 'lucide-react';
+import { cn } from '~/utils';
 
 const MAX_LENGTH = 120;
 
@@ -10,13 +11,17 @@ const Description = ({
   onValueChange,
   disabled,
   tabIndex,
+  labelBgClassName = 'bg-surface-primary-alt',
 }: {
   initialValue?: string;
   onValueChange?: (value: string) => void;
   disabled?: boolean;
   tabIndex?: number;
+  /** Surface the floating label notches out of; must match whatever sits behind the field */
+  labelBgClassName?: string;
 }) => {
   const localize = useLocalize();
+  const descriptionId = useId();
   const [description, setDescription] = useState(initialValue || '');
   const [charCount, setCharCount] = useState(initialValue?.length || 0);
 
@@ -41,36 +46,41 @@ const Description = ({
   }
 
   return (
-    <div className="rounded-xl border border-border-medium">
+    <div className="border-border-inset-medium rounded-xl border">
       <label
-        htmlFor="prompt-description"
-        className="block px-4 pt-2 text-sm text-text-secondary md:hidden"
+        htmlFor={descriptionId}
+        className="text-text-secondary block px-4 pt-2 text-sm md:hidden"
       >
         {localize('com_ui_description_placeholder')}
       </label>
-      <div className="relative flex h-10 items-center gap-1 pl-4 pr-2 text-sm text-text-secondary">
+      <div className="text-text-secondary relative flex h-10 items-center gap-1 ps-4 pe-2 text-sm">
         <Info className="icon-sm shrink-0" aria-hidden="true" />
-        <div className="relative min-w-0 flex-1">
+        {/* The wrapper reserves the counter's side so it follows the inline end; <Input> owns its own padding. */}
+        <div className="relative min-w-0 flex-1 pe-11">
           <Input
             type="text"
-            id="prompt-description"
+            id={descriptionId}
             tabIndex={tabIndex}
             disabled={disabled}
             placeholder=" "
             value={description}
             onChange={handleInputChange}
-            className="peer w-full border-none pr-14"
+            className="peer w-full border-none"
             aria-label={localize('com_ui_description_placeholder')}
           />
           <label
-            htmlFor="prompt-description"
-            className="pointer-events-none absolute left-0 top-0.5 hidden max-w-[calc(100%-3.5rem)] origin-[0] translate-y-2 scale-100 rounded bg-presentation px-1 text-sm text-text-secondary transition-transform duration-200 peer-placeholder-shown:translate-y-2 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-focus:text-text-primary peer-[:not(:placeholder-shown)]:-translate-y-3 peer-[:not(:placeholder-shown)]:scale-75 md:block"
+            htmlFor={descriptionId}
+            className={cn(
+              'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-0 top-0.5 hidden max-w-[calc(100%-3.5rem)] origin-[0] translate-y-2 scale-100 rounded px-1 text-sm transition-transform duration-200 peer-placeholder-shown:translate-y-2 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-3 peer-[:not(:placeholder-shown)]:scale-75 md:block rtl:origin-right',
+              labelBgClassName,
+              'theme-field-fill:bg-field-fill',
+            )}
           >
             {localize('com_ui_description_placeholder')}
           </label>
         </div>
         {!disabled && (
-          <span className="absolute right-2 shrink-0 text-xs text-text-secondary md:text-sm">{`${charCount}/${MAX_LENGTH}`}</span>
+          <span className="text-text-secondary absolute inset-e-2 shrink-0 text-xs md:text-sm">{`${charCount}/${MAX_LENGTH}`}</span>
         )}
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils';
 export default function CodeyIcon({
   size = 25,
@@ -5,14 +6,14 @@ export default function CodeyIcon({
 }: {
   size?: number;
   className?: string;
-}) {
+}): JSX.Element {
   return (
     <svg
       // width="100%"
       // height="100%"
       width={size}
       height={size}
-      className={cn('dark:fill-white', className)}
+      className={cn('fill-text-primary', className)}
       viewBox="0 0 18 18"
       preserveAspectRatio="xMidYMid meet"
       focusable="false"

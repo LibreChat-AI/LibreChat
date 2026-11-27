@@ -39,6 +39,11 @@ export interface MCPServerInitState {
   isCancellable: boolean;
   oauthUrl: string | null;
   oauthStartTime: number | null;
+  /** Last initialize attempt reported a request-scoped server whose connection
+   * is deferred to the next chat turn (runtime body placeholders) — its tools
+   * cannot be enumerated up front. Consumers attach such servers wholesale via
+   * the `mcp_all` wildcard instead of waiting for a tool list. */
+  connectionDeferred: boolean;
 }
 
 const defaultServerInitState: MCPServerInitState = {
@@ -46,6 +51,7 @@ const defaultServerInitState: MCPServerInitState = {
   isCancellable: false,
   oauthUrl: null,
   oauthStartTime: null,
+  connectionDeferred: false,
 };
 
 /**
@@ -63,3 +69,23 @@ export const getServerInitState = (
 ): MCPServerInitState => {
   return states[serverName] || defaultServerInitState;
 };
+
+/** Session connection evidence, fenced by the latest explicit Connect operation. */
+export interface MCPConnectResult {
+  id: string;
+  configKey: string;
+  requestedConfigurationUpdatedAt?: number;
+  configurationUpdatedAt?: number;
+  /** Browser monotonic time; only newer status reads can prove recovery. */
+  settledAt?: number;
+  state: 'connecting' | 'connected' | 'error';
+  authorizationGeneration?: string;
+}
+
+export const mcpConnectResultsAtom = atom<Record<string, MCPConnectResult>>({});
+
+/** Clearing the map also fences late callbacks from the session that just ended. */
+export const resetMCPStateAtom = atom(null, (_get, set) => {
+  set(mcpServerInitStatesAtom, {});
+  set(mcpConnectResultsAtom, {});
+});

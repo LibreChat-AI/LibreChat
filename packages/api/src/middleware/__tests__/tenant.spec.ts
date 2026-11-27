@@ -3,15 +3,22 @@ import {
   getTenantId,
   getUserId,
   getRequestId,
+  getRequestMethod,
+  getRequestPath,
   SYSTEM_TENANT_ID,
+  tenantStorage,
   logger,
 } from '@librechat/data-schemas';
-import type { Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
 // Import directly from source file — _resetTenantMiddlewareStrictCache is intentionally
 // excluded from the public barrel export (index.ts).
 import {
   tenantContextMiddleware,
+  requirePreAuthTenantContext,
+  createPreAuthTenantGuard,
+  TENANT_CONTEXT_REQUIRED,
+  requestContextMiddleware,
   restoreTenantContextFromReq,
   resolveRequestTenantId,
   _resetTenantMiddlewareStrictCache,
@@ -75,6 +82,103 @@ function runMiddlewareContext(
     tenantContextMiddleware(req, res, next);
   });
 }
+
+function runRequestContext(req: Parameters<typeof requestContextMiddleware>[0]): Promise<{
+  tenantId?: string;
+  userId?: string;
+  requestId?: string;
+  method?: string;
+  path?: string;
+}> {
+  return new Promise((resolve) => {
+    requestContextMiddleware(req, mockRes(), async () => {
+      await new Promise((nextTick) => setImmediate(nextTick));
+      resolve({
+        tenantId: getTenantId(),
+        userId: getUserId(),
+        requestId: getRequestId(),
+        method: getRequestMethod(),
+        path: getRequestPath(),
+      });
+    });
+  });
+}
+
+describe('requestContextMiddleware', () => {
+  it('generates a safe request ID when no trusted correlation ID is available', async () => {
+    const req: Parameters<typeof requestContextMiddleware>[0] = {
+      headers: {
+        'x-request-id': `${'a'.repeat(24)}.${'b'.repeat(24)}.${'c'.repeat(24)}`,
+      },
+      method: 'GET',
+      originalUrl: '/api/banner',
+    };
+
+    const context = await runRequestContext(req);
+
+    expect(context.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(req.requestId).toBe(context.requestId);
+  });
+
+  it('does not trust tenant or user identity before authentication', async () => {
+    const req: Parameters<typeof requestContextMiddleware>[0] = {
+      headers: { 'x-request-id': 'pre-auth-request' },
+      method: 'GET',
+      originalUrl: '/api/auth/me',
+      tenantId: 'untrusted-tenant',
+      user: { id: 'untrusted-user', tenantId: 'untrusted-tenant' },
+    };
+
+    const context = await runRequestContext(req);
+
+    expect(context).toEqual({
+      tenantId: undefined,
+      userId: undefined,
+      requestId: 'pre-auth-request',
+      method: 'GET',
+      path: '/api/auth',
+    });
+    expect(req.requestId).toBe('pre-auth-request');
+  });
+
+  it('keeps malformed-auth and parallel page requests independently attributable', async () => {
+    const malformedAuthRequest = {
+      headers: {
+        authorization: 'Bearer malformed-token',
+        'x-request-id': 'auth-401-request',
+      },
+      method: 'GET',
+      originalUrl: '/api/auth/me?access_token=not-logged',
+    };
+    const pageRequest = {
+      headers: { 'x-request-id': 'page-request' },
+      method: 'GET',
+      originalUrl: '/api/banner?access_token=not-logged',
+    };
+
+    const [authContext, pageContext] = await Promise.all([
+      runRequestContext(malformedAuthRequest),
+      runRequestContext(pageRequest),
+    ]);
+
+    expect(authContext).toEqual({
+      tenantId: undefined,
+      userId: undefined,
+      requestId: 'auth-401-request',
+      method: 'GET',
+      path: '/api/auth',
+    });
+    expect(pageContext).toEqual({
+      tenantId: undefined,
+      userId: undefined,
+      requestId: 'page-request',
+      method: 'GET',
+      path: '/api/banner',
+    });
+  });
+});
 
 describe('tenantContextMiddleware', () => {
   afterEach(() => {
@@ -166,6 +270,20 @@ describe('tenantContextMiddleware', () => {
 
     const tenantId = await runMiddleware(req, res);
     expect(tenantId).toBe('tenant-y');
+  });
+
+  it('rejects a normalized system tenant sentinel for authenticated requests', async () => {
+    const req = mockReq({ tenantId: ` ${SYSTEM_TENANT_ID} `, role: 'user' });
+    const res = mockRes();
+    const next: NextFunction = jest.fn();
+
+    await tenantContextMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'System tenant is not allowed for request-scoped routes',
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('different requests get independent tenant contexts', async () => {
@@ -387,5 +505,91 @@ describe('resolveRequestTenantId', () => {
     const req = mockReq({ tenantId: 'tenant-user', role: 'user' });
 
     expect(resolveRequestTenantId(req)).toBe('tenant-user');
+  });
+});
+
+describe('requirePreAuthTenantContext', () => {
+  const request = { headers: {} } as Request;
+  const originalStrict = process.env.TENANT_ISOLATION_STRICT;
+
+  afterEach(() => {
+    if (originalStrict === undefined) {
+      delete process.env.TENANT_ISOLATION_STRICT;
+    } else {
+      process.env.TENANT_ISOLATION_STRICT = originalStrict;
+    }
+    _resetTenantMiddlewareStrictCache();
+  });
+
+  it.each([undefined, '', '   ', SYSTEM_TENANT_ID, ` ${SYSTEM_TENANT_ID} `])(
+    'refuses strict pre-auth lookups with tenant %s',
+    (tenantId) => {
+      process.env.TENANT_ISOLATION_STRICT = 'true';
+      _resetTenantMiddlewareStrictCache();
+      const res = mockRes();
+      const next = jest.fn();
+      tenantStorage.run({ tenantId }, () => {
+        requirePreAuthTenantContext(request, res, next);
+      });
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({
+        message: 'Tenant context required in strict isolation mode',
+        code: TENANT_CONTEXT_REQUIRED,
+      });
+      expect(next).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows a strict request with a resolved tenant', () => {
+    process.env.TENANT_ISOLATION_STRICT = 'true';
+    _resetTenantMiddlewareStrictCache();
+    const next = jest.fn();
+    const res = mockRes();
+    tenantStorage.run({ tenantId: 'tenant-a' }, () => {
+      requirePreAuthTenantContext(request, res, next);
+    });
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('preserves platform sign-in in non-strict mode', () => {
+    process.env.TENANT_ISOLATION_STRICT = 'false';
+    _resetTenantMiddlewareStrictCache();
+    const next = jest.fn();
+    const res = mockRes();
+    requirePreAuthTenantContext(request, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('redirects OAuth callbacks without exposing a database error', () => {
+    process.env.TENANT_ISOLATION_STRICT = 'true';
+    _resetTenantMiddlewareStrictCache();
+    const res = mockRes();
+    res.redirect = jest.fn();
+    const next = jest.fn();
+    createPreAuthTenantGuard({ failureRedirect: '/login?error=auth_failed' })(request, res, next);
+    expect(res.redirect).toHaveBeenCalledWith('/login?error=auth_failed');
+    expect(res.status).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+});
+
+describe('reserved tenant partition', () => {
+  it('rejects a reserved tenant restored from the authenticated user', () => {
+    const req = mockReq({ tenantId: '_', role: 'user' });
+    const res = mockRes();
+    const next = jest.fn();
+    tenantContextMiddleware(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+  it('rejects the reserved tenant when a request resumes after an async boundary', async () => {
+    const req = mockReq({ tenantId: '_', role: 'user' });
+    const res = mockRes();
+    const next = jest.fn();
+    await restoreTenantContextFromReq(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
   });
 });

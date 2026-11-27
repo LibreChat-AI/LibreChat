@@ -1,9 +1,24 @@
+import path from 'path';
 import { applyRuntimeEnv } from './runtimeEnv';
 
 type TUser = { email: string; password: string };
+type DatabaseConnection = { connection: { close: () => Promise<void> } };
+
+/**
+ * Registers the backend's `~` alias in this process. Playwright's require hook only
+ * maps it when `api/jsconfig.json` is the nearest path-config to the requiring file,
+ * so a stray `api/tsconfig.json` would otherwise break every backend require here.
+ */
+function registerBackendAlias() {
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+  require('module-alias')({
+    base: path.dirname(require.resolve('@librechat/backend/package.json')),
+  });
+}
 
 export default async function cleanupUser(user: TUser) {
   applyRuntimeEnv();
+  registerBackendAlias();
   /* eslint-disable @typescript-eslint/no-require-imports */
   const { connectDb } = require('@librechat/backend/db/connect');
   const {
@@ -23,9 +38,10 @@ export default async function cleanupUser(user: TUser) {
   /* eslint-enable @typescript-eslint/no-require-imports */
 
   const { email } = user;
+  let db: DatabaseConnection | undefined;
   try {
     console.log('🤖: global teardown has been started');
-    const db = await connectDb();
+    db = await connectDb();
     console.log('🤖:  ✅  Connected to Database');
 
     const foundUser = await findUser({ email });
@@ -70,10 +86,14 @@ export default async function cleanupUser(user: TUser) {
     await User.deleteMany({ _id: userId });
 
     console.log('🤖:  ✅  Deleted user from Database');
-
-    await db.connection.close();
   } catch (error) {
     console.error('Error:', error);
+  } finally {
+    try {
+      await db?.connection.close();
+    } catch (error) {
+      console.error('Error closing database connection:', error);
+    }
   }
 }
 

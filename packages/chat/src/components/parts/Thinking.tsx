@@ -1,0 +1,422 @@
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ChevronDown, Lightbulb } from 'lucide-react';
+import { ChevronDown as ChevronDownNode, ChevronUp as ChevronUpNode } from 'lucide';
+import { Button, MorphIcon, Shimmer, TooltipAnchor, useLocalize } from '@librechat/client';
+import type { FC, FocusEvent, MouseEvent, NamedExoticComponent } from 'react';
+import { useMessagePartsHost } from '../../react/host';
+import useExpandCollapse from './useExpandCollapse';
+import { isRectVisible } from '../../core/viewport';
+import { ROW_GLYPH_SLOT } from './rows';
+import CopyButton from './CopyButton';
+import { classes } from './classes';
+
+/**
+ * Tracks whether the referenced element is within the viewport. Mirrors the
+ * CodeBlock pattern: the header copy/collapse controls live at the top, and the
+ * floating bottom-right bar only takes over once the header scrolls out of view.
+ *
+ * The observer is only a trigger. Its entries can be stale: a header mounted
+ * inside a fold that is still opening is first reported hidden, and that report
+ * can land after the pointer has already revealed the bar. So every
+ * notification re-measures the header's real position instead of trusting
+ * `isIntersecting`, and `recheck` does the same for callers about to reveal.
+ *
+ * The answer only matters while the floating bar could show, which is while the reader is on an
+ * open part. `watching` says so: an observer per reasoning part of a long thread is hundreds of
+ * them, each measuring its header (laying its row out again, if the browser was skipping it)
+ * every time the thread moves, to keep an answer nothing reads. A caller that reveals the bar
+ * calls `recheck` first, so the answer is fresh the moment watching starts.
+ */
+export function useInViewport(watching = true): {
+  ref: React.RefObject<HTMLDivElement>;
+  inViewport: boolean;
+  recheck: () => boolean;
+} {
+  const ref = useRef<HTMLDivElement>(null);
+  const [inViewport, setInViewport] = useState(true);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !watching) {
+      return;
+    }
+    const observer = new IntersectionObserver(() => setInViewport(isRectVisible(el)), {
+      root: null,
+      threshold: 0,
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [watching]);
+
+  const recheck = useCallback(() => {
+    const el = ref.current;
+    const visible = el == null ? true : isRectVisible(el);
+    setInViewport(visible);
+    return visible;
+  }, []);
+
+  return { ref, inViewport, recheck };
+}
+
+/**
+ * ThinkingContent - Displays the actual thinking/reasoning content
+ * Used by both legacy text-based messages and modern content parts
+ */
+export const ThinkingContent: FC<{
+  children: React.ReactNode;
+  animate?: boolean;
+}> = memo(({ children, animate = false }) => {
+  const { useFontSize, renderStreamingText } = useMessagePartsHost();
+  const fontSize = useFontSize();
+  const content =
+    animate && typeof children === 'string'
+      ? (renderStreamingText?.(children) ?? children)
+      : children;
+
+  return (
+    <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3">
+      <p className={classes('leading-6.5 whitespace-pre-wrap', fontSize)}>{content}</p>
+    </div>
+  );
+});
+
+/**
+ * ThinkingButton - Toggle button for expanding/collapsing thinking content
+ * Shows lightbulb icon by default, chevron on hover
+ * Shared between legacy Thinking component and modern ContentParts
+ */
+type ThinkingButtonProps = {
+  isExpanded: boolean;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  label: string;
+  content?: string;
+  contentId: string;
+  showCopyButton?: boolean;
+  animateLabel?: boolean;
+  /** Reasoning is still being generated: carry the same shimmer a running
+   *  tool call's label carries, so "thinking" reads as in-flight rather
+   *  than as a settled disclosure. Off for finished thoughts. */
+  shimmerLabel?: boolean;
+};
+
+export const ThinkingButton: NamedExoticComponent<ThinkingButtonProps> = memo(
+  ({
+    isExpanded,
+    onClick,
+    label,
+    content,
+    contentId,
+    showCopyButton = true,
+    animateLabel = false,
+    shimmerLabel = false,
+  }: ThinkingButtonProps) => {
+    const localize = useLocalize();
+
+    const [isCopied, setIsCopied] = useState(false);
+
+    const handleCopy = useCallback(() => {
+      if (content) {
+        navigator.clipboard.writeText(content);
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+      }
+    }, [content]);
+
+    return (
+      <div className="group/thinking relative flex w-full items-center">
+        <button
+          type="button"
+          onClick={onClick}
+          aria-expanded={isExpanded}
+          aria-controls={contentId}
+          /** `tool-status-text`, not the reader's body size: this header is a
+           *  row in the same list as tool calls, grouped thoughts and phase
+           *  summaries, all set at that scale. Sized to the body it read as a
+           *  second, larger kind of row beside them. */
+          className="group/button tool-status-text flex flex-1 items-center justify-start rounded-lg pe-10"
+        >
+          <span className={classes(ROW_GLYPH_SLOT, 'relative me-2')}>
+            <Lightbulb
+              className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
+              aria-hidden="true"
+            />
+            <ChevronDown
+              className={classes(
+                'icon-sm text-text-primary absolute transform-gpu opacity-0 transition-all duration-300 group-hover/button:opacity-100',
+                isExpanded && 'rotate-180',
+              )}
+              aria-hidden="true"
+            />
+          </span>
+          {/* The sweep rides the label row itself. That row is a flex item, so
+              `.shimmer`'s `inline-block` is blockified away and the text sits
+              exactly where the un-shimmered label sits, which matters, because
+              an `inline-block` carrying `truncate` takes its baseline from its
+              bottom margin edge, growing the line box and lifting the label off
+              the icon's axis.
+
+              The generated-label entrance keeps its own element so a revised
+              label can replay it: `key` remounts that row, and the sweep inside
+              restarts with it, which reads as intentional only while the
+              entrance is there to cover it. The inner span takes `align-top` to
+              keep the baseline rule above from reopening the same gap. With no
+              entrance to play, the row keeps its identity and the sweep runs
+              unbroken. */}
+          {animateLabel ? (
+            <span
+              key={label}
+              className="animate-in fade-in-0 slide-in-from-bottom-1 min-w-0 truncate text-start font-medium duration-300 ease-out motion-reduce:animate-none"
+            >
+              {shimmerLabel ? (
+                <Shimmer className="max-w-full truncate align-top">{label}</Shimmer>
+              ) : (
+                label
+              )}
+            </span>
+          ) : (
+            <Shimmer active={shimmerLabel} className="min-w-0 truncate text-start font-medium">
+              {label}
+            </Shimmer>
+          )}
+        </button>
+        {content && showCopyButton && isExpanded && (
+          <CopyButton
+            isCopied={isCopied}
+            iconOnly
+            compact
+            onClick={handleCopy}
+            label={localize('com_ui_copy_thoughts_to_clipboard')}
+            copiedLabel={localize('com_ui_copied_to_clipboard')}
+            className={classes(
+              'absolute inset-e-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity',
+              'group-focus-within/thinking-container:opacity-100 group-hover/thinking-container:opacity-100',
+              'focus-visible:opacity-100',
+            )}
+          />
+        )}
+      </div>
+    );
+  },
+);
+
+/**
+ * ThinkingLabel - Non-interactive variant of the ThinkingButton header row,
+ * for reasoning that happened but whose text is not available to this view
+ * (detached subagent projections retain only a marker). Keeps the reasoning
+ * presentation identical across surfaces without offering an empty disclosure.
+ */
+export const ThinkingLabel: NamedExoticComponent<{ label: string; title?: string }> = memo(
+  ({ label, title }: { label: string; title?: string }) => {
+    return (
+      <div className="mb-2 pt-2 pb-2">
+        <div className="tool-status-text flex w-full items-center justify-start" title={title}>
+          <span className={classes(ROW_GLYPH_SLOT, 'relative me-2')}>
+            <Lightbulb className="icon-sm text-text-secondary" aria-hidden="true" />
+          </span>
+          <span className="text-text-secondary min-w-0 truncate text-start font-medium">
+            {label}
+          </span>
+        </div>
+      </div>
+    );
+  },
+);
+
+/**
+ * FloatingThinkingBar - Floating bar with expand/collapse and copy buttons
+ * Shows on hover/focus, positioned at bottom right of thinking content
+ * Inspired by CodeBlock's FloatingCodeBar pattern
+ */
+type FloatingThinkingBarProps = {
+  isVisible: boolean;
+  isExpanded: boolean;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  content?: string;
+  contentId: string;
+};
+
+export const FloatingThinkingBar: NamedExoticComponent<FloatingThinkingBarProps> = memo(
+  ({ isVisible, isExpanded, onClick, content, contentId }: FloatingThinkingBarProps) => {
+    const localize = useLocalize();
+    const [isCopied, setIsCopied] = useState(false);
+
+    const handleCopy = useCallback(() => {
+      if (content) {
+        navigator.clipboard.writeText(content);
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+      }
+    }, [content]);
+
+    const collapseTooltip = isExpanded
+      ? localize('com_ui_collapse_thoughts')
+      : localize('com_ui_expand_thoughts');
+
+    return (
+      <div
+        className={classes(
+          /* Laid over the text rather than reserved below it, so the box keeps
+             even padding; the fill keeps the controls legible over a line. */
+          'bg-surface-secondary absolute inset-e-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
+          isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
+        )}
+      >
+        <TooltipAnchor
+          description={collapseTooltip}
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              type="button"
+              tabIndex={isVisible ? 0 : -1}
+              onClick={onClick}
+              aria-label={collapseTooltip}
+              aria-expanded={isExpanded}
+              aria-controls={contentId}
+            >
+              <MorphIcon
+                icon={isExpanded ? ChevronUpNode : ChevronDownNode}
+                className="h-[1.125rem] w-[1.125rem]"
+              />
+            </Button>
+          }
+        />
+        {content && (
+          <CopyButton
+            isCopied={isCopied}
+            iconOnly
+            tabIndex={isVisible ? 0 : -1}
+            onClick={handleCopy}
+            label={localize('com_ui_copy_thoughts_to_clipboard')}
+            copiedLabel={localize('com_ui_copied_to_clipboard')}
+          />
+        )}
+      </div>
+    );
+  },
+);
+
+/**
+ * Thinking Component (LEGACY SYSTEM)
+ *
+ * Used for simple text-based messages with `:::thinking:::` markers.
+ * This handles the old message format where text contains embedded thinking blocks.
+ *
+ * Pattern: `:::thinking\n{content}\n:::\n{response}`
+ *
+ * Used by:
+ * - MessageContent.tsx for plain text messages
+ * - Legacy message format compatibility
+ * - User messages when manually adding thinking content
+ *
+ * For modern structured content (agents/assistants), see Reasoning.tsx component.
+ */
+const Thinking: React.ElementType = memo(({ children }: { children: React.ReactNode }) => {
+  const localize = useLocalize();
+  const { useShowThinking } = useMessagePartsHost();
+  const showThinking = useShowThinking();
+  const [isExpanded, setIsExpanded] = useState(showThinking);
+  const [isBarVisible, setIsBarVisible] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const {
+    ref: headerRef,
+    inViewport: headerInViewport,
+    recheck: recheckHeader,
+  } = useInViewport(isBarVisible && isExpanded);
+  const contentId = useId();
+  const { ref: expandRef } = useExpandCollapse(isExpanded);
+
+  const handleClick = useCallback((e: MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    setIsExpanded((prev) => !prev);
+  }, []);
+
+  const handleFocus = useCallback(() => {
+    recheckHeader();
+    setIsBarVisible(true);
+  }, [recheckHeader]);
+
+  const handleBlur = useCallback((e: FocusEvent) => {
+    if (!containerRef.current?.contains(e.relatedTarget as Node)) {
+      setIsBarVisible(false);
+    }
+  }, []);
+
+  const handleMouseEnter = useCallback(() => {
+    recheckHeader();
+    setIsBarVisible(true);
+  }, [recheckHeader]);
+
+  const handleMouseLeave = useCallback(() => {
+    if (!containerRef.current?.contains(document.activeElement)) {
+      setIsBarVisible(false);
+    }
+  }, []);
+
+  const label = useMemo(() => localize('com_ui_thoughts'), [localize]);
+
+  // Extract text content for copy functionality
+  const textContent = useMemo(() => {
+    if (typeof children === 'string') {
+      return children;
+    }
+    return '';
+  }, [children]);
+
+  if (children == null) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="group/thinking-container"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+    >
+      <div className="mb-4 pt-2 pb-2" ref={headerRef}>
+        <ThinkingButton
+          isExpanded={isExpanded}
+          onClick={handleClick}
+          label={label}
+          content={textContent}
+          contentId={contentId}
+        />
+      </div>
+      <div
+        id={contentId}
+        role="group"
+        aria-label={label}
+        aria-hidden={!isExpanded || undefined}
+        className="part-expand"
+        data-expanded={isExpanded ? 'true' : 'false'}
+      >
+        {/** Trailing gap lives inside the animated grid track (padding), not as
+         *   an expand-only margin on the grid container, so it grows with the
+         *   height instead of snapping in and jumping the content below. */}
+        <div className="overflow-hidden pb-8" ref={expandRef}>
+          <div className="relative">
+            <ThinkingContent>{children}</ThinkingContent>
+            <FloatingThinkingBar
+              isVisible={isBarVisible && isExpanded && !headerInViewport}
+              isExpanded={isExpanded}
+              onClick={handleClick}
+              content={textContent}
+              contentId={contentId}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+ThinkingButton.displayName = 'ThinkingButton';
+ThinkingContent.displayName = 'ThinkingContent';
+ThinkingLabel.displayName = 'ThinkingLabel';
+FloatingThinkingBar.displayName = 'FloatingThinkingBar';
+Thinking.displayName = 'Thinking';
+
+export default Thinking;

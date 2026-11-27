@@ -1,41 +1,11 @@
 import mongoose, { Schema, type Connection, type Model } from 'mongoose';
-import {
-  actionSchema,
-  agentSchema,
-  agentApiKeySchema,
-  agentCategorySchema,
-  assistantSchema,
-  balanceSchema,
-  bannerSchema,
-  conversationTagSchema,
-  convoSchema,
-  fileSchema,
-  keySchema,
-  messageSchema,
-  pluginAuthSchema,
-  presetSchema,
-  projectSchema,
-  promptSchema,
-  promptGroupSchema,
-  roleSchema,
-  sessionSchema,
-  shareSchema,
-  tokenSchema,
-  toolCallSchema,
-  transactionSchema,
-  userSchema,
-  memorySchema,
-  groupSchema,
-} from '~/schema';
-import accessRoleSchema from '~/schema/accessRole';
-import aclEntrySchema from '~/schema/aclEntry';
-import mcpServerSchema from '~/schema/mcpServer';
+import { getModelSchemas } from './schemas';
 
 /**
  * Sharding PoC — self-contained proof-of-concept that exercises:
  *   1. Multi-pool connection management via mongoose.createConnection()
  *   2. Persistent org→pool assignment table with capacity limits
- *   3. Lazy per-org model registration using all 29 LibreChat schemas
+ *   3. Lazy per-org model registration using every current org-local LibreChat schema
  *   4. Cross-pool data isolation
  *   5. Routing overhead measurement
  *   6. Capacity overflow handling
@@ -67,39 +37,9 @@ interface PoolStats {
   available: number;
 }
 
-// ─── ALL 29 LIBRECHAT SCHEMAS ───────────────────────────────────────────────
+// ─── LIBRECHAT ORG-LOCAL SCHEMAS (derived from the live model registry) ────
 
-const MODEL_SCHEMAS: Record<string, Schema> = {
-  User: userSchema,
-  Token: tokenSchema,
-  Session: sessionSchema,
-  Balance: balanceSchema,
-  Conversation: convoSchema,
-  Message: messageSchema,
-  Agent: agentSchema,
-  AgentApiKey: agentApiKeySchema,
-  AgentCategory: agentCategorySchema,
-  MCPServer: mcpServerSchema,
-  Role: roleSchema,
-  Action: actionSchema,
-  Assistant: assistantSchema,
-  File: fileSchema,
-  Banner: bannerSchema,
-  Project: projectSchema,
-  Key: keySchema,
-  PluginAuth: pluginAuthSchema,
-  Transaction: transactionSchema,
-  Preset: presetSchema,
-  Prompt: promptSchema,
-  PromptGroup: promptGroupSchema,
-  ConversationTag: conversationTagSchema,
-  SharedLink: shareSchema,
-  ToolCall: toolCallSchema,
-  MemoryEntry: memorySchema,
-  AccessRole: accessRoleSchema,
-  AclEntry: aclEntrySchema,
-  Group: groupSchema,
-};
+const MODEL_SCHEMAS: Record<string, Schema> = getModelSchemas(mongoose);
 
 const MODEL_COUNT = Object.keys(MODEL_SCHEMAS).length;
 
@@ -154,7 +94,7 @@ class TenantRouter {
     return orgConn;
   }
 
-  /** Get all 29 models registered on an org's connection (lazy) */
+  /** Get every model registered on an org's connection (lazy) */
   async getOrgModels(orgId: string): Promise<Record<string, Model<unknown>>> {
     const cached = this.orgModels.get(orgId);
     if (cached) {
@@ -171,8 +111,7 @@ class TenantRouter {
   }
 
   /** Convenience: get a single model for an org */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async getModel(orgId: string, modelName: string): Promise<Model<any>> {
+  async getModel(orgId: string, modelName: string): Promise<Model<unknown>> {
     const models = await this.getOrgModels(orgId);
     const model = models[modelName];
     if (!model) {
@@ -366,13 +305,13 @@ describeIfFerretDB('Sharding PoC', () => {
   });
 
   describe('org initialization and model registration', () => {
-    it('initializes an org with all 29 collections and indexes', async () => {
+    it('initializes an org with all collections and indexes', async () => {
       const ms = await router.initializeOrg('org_1');
-      console.log(`[Sharding] org_1 init: ${ms}ms (29 collections + 98 indexes)`);
+      console.log(`[Sharding] org_1 init: ${ms}ms (${MODEL_COUNT} collections)`);
       expect(ms).toBeGreaterThan(0);
     }, 60_000);
 
-    it('registers all 29 models lazily on the org connection', async () => {
+    it('registers every model lazily on the org connection', async () => {
       const models = await router.getOrgModels('org_1');
       expect(Object.keys(models)).toHaveLength(MODEL_COUNT);
 
@@ -501,10 +440,9 @@ describeIfFerretDB('Sharding PoC', () => {
 
   describe('simulated Express middleware pattern', () => {
     it('demonstrates the request-scoped getModel pattern', async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fakeReq = { orgId: 'org_1' } as {
         orgId: string;
-        getModel?: (name: string) => Promise<Model<any>>;
+        getModel?: (name: string) => Promise<Model<unknown>>;
       };
 
       fakeReq.getModel = (modelName: string) => router.getModel(fakeReq.orgId, modelName);

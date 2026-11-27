@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import { Keyv } from 'keyv';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const KeyvRedis = require('@keyv/redis').default as typeof import('@keyv/redis').default;
 import type { IUser } from '@librechat/data-schemas';
 
 jest.mock(
@@ -13,7 +15,12 @@ jest.mock(
   { virtual: true },
 );
 
-import { exchangeAdminCode, generateAdminExchangeCode, verifyCodeChallenge } from './exchange';
+import {
+  exchangeAdminCode,
+  generateAdminExchangeCode,
+  isAdminPanelRedirect,
+  verifyCodeChallenge,
+} from './exchange';
 
 describe('admin OAuth code exchange', () => {
   const user = {
@@ -25,11 +32,7 @@ describe('admin OAuth code exchange', () => {
     provider: 'openid',
   } as unknown as IUser;
 
-  const createCache = () => {
-    const cache = new Keyv();
-    const deleteSpy = jest.spyOn(cache, 'delete');
-    return { cache, deleteSpy };
-  };
+  const createCache = () => ({ cache: new Keyv() });
 
   describe('origin binding', () => {
     it('exchanges code when request origin matches generated origin', async () => {
@@ -51,7 +54,7 @@ describe('admin OAuth code exchange', () => {
     });
 
     it('rejects code exchange when request origin does not match generated origin', async () => {
-      const { cache, deleteSpy } = createCache();
+      const { cache } = createCache();
       const exchangeCode = await generateAdminExchangeCode(
         cache,
         user,
@@ -63,7 +66,6 @@ describe('admin OAuth code exchange', () => {
       const result = await exchangeAdminCode(cache, exchangeCode, 'https://evil.example.com');
 
       expect(result).toBeNull();
-      expect(deleteSpy).toHaveBeenCalledWith(exchangeCode);
       await expect(cache.get(exchangeCode)).resolves.toBeUndefined();
     });
 
@@ -117,6 +119,84 @@ describe('admin OAuth code exchange', () => {
       );
 
       expect(secondAttempt).toBeNull();
+    });
+
+    it('allows only one simultaneous exchange with the in-memory cache', async () => {
+      const { cache } = createCache();
+      const code = await generateAdminExchangeCode(cache, user, 'jwt-token');
+
+      const results = await Promise.all([
+        exchangeAdminCode(cache, code),
+        exchangeAdminCode(cache, code),
+      ]);
+
+      expect(results.filter((result) => result?.token === 'jwt-token')).toHaveLength(1);
+      expect(results.filter((result) => result === null)).toHaveLength(1);
+    });
+
+    it('rejects an entry whose Keyv TTL has expired before redemption', async () => {
+      const cache = new Keyv({ ttl: 50 });
+      const code = await generateAdminExchangeCode(cache, user, 'jwt-token');
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 100);
+      try {
+        await expect(exchangeAdminCode(cache, code)).resolves.toBeNull();
+      } finally {
+        clock.mockRestore();
+      }
+      await expect(cache.get(code)).resolves.toBeUndefined();
+    });
+
+    const createRedisCache = () => {
+      const values = new Map<string, string>();
+      const client = {
+        set: jest.fn(async (key: string, value: string) => {
+          values.set(key, value);
+          return 'OK';
+        }),
+        getDel: jest.fn(async (key: string) => {
+          const value = values.get(key) ?? null;
+          values.delete(key);
+          return value;
+        }),
+      };
+      const store = new KeyvRedis();
+      Object.defineProperty(store, 'getClient', { value: async () => client });
+      const cache = new Keyv(store, { namespace: 'ADMIN_OAUTH_EXCHANGE', ttl: 30_000 });
+      store.namespace = 'deployment';
+      store.keyPrefixSeparator = '::';
+      const onError = jest.fn();
+      cache.on('error', onError);
+      return { cache, client, values, onError };
+    };
+
+    it('uses one prefixed GETDEL per attempt so concurrent Redis exchanges cannot replay', async () => {
+      const { cache, client, values } = createRedisCache();
+      const code = await generateAdminExchangeCode(cache, user, 'jwt-token');
+
+      const results = await Promise.all([
+        exchangeAdminCode(cache, code),
+        exchangeAdminCode(cache, code),
+      ]);
+
+      expect(results.filter((result) => result?.token === 'jwt-token')).toHaveLength(1);
+      expect(results.filter((result) => result === null)).toHaveLength(1);
+      expect(client.getDel).toHaveBeenCalledTimes(2);
+      expect(client.getDel).toHaveBeenCalledWith(`deployment::ADMIN_OAUTH_EXCHANGE:${code}`);
+      expect(values.size).toBe(0);
+    });
+
+    it('fails closed when Redis cannot consume the code, allowing a later retry', async () => {
+      const { cache, client, onError } = createRedisCache();
+      const code = await generateAdminExchangeCode(cache, user, 'jwt-token');
+      client.getDel.mockRejectedValueOnce(new Error('Redis unavailable'));
+
+      await expect(exchangeAdminCode(cache, code)).rejects.toThrow('Redis unavailable');
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Redis unavailable' }),
+      );
+      await expect(exchangeAdminCode(cache, code)).resolves.toMatchObject({ token: 'jwt-token' });
+      await expect(exchangeAdminCode(cache, code)).resolves.toBeNull();
     });
   });
 
@@ -212,6 +292,78 @@ describe('admin OAuth code exchange', () => {
 
       expect(result).not.toBeNull();
       expect(result!.token).toBe('jwt-token');
+    });
+  });
+
+  describe('isAdminPanelRedirect', () => {
+    it('returns true for cross-origin admin callback redirects', () => {
+      expect(
+        isAdminPanelRedirect(
+          'https://admin.example.com/auth/openid/callback',
+          'https://admin.example.com',
+          'https://chat.example.com',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns true for same-origin callbacks under the admin subpath', () => {
+      expect(
+        isAdminPanelRedirect(
+          'https://chat.example.com/admin/auth/openid/callback',
+          'https://chat.example.com/admin',
+          'https://chat.example.com',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns false for same-origin callbacks outside the admin subpath', () => {
+      expect(
+        isAdminPanelRedirect(
+          'https://chat.example.com/oauth/openid/callback',
+          'https://chat.example.com/admin',
+          'https://chat.example.com',
+        ),
+      ).toBe(false);
+    });
+
+    it('does not treat similarly prefixed paths as admin subpaths', () => {
+      expect(
+        isAdminPanelRedirect(
+          'https://chat.example.com/administrator/auth/openid/callback',
+          'https://chat.example.com/admin',
+          'https://chat.example.com',
+        ),
+      ).toBe(false);
+    });
+
+    it('treats trailing slash variants of admin subpath as equivalent', () => {
+      expect(
+        isAdminPanelRedirect(
+          'https://chat.example.com/admin/auth/openid/callback',
+          'https://chat.example.com/admin/',
+          'https://chat.example.com',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns true when redirect path exactly matches admin subpath', () => {
+      expect(
+        isAdminPanelRedirect(
+          'https://chat.example.com/admin',
+          'https://chat.example.com/admin',
+          'https://chat.example.com',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns false for same-origin root admin URL', () => {
+      expect(
+        isAdminPanelRedirect(
+          'https://chat.example.com/auth/openid/callback',
+          'https://chat.example.com/',
+          'https://chat.example.com',
+        ),
+      ).toBe(false);
     });
   });
 });

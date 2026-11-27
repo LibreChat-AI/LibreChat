@@ -9,7 +9,6 @@ import {
   excelSheetToHtml,
   officeHtmlBucket,
   pptxToHtml,
-  pptxToSlideListHtml,
   sanitizeOfficeHtml,
   wordDocToHtml,
 } from './html';
@@ -17,6 +16,21 @@ import { ZipBombError } from './zipSafety';
 
 const fixturesDir = __dirname;
 const readFixture = (name: string): Buffer => fs.readFileSync(path.join(fixturesDir, name));
+
+/** Renders the text-only slide-list preview, which `pptxToHtml` selects when the CDN is disabled. */
+const pptxToSlideListHtml = async (buffer: Buffer): Promise<string> => {
+  const previous = process.env.OFFICE_PREVIEW_DISABLE_CDN;
+  process.env.OFFICE_PREVIEW_DISABLE_CDN = 'true';
+  try {
+    return await pptxToHtml(buffer);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OFFICE_PREVIEW_DISABLE_CDN;
+    } else {
+      process.env.OFFICE_PREVIEW_DISABLE_CDN = previous;
+    }
+  }
+};
 
 describe('Office HTML producers', () => {
   describe('wordDocToHtml', () => {
@@ -729,11 +743,17 @@ describe('Office HTML producers', () => {
       ['noext', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'spreadsheet'],
       ['noext', 'application/vnd.ms-excel', 'spreadsheet'],
       ['noext', 'application/vnd.oasis.opendocument.spreadsheet', 'spreadsheet'],
-      ['deck.pptx', '', 'pptx'],
+      ['deck.pptx', '', 'presentation'],
+      ['template.potx', '', 'presentation'],
       [
         'noext',
         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'pptx',
+        'presentation',
+      ],
+      [
+        'noext',
+        'application/vnd.openxmlformats-officedocument.presentationml.template',
+        'presentation',
       ],
     ])('classifies (%s, %s) as %s', (name, mime, expected) => {
       expect(officeHtmlBucket(name, mime)).toBe(expected);
@@ -760,7 +780,7 @@ describe('Office HTML producers', () => {
      * documented "extension wins" precedence is enforced by checking
      * extensions exhaustively before any MIME pattern fires. */
     it.each([
-      ['deck.pptx', 'text/csv', 'pptx'],
+      ['deck.pptx', 'text/csv', 'presentation'],
       ['workbook.xlsx', 'text/csv', 'spreadsheet'],
       [
         'legacy.xls',
@@ -838,7 +858,7 @@ describe('Office HTML producers', () => {
       [
         'deck',
         'application/vnd.openxmlformats-officedocument.presentationml.presentation; foo=bar',
-        'pptx',
+        'presentation',
       ],
     ])('strips MIME parameters before matching: (%s, %s) → %s', (name, mime, expected) => {
       expect(officeHtmlBucket(name, mime)).toBe(expected);

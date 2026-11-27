@@ -1,7 +1,7 @@
 import type { PluginAuthMethods } from '@librechat/data-schemas';
 import type { GenericTool } from '@librechat/agents';
+import { getUserMCPAuthMap, getServerCustomUserVars } from '../auth';
 import { getPluginAuthMap } from '~/agents/auth';
-import { getUserMCPAuthMap } from '../auth';
 
 jest.mock('~/agents/auth', () => ({
   getPluginAuthMap: jest.fn(),
@@ -67,6 +67,61 @@ describe('getUserMCPAuthMap', () => {
     });
   });
 
+  describe('tool-key boundary', () => {
+    it('resolves the plugin key from the last delimiter for a gateway-prefixed tool name', async () => {
+      /** The raw upstream name carries the delimiter, so first-occurrence extraction
+       *  asked for `mcp_server_version_mcp_gitlab` and silently resolved no
+       *  customUserVars, leaving API-key/header placeholders unfilled. */
+      mockGetPluginAuthMap.mockResolvedValue({});
+
+      await getUserMCPAuthMap({
+        userId: 'user123',
+        tools: ['gitlab-get_mcp_server_version_mcp_gitlab'],
+        findPluginAuthsByKeys: mockFindPluginAuthsByKeys,
+      });
+
+      expect(mockGetPluginAuthMap).toHaveBeenCalledWith(
+        expect.objectContaining({ pluginKeys: ['mcp_gitlab'] }),
+      );
+    });
+
+    it('resolves a configured server whose own name contains the delimiter', async () => {
+      mockGetPluginAuthMap.mockResolvedValue({});
+
+      await getUserMCPAuthMap({
+        userId: 'user123',
+        tools: ['search_mcp_Google_mcp_Workspace'],
+        serverNames: ['Google_mcp_Workspace'],
+        findPluginAuthsByKeys: mockFindPluginAuthsByKeys,
+      });
+
+      expect(mockGetPluginAuthMap).toHaveBeenCalledWith(
+        expect.objectContaining({ pluginKeys: ['mcp_Google_mcp_Workspace'] }),
+      );
+    });
+
+    it('fetches auth under both spellings for normalized keys, raw-only for legacy keys', async () => {
+      /** Plugin auth rows are stored under the raw config name, but a
+       *  normalized match could equally belong to a user-DB server named
+       *  exactly like it — fetch the superset and let consumers read by
+       *  their own server name. Legacy raw keys resolve directly. */
+      mockGetPluginAuthMap.mockResolvedValue({});
+
+      await getUserMCPAuthMap({
+        userId: 'user123',
+        tools: ['search_mcp_Connector__Company', 'lookup_mcp_Connector: Company'],
+        serverNames: ['Connector: Company'],
+        findPluginAuthsByKeys: mockFindPluginAuthsByKeys,
+      });
+
+      expect(mockGetPluginAuthMap).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginKeys: expect.arrayContaining(['mcp_Connector__Company', 'mcp_Connector: Company']),
+        }),
+      );
+    });
+  });
+
   describe('Edge Cases', () => {
     it('should return empty object when no tools have mcpRawServerName', async () => {
       const toolInstances = [
@@ -116,6 +171,26 @@ describe('getUserMCPAuthMap', () => {
       });
 
       expect(result).toEqual({});
+    });
+
+    it('propagates lookup failures when throwOnError is set, and asks the map to throw too', async () => {
+      const toolInstances = [createMockTool('test_mcp_Server1', 'Server1')];
+      const dbError = new Error('Database connection failed');
+
+      mockGetPluginAuthMap.mockRejectedValue(dbError);
+
+      await expect(
+        getUserMCPAuthMap({
+          userId: 'user123',
+          toolInstances,
+          findPluginAuthsByKeys: mockFindPluginAuthsByKeys,
+          throwOnError: true,
+        }),
+      ).rejects.toThrow('Database connection failed');
+
+      expect(mockGetPluginAuthMap).toHaveBeenCalledWith(
+        expect.objectContaining({ throwError: true }),
+      );
     });
 
     it('should handle non-Error exceptions gracefully', async () => {
@@ -265,5 +340,22 @@ describe('getUserMCPAuthMap', () => {
 
       expect(result).toEqual(mockCustomUserVars);
     });
+  });
+});
+
+describe('getServerCustomUserVars', () => {
+  it('reads a server entry by its mcp_-prefixed key', () => {
+    const authMap = {
+      'mcp_my-server': { API_KEY: 'sk-123' },
+      'mcp_other-server': { TOKEN: 'abc' },
+    };
+    expect(getServerCustomUserVars(authMap, 'my-server')).toEqual({ API_KEY: 'sk-123' });
+  });
+
+  it('returns undefined for a missing server or map', () => {
+    expect(
+      getServerCustomUserVars({ 'mcp_my-server': { API_KEY: 'sk-123' } }, 'absent'),
+    ).toBeUndefined();
+    expect(getServerCustomUserVars(undefined, 'my-server')).toBeUndefined();
   });
 });

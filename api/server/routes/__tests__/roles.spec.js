@@ -3,6 +3,8 @@ const request = require('supertest');
 const { SystemRoles, roleDefaults } = require('librechat-data-provider');
 
 const mockGetRoleByName = jest.fn();
+const mockUpdateRoleByName = jest.fn();
+const mockRecordAuditEntry = jest.fn();
 const mockHasCapability = jest.fn();
 
 jest.mock('~/server/middleware', () => ({
@@ -16,7 +18,8 @@ jest.mock('~/server/middleware/roles/capabilities', () => ({
 
 jest.mock('~/models', () => ({
   getRoleByName: (...args) => mockGetRoleByName(...args),
-  updateRoleByName: jest.fn(),
+  updateRoleByName: (...args) => mockUpdateRoleByName(...args),
+  recordAuditEntry: (...args) => mockRecordAuditEntry(...args),
 }));
 
 const rolesRouter = require('../roles');
@@ -58,6 +61,7 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('STAFF');
     expect(mockGetRoleByName).toHaveBeenCalledWith('STAFF', '-_id -__v');
+    expect(mockHasCapability).not.toHaveBeenCalled();
   });
 
   it('returns 403 when a custom role user requests a different custom role', async () => {
@@ -85,6 +89,17 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     const res = await request(app).get(`/api/roles/${SystemRoles.USER}`);
 
     expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
+  });
+
+  it('allows a custom role user to fetch a non-admin default role without a capability probe', async () => {
+    mockGetRoleByName.mockResolvedValue(userRole);
+    const app = createApp({ id: 'u1', role: 'STAFF' });
+
+    const res = await request(app).get(`/api/roles/${SystemRoles.USER}`);
+
+    expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
   });
 
   it('returns 403 when USER requests the ADMIN role', async () => {
@@ -103,6 +118,7 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     const res = await request(app).get(`/api/roles/${SystemRoles.ADMIN}`);
 
     expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
   });
 
   it('allows any user with READ_ROLES capability to fetch any role', async () => {
@@ -114,6 +130,21 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('STAFF');
+  });
+
+  it('probes READ_ROLES with a coerced CapabilityUser for non-own-role lookups', async () => {
+    mockHasCapability.mockResolvedValue(true);
+    mockGetRoleByName.mockResolvedValue(staffRole);
+    const app = createApp({ id: 'u1', role: SystemRoles.USER });
+
+    const res = await request(app).get('/api/roles/STAFF');
+
+    expect(res.status).toBe(200);
+    expect(mockHasCapability).toHaveBeenCalledTimes(1);
+    expect(mockHasCapability).toHaveBeenCalledWith(
+      { id: 'u1', role: SystemRoles.USER, tenantId: undefined, idOnTheSource: null },
+      expect.any(String),
+    );
   });
 
   it('returns 404 when the requested role does not exist', async () => {
@@ -143,7 +174,7 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     expect(mockGetRoleByName).not.toHaveBeenCalled();
   });
 
-  it('treats hasCapability failure as no capability (does not 500)', async () => {
+  it('serves own role without probing even when hasCapability would fail', async () => {
     mockHasCapability.mockRejectedValue(new Error('capability check failed'));
     const app = createApp({ id: 'u1', role: 'STAFF' });
     mockGetRoleByName.mockResolvedValue(staffRole);
@@ -151,5 +182,49 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     const res = await request(app).get('/api/roles/STAFF');
 
     expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
+  });
+
+  it('treats hasCapability failure as no capability for other roles (403, not 500)', async () => {
+    mockHasCapability.mockRejectedValue(new Error('capability check failed'));
+    const app = createApp({ id: 'u1', role: 'STAFF' });
+
+    const res = await request(app).get('/api/roles/MANAGER');
+
+    expect(res.status).toBe(403);
+    expect(mockGetRoleByName).not.toHaveBeenCalled();
+  });
+});
+
+describe('PUT /api/roles/:roleName/prompts', () => {
+  it('merges the update and records the permission change', async () => {
+    mockGetRoleByName.mockResolvedValue(staffRole);
+    mockUpdateRoleByName.mockImplementation(async (name, updates) => ({ name, ...updates }));
+    mockRecordAuditEntry.mockResolvedValue(null);
+    const app = createApp({ id: 'u1', _id: 'u1', role: SystemRoles.ADMIN, name: 'Admin' });
+
+    const res = await request(app).put('/api/roles/STAFF/prompts').send({ CREATE: true });
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateRoleByName).toHaveBeenCalledWith('STAFF', {
+      permissions: { PROMPTS: { USE: true, CREATE: true } },
+    });
+    expect(mockRecordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'role.permissions_updated',
+        target: { type: 'role', id: 'STAFF', name: 'STAFF' },
+        metadata: { changes: 'PROMPTS.CREATE=true', changeCount: 1 },
+      }),
+    );
+  });
+
+  it('returns 400 for an invalid body without writing', async () => {
+    const app = createApp({ id: 'u1', role: SystemRoles.ADMIN });
+
+    const res = await request(app).put('/api/roles/STAFF/prompts').send({ CREATE: 'yes' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Invalid prompt permissions.');
+    expect(mockUpdateRoleByName).not.toHaveBeenCalled();
   });
 });

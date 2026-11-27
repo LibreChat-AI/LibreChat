@@ -1,16 +1,114 @@
 import { Constants } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import type { FileRefs, CodeEnvFile, ToolSessionMap, CodeSessionContext } from '@librechat/agents';
+import type { StatefulCodeEnvironment } from 'librechat-data-provider';
+import {
+  getCodeExecutionRouteKey,
+  resolveCodeExecutionContext,
+  type CodeExecutionContext,
+} from './execution';
+import { createCodeDestinationSet, reserveCodeDestination } from '~/files/code/destinations';
 
 /**
- * Minimal shape for an agent that may contribute primed code files to the
- * run-wide sandbox seed. Both `InitializedAgent` and `RunAgent` satisfy it,
+ * Minimal shape for an agent that may contribute primed code files to its
+ * execution-profile partition. Both `InitializedAgent` and `RunAgent` satisfy it,
  * and the recursive walk in {@link buildInitialToolSessions} traverses
- * `subagentAgentConfigs` so nested subagents (which aren't in the top-level
- * `agentConfigs` map after pure-subagent pruning) still contribute.
+ * legacy child configs and graph-member configs so agents pruned from the
+ * top-level `agentConfigs` map still contribute.
  */
 export interface CodeFilesAgent {
+  id?: string;
+  codeEnvAvailable?: boolean;
+  codeExecutionContext?: CodeExecutionContext;
+  /** Routes a parent may place this subagent on per call; each is primed like the default. */
+  codeExecutionChoices?: CodeExecutionContext[];
+  codeSessionKey?: string;
   primedCodeFiles?: CodeEnvFile[];
+  statefulCodeSessions?: boolean;
+  statefulCodeEnvironment?: StatefulCodeEnvironment;
   subagentAgentConfigs?: CodeFilesAgent[];
+  lazySubagentConfigs?: CodeFilesAgent[];
+  /** Graph members a lazy child initializes only when it is selected. */
+  subagentGraphMemberMetadata?: CodeFilesAgent[];
+  subagentGraphConfigs?: Array<{ memberConfigs: CodeFilesAgent[] }>;
+}
+
+export interface CodeExecutionProfileRoute {
+  codeExecutionContext: CodeExecutionContext;
+  codeSessionKeys: string[];
+}
+
+function enqueueCodeFilesChildren(
+  agent: CodeFilesAgent,
+  queue: CodeFilesAgent[],
+  visited: Set<CodeFilesAgent>,
+): void {
+  for (const child of [
+    ...(agent.subagentAgentConfigs ?? []),
+    ...(agent.lazySubagentConfigs ?? []),
+    ...(agent.subagentGraphMemberMetadata ?? []),
+  ]) {
+    if (child && !visited.has(child)) queue.push(child);
+  }
+  for (const graph of agent.subagentGraphConfigs ?? []) {
+    for (const member of graph.memberConfigs) {
+      if (member && !visited.has(member)) queue.push(member);
+    }
+  }
+}
+
+/** Collects the distinct Code API deployments used by a run and every
+ * trusted session partition that must receive that deployment's immutable
+ * skill-file seed. */
+export function collectCodeExecutionProfileRoutes(
+  agents: Iterable<CodeFilesAgent | undefined | null>,
+  scope?: { userId: string; conversationId?: string | null },
+): CodeExecutionProfileRoute[] {
+  const routes = new Map<
+    string,
+    { codeExecutionContext: CodeExecutionContext; codeSessionKeys: Set<string> }
+  >();
+  const visited = new Set<CodeFilesAgent>();
+  const queue: CodeFilesAgent[] = [];
+  for (const agent of agents) {
+    if (agent) queue.push(agent);
+  }
+  while (queue.length > 0) {
+    const agent = queue.shift()!;
+    if (visited.has(agent)) continue;
+    visited.add(agent);
+    const context =
+      agent.codeExecutionContext ??
+      (agent.codeEnvAvailable === true && scope
+        ? resolveCodeExecutionContext({
+            statefulSessions: agent.statefulCodeSessions === true,
+            environment: agent.statefulCodeEnvironment,
+            userId: scope.userId,
+            agentId: agent.id,
+            conversationId: scope.conversationId,
+          })
+        : undefined);
+    const addRoute = (routeContext: CodeExecutionContext, codeSessionKey: string): void => {
+      const routeKey = getCodeExecutionRouteKey(routeContext);
+      const route = routes.get(routeKey) ?? {
+        codeExecutionContext: routeContext,
+        codeSessionKeys: new Set<string>(),
+      };
+      route.codeSessionKeys.add(codeSessionKey);
+      routes.set(routeKey, route);
+    };
+    if (agent.codeEnvAvailable === true && context) {
+      addRoute(context, agent.codeSessionKey ?? context.codeSessionKey);
+    }
+    for (const choice of agent.codeExecutionChoices ?? []) {
+      addRoute(choice, choice.codeSessionKey);
+    }
+    enqueueCodeFilesChildren(agent, queue, visited);
+  }
+  return Array.from(routes.values(), (route) => ({
+    codeExecutionContext: route.codeExecutionContext,
+    codeSessionKeys: Array.from(route.codeSessionKeys),
+  }));
 }
 
 /**
@@ -40,52 +138,47 @@ export interface CodeFilesAgent {
  * dedupe `_injected_files` would grow proportionally to agent count and
  * inflate every `/exec` POST. First-seen wins so the original ordering /
  * source is preserved.
+ *
+ * Identity dedupe alone cannot keep the seed valid: codeapi rejects the
+ * whole `/exec` request when two entries mount at one destination, and a
+ * file re-uploaded by one agent but cache-hit by another arrives twice
+ * under different `storage_session_id`s with a single `name`. Sources are
+ * merged in trust order — skill seed, then primary agent, then the rest —
+ * so first-seen also wins the destination, and the later copy of an
+ * already-mounted name is dropped rather than renamed to a path nothing
+ * told the model about.
+ *
+ * Each agent resolves destinations over its own candidate set, so this can
+ * still drop a genuinely distinct file: two agents whose *private*
+ * resources share a filename each claim the bare name locally, and only the
+ * first survives here while the second agent's tool context keeps
+ * advertising its own file at that path. `sortCodeFilesByDestinationPriority`
+ * ranks conversation-scoped files above private ones precisely so the shared
+ * majority cannot diverge that way; closing the private-versus-private case
+ * needs one assignment across contributors, which means resolving
+ * destinations before any agent renders its tool context. Until then this
+ * drop is the failure floor — before it, the pair reached codeapi together
+ * and took the whole run down with a rejected request.
  */
 export function seedCodeFilesIntoSessions(
   files: CodeEnvFile[] | undefined,
   existing: ToolSessionMap | undefined,
+  sessionKey: string = Constants.EXECUTE_CODE,
 ): ToolSessionMap | undefined {
   if (!files || files.length === 0) {
     return existing;
   }
 
   const sessions: ToolSessionMap = existing ?? new Map();
-  const prior = sessions.get(Constants.EXECUTE_CODE) as CodeSessionContext | undefined;
-
-  /**
-   * Compose `(storage_session_id, id)` as a stable identity. `name` alone
-   * isn't sufficient — two distinct primed uploads can share a filename
-   * (different storage sessions, different file_ids). The composite stays
-   * cheap to compute and the keys are short uuids.
-   */
-  const seenKeys = new Set<string>();
-  const mergedFiles: FileRefs = [];
-  const pushIfFresh = (f: { id?: string; storage_session_id?: string; name?: string }): void => {
-    const key = `${f.storage_session_id ?? ''}\0${f.id ?? ''}`;
-    if (seenKeys.has(key)) return;
-    seenKeys.add(key);
-    mergedFiles.push(f as FileRefs[number]);
-  };
-  if (prior?.files) {
-    for (const f of prior.files) pushIfFresh(f);
-  }
-  for (const f of files) pushIfFresh(f);
-
-  /* Representative top-level `session_id` for the seed CodeSessionContext.
-   * No execution session exists yet at seed time, so the first incoming
-   * file's `storage_session_id` stands in until the first `/exec` call
-   * returns a real execution session id. ToolNode reads per-file
-   * `storage_session_id` for actual injection — the representative is
-   * informational rather than load-bearing. Mirrors the same convention
-   * used in `primeInvokedSkills`. */
-  const representativeSessionId = prior?.session_id ?? files[0].storage_session_id;
-  if (!representativeSessionId) {
+  const prior = sessions.get(sessionKey) as CodeSessionContext | undefined;
+  const merged = mergeCodeFilesIntoContext(prior, files, sessionKey);
+  if (!merged) {
     return existing;
   }
 
-  sessions.set(Constants.EXECUTE_CODE, {
-    session_id: representativeSessionId,
-    files: mergedFiles,
+  sessions.set(sessionKey, {
+    session_id: merged.session_id,
+    files: merged.files as FileRefs,
     lastUpdated: Date.now(),
   } satisfies CodeSessionContext);
 
@@ -93,26 +186,106 @@ export function seedCodeFilesIntoSessions(
 }
 
 /**
- * Builds the run-wide initial `ToolSessionMap` for `Graph.sessions`,
- * combining skill-priming output with code-resource files primed across
- * every agent that may execute code in this run.
+ * Adds primed or freshly provisioned file refs to one code-session context, keeping
+ * the ordering and identity rules the graph seed uses so both entry points agree on
+ * what the sandbox receives.
  *
- * **Why "run-wide" (not per-agent):** `Graph.sessions` is a single map
- * shared by every `ToolNode` instance in the run by design — the
- * agents-library treats the code-execution sandbox as a conversation-
- * scoped workspace, not an agent-scoped one. Two agents that both have
- * code-execution enabled (a primary + a handoff target, or a parent +
- * a subagent) implicitly share session_id and file refs through this
- * map. This helper makes that explicit at the seeding boundary: every
- * reachable agent's `primedCodeFiles` flows into the same
- * `EXECUTE_CODE` entry. If per-agent isolation is ever needed, that
- * has to land in the agents library first (per-agent `AgentContext`
- * sessions); changing only this helper would diverge from how the
- * sandbox actually behaves at runtime.
+ * Composes `(storage_session_id, id)` as the identity. `name` alone isn't sufficient:
+ * two distinct uploads can share a filename across different storage sessions and
+ * file_ids. First seen wins, so pre-existing refs keep their position.
+ *
+ * The representative top-level `session_id` is preserved when one already exists,
+ * otherwise it stands in from the first incoming file's `storage_session_id`, since
+ * no execution session exists until the first call returns one. ToolNode reads the
+ * per-file `storage_session_id` for actual injection, so the representative is
+ * informational. Mirrors the convention in `primeInvokedSkills`.
+ *
+ * Returns undefined when there is nothing usable to record.
+ */
+export function mergeCodeFilesIntoContext(
+  prior: { session_id?: string; files?: CodeEnvFile[] | FileRefs } | undefined,
+  files: CodeEnvFile[] | undefined,
+  sessionKey?: string,
+): { session_id: string; files: CodeEnvFile[] } | undefined {
+  if (!files || files.length === 0) {
+    return undefined;
+  }
+
+  /**
+   * Identity is `(storage_session_id, id)`, not `name` — two distinct primed
+   * uploads can share a filename across different storage sessions and
+   * file_ids, and collapsing those would drop a file the caller resolved to
+   * its own mount path. The composite stays cheap to compute and the keys
+   * are short uuids. Destination uniqueness is enforced separately below,
+   * against the sandbox's one-file-per-path constraint.
+   */
+  const seenKeys = new Set<string>();
+  const destinations = createCodeDestinationSet();
+  const mergedFiles: CodeEnvFile[] = [];
+  const pushIfFresh = (f: { id?: string; storage_session_id?: string; name?: string }): void => {
+    const key = `${f.storage_session_id ?? ''}\0${f.id ?? ''}`;
+    if (seenKeys.has(key)) return;
+    if (f.name != null && !reserveCodeDestination(destinations, f.name)) {
+      logger.debug(
+        `[mergeCodeFilesIntoContext] dropped id=${f.id} name=${f.name} ` +
+          `reason=destination-taken${sessionKey != null ? ` sessionKey=${sessionKey}` : ''}`,
+      );
+      return;
+    }
+    seenKeys.add(key);
+    mergedFiles.push(f as CodeEnvFile);
+  };
+  if (prior?.files) {
+    for (const f of prior.files) pushIfFresh(f);
+  }
+  for (const f of files) pushIfFresh(f);
+
+  const representativeSessionId = prior?.session_id ?? files[0].storage_session_id;
+  if (!representativeSessionId) {
+    return undefined;
+  }
+
+  return { session_id: representativeSessionId, files: mergedFiles };
+}
+
+/** Builds an isolated child-graph seed from the run's exact trusted partition
+ * plus files resolved specifically for that agent. Lazy subagents are resolved
+ * after the run-wide seed is built, so their attachments must be copied here
+ * when `AgentInputs` is created. */
+export function buildAgentInitialToolSessions(
+  agent: CodeFilesAgent,
+  runSessions: ToolSessionMap | undefined,
+): ToolSessionMap | undefined {
+  const sessionKey = agent.codeSessionKey ?? Constants.EXECUTE_CODE;
+  const runContext = runSessions?.get(sessionKey) as CodeSessionContext | undefined;
+  let sessions: ToolSessionMap | undefined;
+  if (runContext) {
+    sessions = new Map([
+      [
+        sessionKey,
+        {
+          ...runContext,
+          files: runContext.files ? [...runContext.files] : undefined,
+        },
+      ],
+    ]);
+  }
+  return seedCodeFilesIntoSessions(agent.primedCodeFiles, sessions, sessionKey);
+}
+
+/**
+ * Builds the run-wide `ToolSessionMap` for `Graph.sessions`, partitioned by
+ * each agent's trusted `codeSessionKey`. The legacy `execute_code` partition
+ * remains shared by stateless agents. Stateful agents share only when their
+ * configured environment resolves to the same key.
+ *
+ * Skill files are immutable input resources for the run, but their storage
+ * pointers are deployment-local. Callers therefore pre-seed each exact
+ * profile partition; this helper never copies a pointer across partitions.
  *
  * **Walk order:** primary first, then `agentConfigs` (handoff/addedConvo)
- * in iteration order, then recurse into each config's
- * `subagentAgentConfigs` breadth-first. Order matters because when no
+ * in iteration order, then recurse through legacy children and graph members
+ * breadth-first. Order matters because when no
  * skill sessions exist, the FIRST agent's first file supplies the
  * representative `session_id` written to `Graph.sessions[EXECUTE_CODE]`.
  * `ToolNode` ultimately uses per-file `session_id`s for injection so
@@ -130,7 +303,7 @@ export function seedCodeFilesIntoSessions(
  *   from the skill side is preserved).
  * @param agents - The complete set of code-execution-capable agents in
  *   the run. Caller passes `[primaryConfig, ...agentConfigs.values()]`;
- *   this function recurses into each one's `subagentAgentConfigs`.
+ *   this function recurses into every reachable subagent configuration.
  */
 export function buildInitialToolSessions(params: {
   skillSessions?: ToolSessionMap;
@@ -156,14 +329,11 @@ export function buildInitialToolSessions(params: {
     const agent = queue.shift()!;
     if (visited.has(agent)) continue;
     visited.add(agent);
+    const sessionKey = agent.codeSessionKey ?? Constants.EXECUTE_CODE;
     if (agent.primedCodeFiles && agent.primedCodeFiles.length > 0) {
-      sessions = seedCodeFilesIntoSessions(agent.primedCodeFiles, sessions);
+      sessions = seedCodeFilesIntoSessions(agent.primedCodeFiles, sessions, sessionKey);
     }
-    if (agent.subagentAgentConfigs && agent.subagentAgentConfigs.length > 0) {
-      for (const child of agent.subagentAgentConfigs) {
-        if (child && !visited.has(child)) queue.push(child);
-      }
-    }
+    enqueueCodeFilesChildren(agent, queue, visited);
   }
   return sessions;
 }

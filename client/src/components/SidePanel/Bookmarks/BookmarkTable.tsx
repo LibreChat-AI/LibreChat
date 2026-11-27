@@ -1,13 +1,13 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { Button, FilterInput, OGDialogTrigger, TooltipAnchor } from '@librechat/client';
 import type { ConversationTagsResponse, TConversationTag } from 'librechat-data-provider';
 import { BookmarkContext, useBookmarkContext } from '~/Providers/BookmarkContext';
 import { BookmarkEditDialog } from '~/components/Bookmarks';
+import { PanelContent, PanelHeader } from '~/components/ui';
+import BookmarkCardSkeleton from './BookmarkCardSkeleton';
 import BookmarkList from './BookmarkList';
 import { useLocalize } from '~/hooks';
-
-const pageSize = 10;
 
 const removeDuplicates = (bookmarks: TConversationTag[]) => {
   const seen = new Set();
@@ -18,10 +18,10 @@ const removeDuplicates = (bookmarks: TConversationTag[]) => {
   });
 };
 
-const BookmarkTable = () => {
+const BookmarkTable = ({ isLoading = false }: { isLoading?: boolean }) => {
   const localize = useLocalize();
+  const headingId = useId();
   const [rows, setRows] = useState<ConversationTagsResponse>([]);
-  const [pageIndex, setPageIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -31,11 +31,6 @@ const BookmarkTable = () => {
     const _bookmarks = removeDuplicates(bookmarks).sort((a, b) => a.position - b.position);
     setRows(_bookmarks);
   }, [bookmarks]);
-
-  // Reset page when search changes
-  useEffect(() => {
-    setPageIndex(0);
-  }, [searchQuery]);
 
   const moveRow = useCallback((dragIndex: number, hoverIndex: number) => {
     setRows((prevTags: TConversationTag[]) => {
@@ -50,79 +45,56 @@ const BookmarkTable = () => {
     (row) => row.tag && row.tag.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
-  const currentRows = filteredRows.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize);
-  const totalPages = Math.ceil(filteredRows.length / pageSize);
-
   return (
     <BookmarkContext.Provider value={{ bookmarks }}>
-      <div role="region" aria-label={localize('com_ui_bookmarks')} className="space-y-2 px-3 pb-3">
-        {/* Header: Filter + Create Button */}
-        <div className="flex items-center gap-2">
-          <FilterInput
-            inputId="bookmarks-filter"
-            label={localize('com_ui_bookmarks_filter')}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            containerClassName="flex-1"
-          />
-          <BookmarkEditDialog context="BookmarkTable" open={createOpen} setOpen={setCreateOpen}>
-            <OGDialogTrigger asChild>
-              <TooltipAnchor
-                description={localize('com_ui_bookmarks_new')}
-                side="bottom"
-                render={
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="size-9 shrink-0 bg-transparent"
-                    aria-label={localize('com_ui_bookmarks_new')}
-                    onClick={() => setCreateOpen(true)}
-                  >
-                    <Plus className="size-4" aria-hidden="true" />
-                  </Button>
-                }
-              />
-            </OGDialogTrigger>
-          </BookmarkEditDialog>
-        </div>
-
-        {/* Bookmark List */}
-        <BookmarkList
-          bookmarks={currentRows}
-          moveRow={moveRow}
-          isFiltered={searchQuery.length > 0}
+      <div role="region" aria-labelledby={headingId} className="flex min-h-0 flex-1 flex-col">
+        {/* Sticky header: title, create, filter */}
+        <PanelHeader
+          title={localize('com_ui_bookmarks')}
+          titleId={headingId}
+          action={
+            <BookmarkEditDialog context="BookmarkTable" open={createOpen} setOpen={setCreateOpen}>
+              <OGDialogTrigger asChild>
+                <TooltipAnchor
+                  description={localize('com_ui_bookmarks_new')}
+                  side="bottom"
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0"
+                      aria-label={localize('com_ui_bookmarks_new')}
+                      onClick={() => setCreateOpen(true)}
+                    >
+                      <Plus className="size-4" aria-hidden="true" />
+                    </Button>
+                  }
+                />
+              </OGDialogTrigger>
+            </BookmarkEditDialog>
+          }
+          search={
+            <FilterInput
+              inputId="bookmarks-filter"
+              label={localize('com_ui_bookmarks_filter')}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          }
         />
 
-        {/* Pagination */}
-        {filteredRows.length > pageSize && (
-          <div
-            className="flex items-center justify-end gap-2"
-            role="navigation"
-            aria-label="Pagination"
-          >
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPageIndex((prev) => Math.max(prev - 1, 0))}
-              disabled={pageIndex === 0}
-              aria-label={localize('com_ui_prev')}
-            >
-              {localize('com_ui_prev')}
-            </Button>
-            <div className="whitespace-nowrap text-sm" aria-live="polite">
-              {pageIndex + 1} / {totalPages}
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPageIndex((prev) => (prev + 1 < totalPages ? prev + 1 : prev))}
-              disabled={pageIndex + 1 >= totalPages}
-              aria-label={localize('com_ui_next')}
-            >
-              {localize('com_ui_next')}
-            </Button>
-          </div>
-        )}
+        {/* Only the list scrolls */}
+        <PanelContent
+          isLoading={isLoading}
+          skeleton={<BookmarkCardSkeleton />}
+          className="px-3 pb-3"
+        >
+          <BookmarkList
+            bookmarks={filteredRows}
+            moveRow={moveRow}
+            isFiltered={searchQuery.length > 0}
+          />
+        </PanelContent>
       </div>
     </BookmarkContext.Provider>
   );

@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
-import { MCPIcon, AttachmentIcon, OpenAIMinimalIcon } from '@librechat/client';
+import { MCPIcon, OpenAIMinimalIcon } from '@librechat/client';
 import {
   Bot,
   Brain,
   Bookmark,
   NotebookPen,
   ScrollText,
+  CalendarClock,
   ArrowRightToLine,
   SlidersHorizontal,
 } from 'lucide-react';
@@ -25,15 +26,26 @@ import {
   useGetAgentsConfig,
   useHasAccess,
 } from '~/hooks';
-import MCPBuilderPanel from '~/components/SidePanel/MCPBuilder/MCPBuilderPanel';
-import AgentPanelSwitch from '~/components/SidePanel/Agents/AgentPanelSwitch';
-import BookmarkPanel from '~/components/SidePanel/Bookmarks/BookmarkPanel';
-import PanelSwitch from '~/components/SidePanel/Builder/PanelSwitch';
-import Parameters from '~/components/SidePanel/Parameters/Panel';
-import { MemoryPanel } from '~/components/SidePanel/Memories';
-import FilesPanel from '~/components/SidePanel/Files/Panel';
 import { PromptsAccordion } from '~/components/Prompts';
 import { SkillsAccordion } from '~/components/Skills';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
+
+/** No panel renders until its tab is opened, so none of them belongs in the boot bundle. */
+const MCPBuilderPanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/MCPBuilder/MCPBuilderPanel'),
+);
+const AgentPanelSwitch = lazyWithRecovery(
+  () => import('~/components/SidePanel/Agents/AgentPanelSwitch'),
+);
+const BookmarkPanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/Bookmarks/BookmarkPanel'),
+);
+const PanelSwitch = lazyWithRecovery(() => import('~/components/SidePanel/Builder/PanelSwitch'));
+const SchedulePanel = lazyWithRecovery(
+  () => import('~/components/SidePanel/Schedules/SchedulePanel'),
+);
+const Parameters = lazyWithRecovery(() => import('~/components/SidePanel/Parameters/Panel'));
+const MemoryPanel = lazyWithRecovery(() => import('~/components/SidePanel/Memories/MemoryPanel'));
 
 export default function useSideNavLinks({
   hidePanel,
@@ -88,6 +100,10 @@ export default function useSideNavLinks({
     permissionType: PermissionTypes.MCP_SERVERS,
     permission: Permissions.CREATE,
   });
+  const hasAccessToSchedules = useHasAccess({
+    permissionType: PermissionTypes.SCHEDULES,
+    permission: Permissions.USE,
+  });
   const { availableMCPServers } = useMCPServerManager();
 
   const { agentsConfig } = useGetAgentsConfig({ endpointsConfig });
@@ -140,6 +156,26 @@ export default function useSideNavLinks({
       });
     }
 
+    // Scheduled chats are EXPERIMENTAL and default-OFF: the server enables them only
+    // when an admin opts in explicitly, so ABSENT config means disabled here too.
+    // Mirrors getLimits exactly — absent/null/`false` are all off, `true` is on, and the
+    // object form is on unless it sets `use: false`. Any mismatch would show an entry
+    // whose create/run operations the backend rejects.
+    const schedulesConfig = interfaceConfig.schedules;
+    const schedulesEnabled =
+      schedulesConfig != null &&
+      schedulesConfig !== false &&
+      !(typeof schedulesConfig === 'object' && schedulesConfig.use === false);
+    if (hasAccessToSchedules && schedulesEnabled) {
+      links.push({
+        title: 'com_ui_schedules',
+        label: '',
+        icon: CalendarClock,
+        id: 'schedules',
+        Component: SchedulePanel,
+      });
+    }
+
     if (hasAccessToPrompts) {
       links.push({
         title: 'com_ui_prompts',
@@ -169,14 +205,6 @@ export default function useSideNavLinks({
         Component: BookmarkPanel,
       });
     }
-
-    links.push({
-      title: 'com_sidepanel_attach_files',
-      label: '',
-      icon: AttachmentIcon,
-      id: 'files',
-      Component: FilesPanel,
-    });
 
     if (
       interfaceConfig.parameters === true &&
@@ -228,6 +256,8 @@ export default function useSideNavLinks({
     skillsEnabled,
     hasAccessToMemories,
     hasAccessToReadMemories,
+    hasAccessToSchedules,
+    interfaceConfig.schedules,
     interfaceConfig.parameters,
     endpointType,
     hasAccessToBookmarks,

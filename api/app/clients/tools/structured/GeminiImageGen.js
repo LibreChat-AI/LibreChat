@@ -1,7 +1,6 @@
 const path = require('path');
 const sharp = require('sharp');
 const { v4 } = require('uuid');
-const { ProxyAgent } = require('undici');
 const { GoogleGenAI } = require('@google/genai');
 const { logger } = require('@librechat/data-schemas');
 const { tool } = require('@librechat/agents/langchain/tools');
@@ -9,7 +8,10 @@ const { ContentTypes, EImageOutputType } = require('librechat-data-provider');
 const {
   geminiToolkit,
   loadServiceKey,
+  ToolInputError,
+  formatToolError,
   getBalanceConfig,
+  getEnvProxyDispatcher,
   getTransactionsConfig,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
@@ -20,14 +22,14 @@ const { spendTokens, getFiles } = require('~/models');
  * This wraps globalThis.fetch to add a proxy dispatcher only for googleapis.com URLs
  * This is necessary because @google/genai SDK doesn't support custom fetch or httpOptions.dispatcher
  */
-if (process.env.PROXY) {
+const googleApiProxyDispatcher = getEnvProxyDispatcher();
+if (googleApiProxyDispatcher) {
   const originalFetch = globalThis.fetch;
-  const proxyAgent = new ProxyAgent(process.env.PROXY);
 
   globalThis.fetch = function (url, options = {}) {
     const urlString = url.toString();
     if (urlString.includes('googleapis.com')) {
-      options = { ...options, dispatcher: proxyAgent };
+      options = { ...options, dispatcher: googleApiProxyDispatcher };
     }
     return originalFetch.call(this, url, options);
   };
@@ -110,16 +112,15 @@ async function initializeGeminiClient(options = {}) {
   const serviceKey = await loadServiceKey(credentialsPath);
 
   if (!serviceKey || !serviceKey.project_id) {
-    throw new Error(
-      'Gemini Image Generation requires one of: user-provided API key, GEMINI_API_KEY or GOOGLE_KEY env var, or a valid Google service account. ' +
-        `Service account file not found or invalid at: ${credentialsPath}`,
+    throw new ToolInputError(
+      'Gemini Image Generation requires one of: user-provided API key, GEMINI_API_KEY or GOOGLE_KEY env var, or a valid Google service account.',
     );
   }
 
   return new GoogleGenAI({
     vertexai: true,
     project: serviceKey.project_id,
-    location: process.env.GOOGLE_LOC || process.env.GOOGLE_CLOUD_LOCATION || 'global',
+    location: process.env.GOOGLE_CLOUD_LOCATION || process.env.GOOGLE_LOC || 'global',
     googleAuthOptions: { credentials: serviceKey },
   });
 }
@@ -335,9 +336,8 @@ function createGeminiImageTool(fields = {}) {
           GOOGLE_KEY,
         });
       } catch (error) {
-        logger.error('[GeminiImageGen] Failed to initialize client:', error);
         return [
-          [{ type: ContentTypes.TEXT, text: `Failed to initialize Gemini: ${error.message}` }],
+          [{ type: ContentTypes.TEXT, text: formatToolError(error, 'Gemini image generation') }],
           { content: [], file_ids: [] },
         ];
       }
@@ -389,9 +389,8 @@ function createGeminiImageTool(fields = {}) {
           config,
         });
       } catch (error) {
-        logger.error('[GeminiImageGen] API error:', error);
         return [
-          [{ type: ContentTypes.TEXT, text: `Image generation failed: ${error.message}` }],
+          [{ type: ContentTypes.TEXT, text: formatToolError(error, 'Gemini image generation') }],
           { content: [], file_ids: [] },
         ];
       } finally {

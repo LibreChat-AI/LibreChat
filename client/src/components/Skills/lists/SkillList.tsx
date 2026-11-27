@@ -1,35 +1,31 @@
 import { useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { EmptyState } from '@librechat/client';
 import { useSearchParams } from 'react-router-dom';
-import { Skeleton } from '@librechat/client';
-import type { TSkill } from 'librechat-data-provider';
-import { useLocalize } from '~/hooks';
+import { ChevronRight, Sparkles } from 'lucide-react';
+import type { TSkillSummary } from 'librechat-data-provider';
 import SkillListItem from './SkillListItem';
+import { Collapse } from '~/components/ui';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface SkillListProps {
-  skills: TSkill[];
-  isLoading: boolean;
+  skills: TSkillSummary[];
   activeSkillId?: string;
+  sectionOpen: boolean;
+  onSectionOpenChange: (open: boolean) => void;
 }
 
 /** Collapsible skill list. Active/inactive toggling lives in the detail view. */
-export default function SkillList({ skills, isLoading, activeSkillId }: SkillListProps) {
+export default function SkillList({
+  skills,
+  activeSkillId,
+  sectionOpen,
+  onSectionOpenChange,
+}: SkillListProps) {
   const localize = useLocalize();
   const [searchParams] = useSearchParams();
   const activeFile = searchParams.get('file');
-  const [sectionOpen, setSectionOpen] = useState(true);
   const [expandedSkillId, setExpandedSkillId] = useState<string | null>(activeSkillId ?? null);
-
-  if (isLoading) {
-    return (
-      <div className="flex flex-col gap-2 px-2 pt-2">
-        <Skeleton className="h-8 w-full rounded-lg" />
-        <Skeleton className="h-8 w-full rounded-lg" />
-        <Skeleton className="h-8 w-full rounded-lg" />
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col gap-px">
@@ -37,28 +33,30 @@ export default function SkillList({ skills, isLoading, activeSkillId }: SkillLis
       <div className="flex items-center justify-between px-2 pb-2">
         <button
           type="button"
-          onClick={() => setSectionOpen((prev) => !prev)}
+          onClick={() => onSectionOpenChange(!sectionOpen)}
           className="flex cursor-pointer items-center gap-1.5"
           aria-expanded={sectionOpen}
         >
           <ChevronRight
             className={cn(
-              'size-3 shrink-0 text-text-secondary transition-transform duration-200',
-              sectionOpen && 'rotate-90',
+              'text-text-secondary size-3 shrink-0 transition-transform duration-200',
+              sectionOpen ? 'rotate-90' : 'rtl:rotate-180',
             )}
             aria-hidden="true"
           />
-          <span className="text-xs text-text-secondary">{localize('com_ui_my_skills')}</span>
+          <span className="text-text-secondary text-xs">{localize('com_ui_my_skills')}</span>
         </button>
       </div>
 
       {/* Skill items */}
-      {sectionOpen && (
+      <Collapse open={sectionOpen}>
         <div className="flex flex-col gap-px">
           {skills.length === 0 ? (
-            <p className="px-3 py-4 text-center text-xs text-text-secondary">
-              {localize('com_ui_skills_empty')}
-            </p>
+            <EmptyState
+              icon={Sparkles}
+              title={localize('com_ui_skills_empty')}
+              description={localize('com_ui_skills_empty_hint')}
+            />
           ) : (
             skills.map((skill) => (
               <SkillListItem
@@ -72,7 +70,7 @@ export default function SkillList({ skills, isLoading, activeSkillId }: SkillLis
             ))
           )}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }

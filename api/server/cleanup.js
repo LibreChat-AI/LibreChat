@@ -1,34 +1,5 @@
 const { logger } = require('@librechat/data-schemas');
 
-/** WeakMap to hold temporary data associated with requests */
-const requestDataMap = new WeakMap();
-
-const FinalizationRegistry = global.FinalizationRegistry || null;
-
-/**
- * FinalizationRegistry to clean up client objects when they are garbage collected.
- * This is used to prevent memory leaks and ensure that client objects are
- * properly disposed of when they are no longer needed.
- * The registry holds a weak reference to the client object and a cleanup
- * callback that is called when the client object is garbage collected.
- * The callback can be used to perform any necessary cleanup operations,
- * such as removing event listeners or freeing up resources.
- */
-const clientRegistry = FinalizationRegistry
-  ? new FinalizationRegistry((heldValue) => {
-      try {
-        // This will run when the client is garbage collected
-        if (heldValue && heldValue.userId) {
-          logger.debug(`[FinalizationRegistry] Cleaning up client for user ${heldValue.userId}`);
-        } else {
-          logger.debug('[FinalizationRegistry] Cleaning up client');
-        }
-      } catch {
-        // Ignore errors
-      }
-    })
-  : null;
-
 const graphPropsToClean = [
   'handlerRegistry',
   'runId',
@@ -152,9 +123,6 @@ function disposeClient(client) {
     }
     if (client.isVisionModel) {
       client.isVisionModel = null;
-    }
-    if (client.isChatCompletion !== undefined) {
-      client.isChatCompletion = null;
     }
     if (client.contextHandlers) {
       client.contextHandlers = null;
@@ -386,46 +354,6 @@ function disposeClient(client) {
   }
 }
 
-function processReqData(data = {}, context) {
-  let {
-    abortKey,
-    userMessage,
-    userMessagePromise,
-    responseMessageId,
-    promptTokens,
-    conversationId,
-    userMessageId,
-  } = context;
-  for (const key in data) {
-    if (key === 'userMessage') {
-      userMessage = data[key];
-      userMessageId = data[key].messageId;
-    } else if (key === 'userMessagePromise') {
-      userMessagePromise = data[key];
-    } else if (key === 'responseMessageId') {
-      responseMessageId = data[key];
-    } else if (key === 'promptTokens') {
-      promptTokens = data[key];
-    } else if (key === 'abortKey') {
-      abortKey = data[key];
-    } else if (!conversationId && key === 'conversationId') {
-      conversationId = data[key];
-    }
-  }
-  return {
-    abortKey,
-    userMessage,
-    userMessagePromise,
-    responseMessageId,
-    promptTokens,
-    conversationId,
-    userMessageId,
-  };
-}
-
 module.exports = {
   disposeClient,
-  requestDataMap,
-  clientRegistry,
-  processReqData,
 };

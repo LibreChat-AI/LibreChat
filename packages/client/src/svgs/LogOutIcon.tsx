@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function LogOutIcon() {
+export default function LogOutIcon(): JSX.Element {
   return (
     <svg
       width="18"

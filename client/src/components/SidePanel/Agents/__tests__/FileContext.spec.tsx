@@ -56,11 +56,19 @@ jest.mock('@ariakit/react', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
-  HoverCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DropdownPopup: () => null,
-  AttachmentIcon: () => <span />,
-  CircleHelpIcon: () => <span />,
+  Button: ({
+    children,
+    variant: _variant,
+    size: _size,
+    ...props
+  }: React.ComponentProps<'button'> & { variant?: string; size?: string }) => (
+    <button {...props}>{children}</button>
+  ),
   SharePointIcon: () => <span />,
+  DropdownPopup: () => null,
+  TooltipAnchor: ({ render }: { render: React.ReactElement }) => render,
+  CircleHelpIcon: () => <span />,
+  HoverCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   HoverCardPortal: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   HoverCardContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   HoverCardTrigger: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,

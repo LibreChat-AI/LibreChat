@@ -1,18 +1,3 @@
-import * as types from '../types';
-import * as r from '../roles';
-import * as p from '../permissions';
-import {
-  Tools,
-  Assistant,
-  AssistantCreateParams,
-  AssistantUpdateParams,
-  FunctionTool,
-  AssistantDocument,
-  Agent,
-  AgentCreateParams,
-  AgentUpdateParams,
-} from './assistants';
-import { Action, ActionMetadata } from './agents';
 import type { InfiniteData, QueryKey } from '@tanstack/react-query';
 import type {
   TSkill,
@@ -26,6 +11,17 @@ import type {
   TDeleteSkillFileResponse,
   TSkillListResponse,
 } from './skills';
+import {
+  Assistant,
+  AssistantCreateParams,
+  AssistantUpdateParams,
+  AssistantDocument,
+} from './assistants';
+import { Action, ActionMetadata, Agent, AgentCreateParams, AgentUpdateParams } from './agents';
+import { Tools, FunctionTool } from './tools';
+import * as p from '../permissions';
+import * as types from '../types';
+import * as r from '../roles';
 
 export type MutationOptions<
   Response,
@@ -51,6 +47,8 @@ export type TGenTitleRequest = {
 
 export type TGenTitleResponse = {
   title: string;
+  titleSetByUser?: boolean;
+  titleRevision?: number;
 };
 
 export type PresetDeleteResponse = {
@@ -100,10 +98,7 @@ export type DeleteAssistantBody = {
   endpoint: types.AssistantsEndpoint;
 };
 
-export type DeleteAssistantMutationOptions = MutationOptions<
-  void,
-  Pick<DeleteAssistantBody, 'assistant_id'>
->;
+export type DeleteAssistantMutationOptions = MutationOptions<void, DeleteAssistantBody>;
 
 export type UpdateActionResponse = [AssistantDocument, Assistant, Action];
 export type UpdateActionOptions = MutationOptions<UpdateActionResponse, UpdateActionVariables>;
@@ -195,6 +190,11 @@ export type ArchiveConversationOptions = MutationOptions<
   types.TArchiveConversationRequest
 >;
 
+export type PinConversationOptions = MutationOptions<
+  types.TPinConversationResponse,
+  types.TPinConversationRequest
+>;
+
 export type DuplicateConvoOptions = MutationOptions<
   types.TDuplicateConvoResponse,
   types.TDuplicateConvoRequest
@@ -202,9 +202,9 @@ export type DuplicateConvoOptions = MutationOptions<
 
 export type ForkConvoOptions = MutationOptions<types.TForkConvoResponse, types.TForkConvoRequest>;
 
-export type CreateSharedLinkOptions = MutationOptions<
-  types.TSharedLink,
-  Partial<types.TSharedLink>
+export type ForkSharedConvoOptions = MutationOptions<
+  types.TForkConvoResponse,
+  types.TForkSharedConvoRequest
 >;
 
 export type updateTagsInConvoOptions = MutationOptions<
@@ -212,14 +212,9 @@ export type updateTagsInConvoOptions = MutationOptions<
   types.TTagConversationRequest
 >;
 
-export type UpdateSharedLinkOptions = MutationOptions<
-  types.TSharedLink,
-  Partial<types.TSharedLink>
->;
-
-export type ArchiveConvoOptions = MutationOptions<
-  types.TArchiveConversationResponse,
-  types.TArchiveConversationRequest
+export type ArchiveAllConversationsOptions = MutationOptions<
+  types.TArchiveAllConversationsResponse,
+  void
 >;
 
 export type DeleteSharedLinkContext = { previousQueries?: Map<string, TDeleteSharedLinkResponse> };
@@ -296,8 +291,8 @@ export type UpdatePermResponse = r.TRole;
 
 /**
  * Cache entries that can appear under the `[QueryKeys.skills, ...]` key prefix.
- * Flat responses come from `useListSkillsQuery`; infinite responses come from
- * `useSkillsInfiniteQuery`. The context carries both shapes for rollback.
+ * Infinite responses come from `useSkillsInfiniteQuery`; flat responses may also
+ * be cached under this prefix. The context carries both shapes for rollback.
  */
 export type TSkillCacheEntry = TSkillListResponse | InfiniteData<TSkillListResponse> | undefined;
 
@@ -446,6 +441,7 @@ export type ToolParams<T extends ToolId> = ToolParamsMap[T] & {
   partIndex?: number;
   blockIndex?: number;
   conversationId: string;
+  isTemporary?: boolean;
 };
 export type ToolCallResponse = { result: unknown; attachments?: types.TAttachment[] };
 export type ToolCallMutationOptions<T extends ToolId> = MutationOptions<
@@ -495,11 +491,6 @@ export type TLogoutResponse = {
 };
 
 export type LogoutOptions = MutationOptions<TLogoutResponse, undefined>;
-
-export interface AssistantInitialize {
-  message: string;
-  error?: string;
-}
 
 export interface CancelMCPOAuthResponse {
   success: boolean;

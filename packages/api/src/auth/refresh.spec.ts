@@ -19,6 +19,7 @@ const SUB = 'idp-sub-12345';
 
 const ORIGINAL_OPENID_SCOPE = process.env.OPENID_SCOPE;
 const ORIGINAL_OPENID_REFRESH_AUDIENCE = process.env.OPENID_REFRESH_AUDIENCE;
+const ORIGINAL_OPENID_ISSUER = process.env.OPENID_ISSUER;
 
 function makeUser(overrides: Partial<IUser> = {}): IUser {
   const _id = overrides._id ?? new Types.ObjectId();
@@ -74,6 +75,12 @@ describe('buildOpenIDRefreshParams', () => {
       delete process.env.OPENID_REFRESH_AUDIENCE;
     } else {
       process.env.OPENID_REFRESH_AUDIENCE = ORIGINAL_OPENID_REFRESH_AUDIENCE;
+    }
+
+    if (ORIGINAL_OPENID_ISSUER === undefined) {
+      delete process.env.OPENID_ISSUER;
+    } else {
+      process.env.OPENID_ISSUER = ORIGINAL_OPENID_ISSUER;
     }
   });
 
@@ -296,10 +303,9 @@ describe('applyAdminRefresh', () => {
       });
 
       const [filter] = (deps.findUsers as jest.Mock).mock.calls[0];
-      expect(filter).toMatchObject({
-        $or: expect.arrayContaining([
-          { openidId: SUB, openidIssuer: 'https://issuer.example.com' },
-        ]),
+      expect(filter).toEqual({
+        openidId: SUB,
+        openidIssuer: 'https://issuer.example.com',
       });
     });
 
@@ -314,6 +320,54 @@ describe('applyAdminRefresh', () => {
         '-password -__v -totpSecret -backupCodes',
         { sort: { updatedAt: -1 }, limit: 1 },
       );
+    });
+
+    it('selects the most recently updated user across legacy issuer fallback filters', async () => {
+      const previousOpenIDIssuer = process.env.OPENID_ISSUER;
+      process.env.OPENID_ISSUER = 'https://issuer.example.com';
+      try {
+        const olderMissingIssuer = makeUser({
+          email: 'older@example.com',
+          openidIssuer: undefined,
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        });
+        const newerEmptyIssuer = makeUser({
+          email: 'newer@example.com',
+          openidIssuer: '',
+          updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+        });
+        const findUsers = jest
+          .fn()
+          .mockImplementation(async (filter: { openidIssuer?: unknown }) => {
+            if (filter.openidIssuer === '') return [newerEmptyIssuer];
+            if (
+              typeof filter.openidIssuer === 'object' &&
+              filter.openidIssuer != null &&
+              '$exists' in filter.openidIssuer
+            ) {
+              return [olderMissingIssuer];
+            }
+            return [];
+          });
+        const deps = makeDeps(undefined, { findUsers });
+        const tokenset = makeTokenset({
+          claims: () => ({ sub: SUB, iss: 'https://issuer.example.com' }),
+        });
+
+        const result = await applyAdminRefresh(tokenset, deps, {
+          expectedIssuer: 'https://issuer.example.com',
+        });
+
+        expect(result.user.email).toBe('newer@example.com');
+        expect(deps.mintToken).toHaveBeenCalledWith(newerEmptyIssuer, tokenset);
+        expect(findUsers).toHaveBeenCalledTimes(4);
+      } finally {
+        if (previousOpenIDIssuer === undefined) {
+          delete process.env.OPENID_ISSUER;
+        } else {
+          process.env.OPENID_ISSUER = previousOpenIDIssuer;
+        }
+      }
     });
 
     it('throws USER_ID_MISMATCH when direct user_id resolves but issuer differs', async () => {
@@ -576,12 +630,16 @@ describe('applyAdminRefresh', () => {
   });
 
   describe('logging', () => {
-    it('logs the refreshed user email at debug', async () => {
-      const deps = makeDeps(makeUser());
+    it('logs the refreshed user id at debug, never the email', async () => {
+      const user = makeUser();
+      const deps = makeDeps(user);
 
       await applyAdminRefresh(makeTokenset(), deps);
 
-      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('admin@example.com'));
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining(String(user._id)));
+      expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(
+        'admin@example.com',
+      );
     });
   });
 });

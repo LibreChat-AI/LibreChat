@@ -1,7 +1,7 @@
 import { Schema } from 'mongoose';
 import type { IAgentCategory } from '~/types';
 
-const agentCategorySchema = new Schema<IAgentCategory>(
+const agentCategorySchema: Schema<IAgentCategory> = new Schema<IAgentCategory>(
   {
     value: {
       type: String,

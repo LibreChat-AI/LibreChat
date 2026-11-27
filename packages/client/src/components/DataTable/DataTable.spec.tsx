@@ -1,9 +1,9 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Provider as JotaiProvider } from 'jotai';
-import DataTable from './DataTable';
-import type { TableColumn } from './DataTable.types';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { SortingState } from '@tanstack/react-table';
+import type { TableColumn } from './DataTable.types';
+import DataTable from './DataTable';
 
 // Mock utilities
 jest.mock('~/utils', () => ({
@@ -30,6 +30,37 @@ jest.mock('~/hooks', () => ({
   useMediaQuery: jest.fn(() => false),
 }));
 
+// jsdom reports a zero-height scroll container, so the real virtualizer resolves an empty
+// range and no row assertion below would find its row. Stub it to render every row
+// deterministically; DataTable.virtualization.spec.tsx covers the real virtualizer.
+jest.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({
+    count,
+    estimateSize,
+  }: {
+    count: number;
+    estimateSize?: (index: number) => number;
+  }) => {
+    const size = estimateSize ? estimateSize(0) : 56;
+    return {
+      getVirtualItems: () =>
+        Array.from({ length: count }, (_, index) => ({
+          index,
+          key: index,
+          start: index * size,
+          end: (index + 1) * size,
+          size,
+          lane: 0,
+        })),
+      getTotalSize: () => count * size,
+      calculateRange: () => {},
+      measure: () => {},
+      measureElement: () => {},
+      scrollToIndex: () => {},
+    };
+  },
+}));
+
 // Mock svgs
 jest.mock('~/svgs', () => ({
   Spinner: ({ className }: { className?: string }) => (
@@ -37,18 +68,18 @@ jest.mock('~/svgs', () => ({
   ),
 }));
 
-// Mock lucide-react icons
-jest.mock('lucide-react', () => ({
-  ArrowUp: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-up" className={className} />
-  ),
-  ArrowDown: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-down" className={className} />
-  ),
-  ArrowDownUp: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-down-up" className={className} />
-  ),
-}));
+// Mock MorphIcon, mapping lucide icon data back to per-icon test ids
+jest.mock('../MorphIcon', () => {
+  const { createMorphIconMock } = jest.requireActual('../../test/mockMorphIcon');
+  const { ArrowUp, ArrowDown, ArrowDownUp } = jest.requireActual('lucide');
+  return {
+    MorphIcon: createMorphIconMock([
+      [ArrowUp, 'arrow-up'],
+      [ArrowDown, 'arrow-down'],
+      [ArrowDownUp, 'arrow-down-up'],
+    ]),
+  };
+});
 
 // Mock Table components
 jest.mock('../Table', () => ({
@@ -547,14 +578,44 @@ describe('DataTable', () => {
         </TestWrapper>,
       );
 
-      const sortableHeader = screen.getAllByTestId('table-head')[1]; // Skip select column
-      fireEvent.click(sortableHeader);
+      const sortButton = screen.getByRole('button', { name: 'Name' });
+      fireEvent.click(sortButton);
 
       expect(mockOnSortingChange).toHaveBeenCalled();
     });
 
-    it('should trigger sort on Enter key', () => {
+    it('should toggle direction rather than clearing the sort', () => {
       const mockOnSortingChange = jest.fn();
+      const columns: TableColumn<TestData, string>[] = [
+        {
+          accessorKey: 'name',
+          header: 'Name',
+          enableSorting: true,
+        },
+      ];
+
+      render(
+        <TestWrapper>
+          <DataTable
+            columns={columns}
+            data={createTestData(5)}
+            sorting={[{ id: 'name', desc: true }]}
+            onSortingChange={mockOnSortingChange}
+          />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Name' }));
+
+      const updater = mockOnSortingChange.mock.calls[0][0];
+      const next =
+        typeof updater === 'function'
+          ? updater([{ id: 'name', desc: true }] as SortingState)
+          : updater;
+      expect(next).toEqual([{ id: 'name', desc: false }]);
+    });
+
+    it('should expose sorting through a native button', () => {
       const columns: TableColumn<TestData, string>[] = [
         {
           accessorKey: 'name',
@@ -566,47 +627,13 @@ describe('DataTable', () => {
 
       render(
         <TestWrapper>
-          <DataTable
-            columns={columns}
-            data={data}
-            sorting={[]}
-            onSortingChange={mockOnSortingChange}
-          />
+          <DataTable columns={columns} data={data} sorting={[]} onSortingChange={jest.fn()} />
         </TestWrapper>,
       );
 
-      const sortableHeader = screen.getAllByTestId('table-head')[1];
-      fireEvent.keyDown(sortableHeader, { key: 'Enter' });
-
-      expect(mockOnSortingChange).toHaveBeenCalled();
-    });
-
-    it('should trigger sort on Space key', () => {
-      const mockOnSortingChange = jest.fn();
-      const columns: TableColumn<TestData, string>[] = [
-        {
-          accessorKey: 'name',
-          header: 'Name',
-          enableSorting: true,
-        },
-      ];
-      const data = createTestData(5);
-
-      render(
-        <TestWrapper>
-          <DataTable
-            columns={columns}
-            data={data}
-            sorting={[]}
-            onSortingChange={mockOnSortingChange}
-          />
-        </TestWrapper>,
-      );
-
-      const sortableHeader = screen.getAllByTestId('table-head')[1];
-      fireEvent.keyDown(sortableHeader, { key: ' ' });
-
-      expect(mockOnSortingChange).toHaveBeenCalled();
+      const sortButton = screen.getByRole('button', { name: 'Name' });
+      expect(sortButton.tagName).toBe('BUTTON');
+      expect(sortButton).toHaveAttribute('type', 'button');
     });
 
     it('should show ascending icon when sorted ascending', () => {
@@ -665,8 +692,8 @@ describe('DataTable', () => {
         </TestWrapper>,
       );
 
-      const sortableHeader = screen.getAllByTestId('table-head')[1];
-      fireEvent.click(sortableHeader);
+      const sortButton = screen.getByRole('button', { name: 'Name' });
+      fireEvent.click(sortButton);
 
       // Should show ascending icon after click
       expect(screen.getByTestId('arrow-up')).toBeInTheDocument();
@@ -817,6 +844,295 @@ describe('DataTable', () => {
 
       expect(screen.queryByTestId('spinner')).not.toBeInTheDocument();
     });
+
+    it('does not paginate on scroll while the replacement page is loading', () => {
+      const fetchNextPage = jest.fn().mockResolvedValue(undefined);
+      const clientHeight = jest
+        .spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+        .mockReturnValue(600);
+      const scrollHeight = jest
+        .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+        .mockReturnValue(700);
+
+      const { container } = render(
+        <TestWrapper>
+          <DataTable
+            columns={createTestColumns()}
+            data={createTestData(30)}
+            hasNextPage={true}
+            isFetching={true}
+            isFetchingNextPage={false}
+            fetchNextPage={fetchNextPage}
+          />
+        </TestWrapper>,
+      );
+
+      const scrollArea = container.querySelector(
+        '[aria-label="com_ui_data_table_scroll_area"]',
+      ) as HTMLElement;
+      fireEvent.scroll(scrollArea);
+      jest.advanceTimersByTime(200);
+
+      expect(fetchNextPage).not.toHaveBeenCalled();
+      clientHeight.mockRestore();
+      scrollHeight.mockRestore();
+    });
+
+    describe('auto-fill when the first page cannot scroll', () => {
+      const stubLayout = ({
+        clientHeight,
+        scrollHeight,
+      }: {
+        clientHeight: number;
+        scrollHeight: number;
+      }) => {
+        jest.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight);
+        jest.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight);
+      };
+
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      it('fetches the next page when the rows do not overflow the container', () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 300 });
+        const fetchNextPage = jest.fn().mockResolvedValue(undefined);
+
+        render(
+          <TestWrapper>
+            <DataTable
+              columns={createTestColumns()}
+              data={createTestData(3)}
+              hasNextPage={true}
+              isFetchingNextPage={false}
+              fetchNextPage={fetchNextPage}
+            />
+          </TestWrapper>,
+        );
+
+        expect(fetchNextPage).toHaveBeenCalledTimes(1);
+      });
+
+      it('leaves pagination to the scroll handler once the rows overflow', () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 1200 });
+        const fetchNextPage = jest.fn().mockResolvedValue(undefined);
+
+        render(
+          <TestWrapper>
+            <DataTable
+              columns={createTestColumns()}
+              data={createTestData(30)}
+              hasNextPage={true}
+              isFetchingNextPage={false}
+              fetchNextPage={fetchNextPage}
+            />
+          </TestWrapper>,
+        );
+
+        expect(fetchNextPage).not.toHaveBeenCalled();
+      });
+
+      it('does not fetch while the container is unmeasured', () => {
+        stubLayout({ clientHeight: 0, scrollHeight: 0 });
+        const fetchNextPage = jest.fn().mockResolvedValue(undefined);
+
+        render(
+          <TestWrapper>
+            <DataTable
+              columns={createTestColumns()}
+              data={createTestData(3)}
+              hasNextPage={true}
+              isFetchingNextPage={false}
+              fetchNextPage={fetchNextPage}
+            />
+          </TestWrapper>,
+        );
+
+        expect(fetchNextPage).not.toHaveBeenCalled();
+      });
+
+      it('retries a rejected fetch, then gives up instead of hammering', async () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 300 });
+        const fetchNextPage = jest.fn().mockRejectedValue(new Error('offline'));
+
+        render(
+          <TestWrapper>
+            <DataTable
+              columns={createTestColumns()}
+              data={createTestData(3)}
+              hasNextPage={true}
+              isFetchingNextPage={false}
+              fetchNextPage={fetchNextPage}
+            />
+          </TestWrapper>,
+        );
+
+        await waitFor(() => expect(fetchNextPage).toHaveBeenCalledTimes(3));
+        await Promise.resolve();
+        expect(fetchNextPage).toHaveBeenCalledTimes(3);
+      });
+
+      it('re-arms when the sort changes under a same-sized page', () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 300 });
+        const fetchNextPage = jest.fn().mockResolvedValue(undefined);
+        const props = {
+          columns: createTestColumns(),
+          data: createTestData(3),
+          hasNextPage: true,
+          isFetchingNextPage: false,
+          fetchNextPage,
+          onSortingChange: jest.fn(),
+        };
+
+        const { rerender } = render(
+          <TestWrapper>
+            <DataTable {...props} sorting={[{ id: 'name', desc: false }]} />
+          </TestWrapper>,
+        );
+
+        expect(fetchNextPage).toHaveBeenCalledTimes(1);
+
+        rerender(
+          <TestWrapper>
+            <DataTable {...props} sorting={[{ id: 'name', desc: true }]} />
+          </TestWrapper>,
+        );
+
+        expect(fetchNextPage).toHaveBeenCalledTimes(2);
+      });
+
+      it('sends the viewport back to the top when the sort changes', () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 1200 });
+        const props = {
+          columns: createTestColumns(),
+          data: createTestData(30),
+          onSortingChange: jest.fn(),
+        };
+
+        const { rerender, container } = render(
+          <TestWrapper>
+            <DataTable {...props} sorting={[{ id: 'name', desc: false }]} />
+          </TestWrapper>,
+        );
+
+        const scrollArea = container.querySelector('[aria-label="com_ui_data_table_scroll_area"]');
+        expect(scrollArea).not.toBeNull();
+        (scrollArea as HTMLElement).scrollTop = 400;
+
+        rerender(
+          <TestWrapper>
+            <DataTable {...props} sorting={[{ id: 'name', desc: true }]} />
+          </TestWrapper>,
+        );
+
+        expect((scrollArea as HTMLElement).scrollTop).toBe(0);
+      });
+
+      it('retries when the fetch resolves with a failed result', async () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 300 });
+        // React Query hands back a failed result instead of rejecting.
+        const fetchNextPage = jest
+          .fn()
+          .mockResolvedValue({ isError: true, error: new Error('offline') });
+
+        render(
+          <TestWrapper>
+            <DataTable
+              columns={createTestColumns()}
+              data={createTestData(3)}
+              hasNextPage={true}
+              isFetchingNextPage={false}
+              fetchNextPage={fetchNextPage}
+            />
+          </TestWrapper>,
+        );
+
+        await waitFor(() => expect(fetchNextPage).toHaveBeenCalledTimes(3));
+        await Promise.resolve();
+        expect(fetchNextPage).toHaveBeenCalledTimes(3);
+      });
+
+      it('waits for the replacement query instead of racing it', () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 300 });
+        const fetchNextPage = jest.fn().mockResolvedValue(undefined);
+
+        render(
+          <TestWrapper>
+            <DataTable
+              columns={createTestColumns()}
+              data={createTestData(3)}
+              hasNextPage={true}
+              isFetching={true}
+              isFetchingNextPage={false}
+              fetchNextPage={fetchNextPage}
+            />
+          </TestWrapper>,
+        );
+
+        expect(fetchNextPage).not.toHaveBeenCalled();
+      });
+
+      it('stops after a page that adds no rows', () => {
+        stubLayout({ clientHeight: 600, scrollHeight: 300 });
+        const fetchNextPage = jest.fn().mockResolvedValue(undefined);
+        const props = {
+          columns: createTestColumns(),
+          data: createTestData(3),
+          hasNextPage: true,
+          fetchNextPage,
+        };
+
+        const { rerender } = render(
+          <TestWrapper>
+            <DataTable {...props} isFetchingNextPage={false} />
+          </TestWrapper>,
+        );
+
+        rerender(
+          <TestWrapper>
+            <DataTable {...props} isFetchingNextPage={true} />
+          </TestWrapper>,
+        );
+        rerender(
+          <TestWrapper>
+            <DataTable {...props} isFetchingNextPage={false} />
+          </TestWrapper>,
+        );
+
+        expect(fetchNextPage).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Row memoization', () => {
+    it('re-renders rows when the column definitions change', () => {
+      const makeColumns = (label: string): TableColumn<TestData, string>[] => [
+        {
+          accessorKey: 'name',
+          header: 'Name',
+          cell: () => <span data-testid="action-cell">{label}</span>,
+        },
+      ];
+      // The same rows: only the cells change, which is what a pending row action
+      // looks like to the memo comparator.
+      const data = createTestData(3);
+
+      const { rerender } = render(
+        <TestWrapper>
+          <DataTable columns={makeColumns('Restore')} data={data} />
+        </TestWrapper>,
+      );
+
+      expect(screen.getAllByTestId('action-cell')[0]).toHaveTextContent('Restore');
+
+      rerender(
+        <TestWrapper>
+          <DataTable columns={makeColumns('Restoring')} data={data} />
+        </TestWrapper>,
+      );
+
+      expect(screen.getAllByTestId('action-cell')[0]).toHaveTextContent('Restoring');
+    });
   });
 
   describe('Custom Actions', () => {
@@ -949,7 +1265,7 @@ describe('DataTable', () => {
       expect(table).toHaveAttribute('aria-label', 'com_ui_data_table');
     });
 
-    it('should have proper role on sortable headers', () => {
+    it('should preserve column-header semantics and use a nested sort button', () => {
       const columns: TableColumn<TestData, string>[] = [
         {
           accessorKey: 'name',
@@ -966,8 +1282,9 @@ describe('DataTable', () => {
       );
 
       const sortableHeader = screen.getAllByTestId('table-head')[1];
-      expect(sortableHeader).toHaveAttribute('role', 'button');
-      expect(sortableHeader).toHaveAttribute('tabIndex', '0');
+      expect(sortableHeader).toHaveAttribute('scope', 'col');
+      expect(sortableHeader).not.toHaveAttribute('role', 'button');
+      expect(screen.getByRole('button', { name: 'Name' })).toBeInTheDocument();
     });
   });
 });

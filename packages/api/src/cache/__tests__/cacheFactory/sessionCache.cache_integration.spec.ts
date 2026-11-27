@@ -1,5 +1,6 @@
 import type { MemoryStore, SessionData } from 'express-session';
 import type { RedisStore as ConnectRedis } from 'connect-redis';
+import { closeRedisClients } from '../redisClients.helper';
 
 interface TestSessionData {
   [key: string]: unknown;
@@ -49,6 +50,7 @@ describe('sessionCache', () => {
   });
 
   afterEach(async () => {
+    await closeRedisClients();
     process.env = originalEnv;
     jest.resetModules();
   });

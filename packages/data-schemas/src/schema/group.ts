@@ -1,7 +1,9 @@
 import { Schema } from 'mongoose';
 import type { IGroup } from '~/types';
+import { applySearchTokens } from '~/models/plugins/searchTokens';
+import { GROUP_SEARCH_TOKEN_FIELDS } from '~/utils/search';
 
-const groupSchema = new Schema<IGroup>(
+const groupSchema: Schema<IGroup> = new Schema<IGroup>(
   {
     name: {
       type: String,
@@ -56,6 +58,7 @@ groupSchema.index(
     partialFilterExpression: { idOnTheSource: { $exists: true } },
   },
 );
-groupSchema.index({ memberIds: 1 });
+groupSchema.index({ memberIds: 1, tenantId: 1 });
+applySearchTokens(groupSchema, GROUP_SEARCH_TOKEN_FIELDS);
 
 export default groupSchema;

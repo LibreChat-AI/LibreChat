@@ -1,12 +1,24 @@
 jest.mock('@librechat/data-schemas', () => ({
-  logger: { error: jest.fn(), debug: jest.fn() },
+  logger: { error: jest.fn(), debug: jest.fn(), info: jest.fn() },
 }));
-jest.mock('@librechat/api', () => ({
-  sendEvent: jest.fn(),
-  emitEvent: jest.fn(),
-  createToolExecuteHandler: jest.fn(),
-  markSummarizationUsage: (usage) => usage,
-}));
+jest.mock('@librechat/api', () => {
+  const {
+    getModelRefusalInfo,
+    getModelEndUsage,
+    captureResponseAccountingUsage,
+    collectGoogleThoughtSignatures,
+  } = jest.requireActual('@librechat/api');
+  return {
+    sendEvent: jest.fn(),
+    emitEvent: jest.fn(),
+    createToolExecuteHandler: jest.fn(),
+    markSummarizationUsage: (usage) => usage,
+    getModelRefusalInfo,
+    getModelEndUsage,
+    captureResponseAccountingUsage,
+    collectGoogleThoughtSignatures,
+  };
+});
 jest.mock('~/server/services/Files/Citations', () => ({
   processFileCitations: jest.fn(),
 }));
@@ -18,7 +30,7 @@ jest.mock('~/server/services/Files/process', () => ({
   saveBase64Image: jest.fn(),
 }));
 
-const { ModelEndHandler } = require('../callbacks');
+const { ModelEndHandler, contextualizeModelUsage } = require('../callbacks');
 
 const buildGraph = () => ({
   getAgentContext: () => ({
@@ -27,8 +39,75 @@ const buildGraph = () => ({
   }),
 });
 
-describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 follow-up)', () => {
-  it('maps non-empty signatures onto tool_call_ids in order', async () => {
+describe('ModelEndHandler: Google thoughtSignature capture (issue #13006 follow-up)', () => {
+  it('leaves usage usable when graph context is unavailable', () => {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+
+    expect(contextualizeModelUsage(usage, undefined, undefined)).toEqual({
+      ...usage,
+      accountingIdentity: { modelSource: 'unknown' },
+    });
+    expect(contextualizeModelUsage(usage, undefined, null)).toEqual({
+      ...usage,
+      accountingIdentity: { modelSource: 'unknown' },
+    });
+  });
+
+  it('captures configured provenance before billing fills the model and keeps it on repeated contextualization', () => {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+    const context = { provider: 'bedrock', clientOptions: { model: 'configured-model' } };
+    const first = contextualizeModelUsage(usage, undefined, context);
+    expect(first.model).toBe('configured-model');
+    expect(first.accountingIdentity).toEqual({
+      model: 'configured-model',
+      provider: 'bedrock',
+      modelSource: 'configured',
+    });
+    expect(contextualizeModelUsage(first, undefined, context).accountingIdentity).toEqual(
+      first.accountingIdentity,
+    );
+    expect(usage).not.toHaveProperty('accountingIdentity');
+  });
+
+  it('prefers the actually invoked fallback provider and model', () => {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+    const result = contextualizeModelUsage(
+      usage,
+      {
+        __invoked_provider: 'anthropic',
+        __invoked_model: 'claude-fallback',
+      },
+      {
+        provider: 'bedrock',
+        agentId: 'agent-1',
+        clientOptions: { model: 'configured-model' },
+      },
+    );
+
+    expect(result).toEqual({
+      ...usage,
+      provider: 'anthropic',
+      model: 'claude-fallback',
+      agentId: 'agent-1',
+      accountingIdentity: {
+        model: 'claude-fallback',
+        provider: 'anthropic',
+        modelSource: 'runtime_reported',
+      },
+    });
+  });
+
+  it('prefers provider-reported model metadata over the invoked fallback model', () => {
+    expect(
+      contextualizeModelUsage(
+        { input_tokens: 10, output_tokens: 5 },
+        { ls_model_name: 'reported-model', __invoked_model: 'fallback-model' },
+        { clientOptions: { model: 'configured-model' } },
+      ).model,
+    ).toBe('reported-model');
+  });
+
+  it('does not guess call ownership from ambiguous positional signatures', async () => {
     const collectedUsage = [];
     const collectedThoughtSignatures = {};
     const handler = new ModelEndHandler(collectedUsage, collectedThoughtSignatures);
@@ -49,7 +128,7 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
       buildGraph(),
     );
 
-    expect(collectedThoughtSignatures).toEqual({ tc_a: 'SIG_A', tc_b: 'SIG_B' });
+    expect(collectedThoughtSignatures).toEqual({});
     expect(collectedUsage).toHaveLength(1);
   });
 
@@ -64,7 +143,9 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
         output: {
           usage_metadata: { input_tokens: 5, output_tokens: 5, total_tokens: 10 },
           tool_calls: [{ id: 'tc_step1', name: 'a', args: {} }],
-          additional_kwargs: { signatures: ['SIG_step1'] },
+          additional_kwargs: {
+            __gemini_function_call_thought_signatures__: { tc_step1: 'SIG_step1' },
+          },
         },
       },
       { ls_model_name: 'g', user_id: 'u' },
@@ -76,7 +157,9 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
         output: {
           usage_metadata: { input_tokens: 5, output_tokens: 5, total_tokens: 10 },
           tool_calls: [{ id: 'tc_step2', name: 'b', args: {} }],
-          additional_kwargs: { signatures: ['SIG_step2'] },
+          additional_kwargs: {
+            __gemini_function_call_thought_signatures__: { tc_step2: 'SIG_step2' },
+          },
         },
       },
       { ls_model_name: 'g', user_id: 'u' },
@@ -84,9 +167,23 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
     );
 
     expect(collectedThoughtSignatures).toEqual({
-      tc_step1: 'SIG_step1',
-      tc_step2: 'SIG_step2',
+      calls: { tc_step1: 'SIG_step1', tc_step2: 'SIG_step2' },
     });
+  });
+
+  it('captures signed text even without token usage', async () => {
+    const { AIMessage } = require('@langchain/core/messages');
+    const { captureGeminiReplayParts } = require('@librechat/agents');
+    const output = new AIMessage('Signed answer');
+    captureGeminiReplayParts(output, [{ text: 'Signed answer', thoughtSignature: 'opaque' }]);
+    const collected = {};
+    await new ModelEndHandler([], collected).handle(
+      'on_chat_model_end',
+      { output },
+      {},
+      buildGraph(),
+    );
+    expect(collected.turns[0][0].thoughtSignature).toBe('opaque');
   });
 
   it('is a no-op for signatures when collectedThoughtSignatures is null', async () => {
@@ -148,6 +245,85 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
     );
 
     expect(collectedThoughtSignatures).toEqual({});
+  });
+
+  it('tags the producing agent on collected + emitted usage for per-endpoint pricing', async () => {
+    const collectedUsage = [];
+    const emitUsage = jest.fn();
+    const handler = new ModelEndHandler(collectedUsage, null, emitUsage);
+    const graph = {
+      getAgentContext: () => ({
+        provider: 'openai',
+        agentId: 'agent_sub',
+        clientOptions: { model: 'gpt-4' },
+      }),
+    };
+
+    await handler.handle(
+      'on_chat_model_end',
+      { output: { usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } },
+      { ls_model_name: 'gpt-4', run_id: 'r1', user_id: 'u1' },
+      graph,
+    );
+
+    expect(collectedUsage[0].agentId).toBe('agent_sub');
+    expect(collectedUsage[0].provider).toBe('openai');
+    expect(collectedUsage[0].model).toBe('gpt-4');
+    expect(emitUsage).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'agent_sub' }));
+  });
+
+  it('leaves usage untagged when the graph context has no agentId (single-endpoint)', async () => {
+    const collectedUsage = [];
+    const emitUsage = jest.fn();
+    const handler = new ModelEndHandler(collectedUsage, null, emitUsage);
+
+    await handler.handle(
+      'on_chat_model_end',
+      { output: { usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } },
+      { ls_model_name: 'gemini-3.1-flash-lite-preview', run_id: 'r1', user_id: 'u1' },
+      buildGraph(),
+    );
+
+    expect(collectedUsage[0].agentId).toBeUndefined();
+    expect(emitUsage).toHaveBeenCalledWith(expect.objectContaining({ agentId: undefined }));
+  });
+
+  it('carries the Anthropic 1-hour cache write count into collected and emitted usage', async () => {
+    const collectedUsage = [];
+    const emitUsage = jest.fn();
+    const handler = new ModelEndHandler(collectedUsage, null, emitUsage);
+
+    await handler.handle(
+      'on_chat_model_end',
+      {
+        output: {
+          usage_metadata: {
+            input_tokens: 3510,
+            output_tokens: 40,
+            total_tokens: 3550,
+            input_token_details: { cache_creation: 3000, cache_read: 500 },
+          },
+          response_metadata: {
+            usage: {
+              cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 2000 },
+            },
+          },
+        },
+      },
+      { ls_model_name: 'claude-sonnet-5-5', run_id: 'r1', user_id: 'u1' },
+      buildGraph(),
+    );
+
+    expect(collectedUsage[0].input_token_details).toEqual({
+      cache_creation: 3000,
+      cache_creation_1h: 2000,
+      cache_read: 500,
+    });
+    expect(emitUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input_token_details: { cache_creation: 3000, cache_creation_1h: 2000, cache_read: 500 },
+      }),
+    );
   });
 
   it('throws when collectedUsage is not an array (existing contract)', () => {

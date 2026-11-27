@@ -1,3 +1,5 @@
+import type { ShortcutActionId } from '~/hooks/useKeyboardShortcuts';
+import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
 import { cn, removeFocusOutlines } from '~/utils/';
 
 export default function Button({
@@ -5,23 +7,36 @@ export default function Button({
   children,
   onClick,
   className = '',
+  shortcutId,
 }: {
   type?: 'regenerate' | 'continue' | 'stop';
   children: React.ReactNode;
   onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   className?: string;
+  shortcutId?: ShortcutActionId;
 }) {
+  const shortcutDisplay = useShortcutDisplay(shortcutId);
+  const ariaKey = useShortcutAriaKey(shortcutId);
+
   return (
     <button
       data-testid={`${type}-generation-button`}
+      aria-keyshortcuts={ariaKey}
       className={cn(
-        'custom-btn btn-neutral relative -z-0 whitespace-nowrap border-0 md:border',
+        'custom-btn btn-neutral relative -z-0 border-0 whitespace-nowrap md:border',
         removeFocusOutlines,
         className,
       )}
       onClick={onClick}
     >
-      <div className="flex w-full items-center justify-center gap-2">{children}</div>
+      <div className="flex w-full items-center justify-center gap-2">
+        {children}
+        {shortcutDisplay && (
+          <span className="border-border-light text-text-secondary text-3xs hidden rounded-md border px-1.5 py-0.5 leading-none md:inline-flex">
+            {shortcutDisplay}
+          </span>
+        )}
+      </div>
     </button>
   );
 }

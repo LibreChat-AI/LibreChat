@@ -1,7 +1,12 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils/';
 
-export default function CrossIcon({ className = '' }) {
+export default function CrossIcon({
+  className = '',
+}: {
+  className?: string | undefined;
+}): JSX.Element {
   return (
     <svg
       stroke="currentColor"

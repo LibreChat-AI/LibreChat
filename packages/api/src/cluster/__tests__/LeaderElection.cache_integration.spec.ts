@@ -6,6 +6,13 @@ describe('LeaderElection with Redis', () => {
   let keyvRedisClient: Awaited<typeof import('~/cache/redisClients')>['keyvRedisClient'];
   let ioredisClient: Awaited<typeof import('~/cache/redisClients')>['ioredisClient'];
 
+  const clearLeaderKey = async () => {
+    // LeaderElection uses ioredis (keyPrefix applied). Match that client for cleanup.
+    if (ioredisClient) {
+      await ioredisClient.del(LeaderElection.LEADER_KEY);
+    }
+  };
+
   beforeAll(async () => {
     // Set up environment variables for Redis
     process.env.USE_REDIS = 'true';
@@ -20,22 +27,42 @@ describe('LeaderElection with Redis', () => {
     keyvRedisClient = redisClients.keyvRedisClient;
     ioredisClient = redisClients.ioredisClient;
 
-    // Ensure Redis is connected
+    // Ensure Redis is connected (both clients; LeaderElection uses ioredis)
+    if (!ioredisClient) {
+      throw new Error('ioredis client is not initialized');
+    }
     if (!keyvRedisClient) {
       throw new Error('Redis client is not initialized');
     }
 
     // Wait for connection and topology discovery to complete
     await redisClients.keyvRedisClientReady;
+    const redis = ioredisClient;
+    if (redis.status !== 'ready') {
+      await new Promise<void>((resolve, reject) => {
+        const onReady = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const cleanup = () => {
+          redis.off('ready', onReady);
+          redis.off('error', onError);
+        };
+        redis.once('ready', onReady);
+        redis.once('error', onError);
+      });
+    }
 
     // Increase max listeners to handle many instances in tests
     process.setMaxListeners(200);
   });
 
   beforeEach(async () => {
-    if (keyvRedisClient) {
-      await keyvRedisClient.del(LeaderElection.LEADER_KEY);
-    }
+    await clearLeaderKey();
     new LeaderElection().clearRefreshTimer();
   });
 
@@ -44,9 +71,7 @@ describe('LeaderElection with Redis', () => {
       await Promise.all(instances.map((instance) => instance.resign()));
     } finally {
       instances = [];
-      if (keyvRedisClient) {
-        await keyvRedisClient.del(LeaderElection.LEADER_KEY);
-      }
+      await clearLeaderKey();
     }
   });
 
@@ -120,16 +145,16 @@ describe('LeaderElection with Redis', () => {
   });
 
   describe('Test Case 3: Stress testing', () => {
-    it('should ensure only one instance becomes leader even when multiple instances call electSelf() at once', async () => {
-      // Create 10 instances
+    it('reports ownership to concurrent callers of the same singleton', async () => {
+      // The constructor returns the singleton, not ten independent replicas.
       instances = Array.from({ length: 10 }, () => new LeaderElection());
 
       // Call electSelf on all instances in parallel
       const results = await Promise.all(instances.map((instance) => instance['electSelf']()));
 
-      // Verify only one returned true
+      // All callers observe the same process owning the lease.
       const successCount = results.filter((success) => success).length;
-      expect(successCount).toBe(1);
+      expect(successCount).toBe(10);
 
       // Find the winning instance
       const winnerInstance = instances.find((_, index) => results[index]);

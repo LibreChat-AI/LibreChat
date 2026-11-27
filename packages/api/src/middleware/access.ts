@@ -24,6 +24,106 @@ export function skipAgentCheck(req?: ServerRequest): boolean {
   return !isAgentsEndpoint(req.body.endpoint);
 }
 
+export interface CheckAccessParams {
+  user: IUser;
+  req?: ServerRequest;
+  permissionType: PermissionTypes;
+  permissions: Permissions[];
+  bodyProps?: Record<Permissions, string[]>;
+  checkObject?: object;
+  /** If skipCheck function is provided and returns true, skip permission checking */
+  skipCheck?: (req?: ServerRequest) => boolean;
+  getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
+}
+
+export type CheckAccessWithRequestCacheParams = Omit<
+  CheckAccessParams,
+  'bodyProps' | 'checkObject' | 'skipCheck'
+>;
+
+type RequestPermissionCache = Map<string, Promise<boolean>>;
+type RequestRoleCache = Map<string, Promise<IRole | null>>;
+
+const requestPermissionCacheKey = '__librechatRequestPermissionCache';
+const requestRoleCacheKey = '__librechatRequestRoleCache';
+
+function getRequestRoleCache(req?: ServerRequest): RequestRoleCache | null {
+  if (!req) {
+    return null;
+  }
+
+  const reqWithCache = req as ServerRequest & {
+    [requestRoleCacheKey]?: RequestRoleCache;
+  };
+
+  if (!reqWithCache[requestRoleCacheKey]) {
+    Object.defineProperty(reqWithCache, requestRoleCacheKey, {
+      value: new Map<string, Promise<IRole | null>>(),
+      enumerable: false,
+    });
+  }
+
+  return reqWithCache[requestRoleCacheKey] ?? null;
+}
+
+async function getRoleForAccess({
+  req,
+  roleName,
+  getRoleByName,
+}: {
+  req?: ServerRequest;
+  roleName: string;
+  getRoleByName: CheckAccessParams['getRoleByName'];
+}): Promise<IRole | null> {
+  const cache = getRequestRoleCache(req);
+  if (!cache) {
+    return await getRoleByName(roleName);
+  }
+
+  let cachedRole = cache.get(roleName);
+  if (!cachedRole) {
+    try {
+      cachedRole = Promise.resolve(getRoleByName(roleName));
+    } catch (error) {
+      cachedRole = Promise.reject(error);
+    }
+    cachedRole = cachedRole.catch((error) => {
+      cache.delete(roleName);
+      throw error;
+    });
+    cache.set(roleName, cachedRole);
+  }
+
+  return await cachedRole;
+}
+
+function getRequestPermissionCache(req?: ServerRequest): RequestPermissionCache | null {
+  if (!req) {
+    return null;
+  }
+
+  const reqWithCache = req as ServerRequest & {
+    [requestPermissionCacheKey]?: RequestPermissionCache;
+  };
+
+  if (!reqWithCache[requestPermissionCacheKey]) {
+    Object.defineProperty(reqWithCache, requestPermissionCacheKey, {
+      value: new Map<string, Promise<boolean>>(),
+      enumerable: false,
+    });
+  }
+
+  return reqWithCache[requestPermissionCacheKey] ?? null;
+}
+
+function getRequestPermissionCacheKey({
+  user,
+  permissionType,
+  permissions,
+}: CheckAccessWithRequestCacheParams): string {
+  return [permissionType, [...permissions].sort().join(','), user.id, user.role].join(':');
+}
+
 /**
  * Core function to check if a user has one or more required permissions
  * @param user - The user object
@@ -43,17 +143,7 @@ export const checkAccess = async ({
   bodyProps = {} as Record<Permissions, string[]>,
   checkObject = {},
   skipCheck,
-}: {
-  user: IUser;
-  req?: ServerRequest;
-  permissionType: PermissionTypes;
-  permissions: Permissions[];
-  bodyProps?: Record<Permissions, string[]>;
-  checkObject?: object;
-  /** If skipCheck function is provided and returns true, skip permission checking */
-  skipCheck?: (req?: ServerRequest) => boolean;
-  getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
-}): Promise<boolean> => {
+}: CheckAccessParams): Promise<boolean> => {
   if (skipCheck && skipCheck(req)) {
     return true;
   }
@@ -62,7 +152,7 @@ export const checkAccess = async ({
     return false;
   }
 
-  const role = await getRoleByName(user.role);
+  const role = await getRoleForAccess({ req, roleName: user.role, getRoleByName });
   const permissionValue = role?.permissions?.[permissionType as keyof typeof role.permissions];
   if (role && role.permissions && permissionValue) {
     const hasAnyPermission = permissions.every((permission) => {
@@ -83,6 +173,35 @@ export const checkAccess = async ({
   }
 
   return false;
+};
+
+/**
+ * Checks simple role permissions using a per-request promise cache.
+ * Use this only for checks whose result is fully described by user, role, permission type, and permissions.
+ */
+export const checkAccessWithRequestCache = async (
+  params: CheckAccessWithRequestCacheParams,
+): Promise<boolean> => {
+  if (!params.req || !params.user?.id || !params.user?.role) {
+    return await checkAccess(params);
+  }
+
+  const cache = getRequestPermissionCache(params.req);
+  if (!cache) {
+    return await checkAccess(params);
+  }
+
+  const cacheKey = getRequestPermissionCacheKey(params);
+  let cachedCheck = cache.get(cacheKey);
+  if (!cachedCheck) {
+    cachedCheck = checkAccess(params).catch((error) => {
+      cache.delete(cacheKey);
+      throw error;
+    });
+    cache.set(cacheKey, cachedCheck);
+  }
+
+  return await cachedCheck;
 };
 
 /**

@@ -1,6 +1,6 @@
 import type { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
-import type { AwsCredentialIdentity } from '@aws-sdk/types';
 import type { BedrockConverseInput } from 'librechat-data-provider';
+import type { AwsCredentialIdentity } from '@aws-sdk/types';
 
 /**
  * AWS credentials for Bedrock
@@ -31,25 +31,6 @@ export interface GuardrailConfiguration {
 export type InferenceProfileConfig = Record<string, string>;
 
 /**
- * Configuration options for Bedrock LLM
- */
-export interface BedrockConfigOptions {
-  modelOptions?: Partial<BedrockConverseInput>;
-  /** AWS region for Bedrock */
-  region?: string;
-  /** Optional pre-configured Bedrock client (used with proxy) */
-  client?: BedrockRuntimeClient;
-  /** AWS credentials */
-  credentials?: BedrockCredentials;
-  /** Custom endpoint host for reverse proxy */
-  endpointHost?: string;
-  /** Guardrail configuration for content filtering */
-  guardrailConfig?: GuardrailConfiguration;
-  /** Inference profile ARNs keyed by model ID / friendly name */
-  inferenceProfiles?: InferenceProfileConfig;
-}
-
-/**
  * Return type for Bedrock getOptions function
  */
 export interface BedrockLLMConfigResult {
@@ -57,6 +38,7 @@ export interface BedrockLLMConfigResult {
     region?: string;
     client?: BedrockRuntimeClient;
     credentials?: BedrockCredentials;
+    profile?: string;
     endpointHost?: string;
     guardrailConfig?: GuardrailConfiguration;
     applicationInferenceProfile?: string;

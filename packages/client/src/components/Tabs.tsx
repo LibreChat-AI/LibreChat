@@ -1,17 +1,23 @@
 import * as React from 'react';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
-import { cn } from '~/utils';
+import { cn, disabledInkClasses } from '~/utils';
+import { focusOutlineRole } from './Focus';
 
-const Tabs = TabsPrimitive.Root;
+const Tabs: React.ForwardRefExoticComponent<
+  TabsPrimitive.TabsProps & React.RefAttributes<HTMLDivElement>
+> = TabsPrimitive.Root;
 
-const TabsList = React.forwardRef<
+const TabsList: React.ForwardRefExoticComponent<
+  Omit<TabsPrimitive.TabsListProps & React.RefAttributes<HTMLDivElement>, 'ref'> &
+    React.RefAttributes<HTMLDivElement>
+> = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(({ className = '', ...props }, ref) => (
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      'inline-flex items-center justify-center rounded-md bg-surface-primary',
+      'bg-surface-primary inline-flex items-center justify-center rounded-md',
       className,
     )}
     {...props}
@@ -19,13 +25,18 @@ const TabsList = React.forwardRef<
 ));
 TabsList.displayName = TabsPrimitive.List.displayName;
 
-const TabsTrigger = React.forwardRef<
+const TabsTrigger: React.ForwardRefExoticComponent<
+  Omit<TabsPrimitive.TabsTriggerProps & React.RefAttributes<HTMLButtonElement>, 'ref'> &
+    React.RefAttributes<HTMLButtonElement>
+> = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
 >(({ className = '', ...props }, ref) => (
   <TabsPrimitive.Trigger
     className={cn(
-      'inline-flex min-w-[100px] items-center justify-center rounded-[0.185rem] px-3 py-1.5 text-sm font-medium text-gray-700 transition-all disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-white data-[state=active]:text-gray-800 data-[state=active]:shadow-sm dark:data-[state=active]:bg-gray-700 dark:data-[state=active]:text-gray-200',
+      'text-text-secondary data-[state=active]:bg-surface-primary data-[state=active]:text-text-primary rounded-theme-tab min-w-theme-tab inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50',
+      disabledInkClasses,
+      focusOutlineRole,
       className,
     )}
     {...props}
@@ -34,7 +45,10 @@ const TabsTrigger = React.forwardRef<
 ));
 TabsTrigger.displayName = TabsPrimitive.Trigger.displayName;
 
-const TabsContent = React.forwardRef<
+const TabsContent: React.ForwardRefExoticComponent<
+  Omit<TabsPrimitive.TabsContentProps & React.RefAttributes<HTMLDivElement>, 'ref'> &
+    React.RefAttributes<HTMLDivElement>
+> = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
 >(({ className = '', ...props }, ref) => (

@@ -5,19 +5,6 @@ import {
   PrincipalType,
   PermissionBits,
 } from 'librechat-data-provider';
-import type { Response } from 'express';
-import type { Types } from 'mongoose';
-import type {
-  ISkill,
-  ISkillFile,
-  ISkillSummary,
-  CreateSkillInput,
-  CreateSkillResult,
-  UpdateSkillInput,
-  ListSkillsByAccessResult,
-  UpdateSkillResult,
-  ValidationIssue,
-} from '@librechat/data-schemas';
 import type {
   TSkill,
   TSkillFile,
@@ -31,7 +18,31 @@ import type {
   TSkillConflictResponse,
   TSkillFileContentResponse,
 } from 'librechat-data-provider';
+import type {
+  ISkill,
+  ISkillFile,
+  ISkillSummary,
+  CreateSkillInput,
+  CreateSkillResult,
+  UpdateSkillInput,
+  ListSkillsByAccessResult,
+  ListSkillsByAccessParams,
+  UpdateSkillResult,
+  ValidationIssue,
+  DeleteSkillResult,
+} from '@librechat/data-schemas';
+import type { Response } from 'express';
+import type { Types } from 'mongoose';
 import type { ServerRequest, StrategyFunctions } from '~/types';
+import type { SkillDeletionProgress } from './deletion';
+import { extractSkillContent, inspectContentWithTraversal } from '~/protection';
+import { contentFilterBlockResponse } from '~/middleware/contentFilter';
+import { getSafeErrorMetadata } from '~/utils/errors';
+import { getDeploymentSkillIds } from './deployment';
+import { resolveDownloadPath } from '~/storage/path';
+import { resolveSkillFilePathParam } from './path';
+import { deleteSkillWithRetry } from './cleanup';
+import { parseSkillMarkdown } from './parse';
 import { isBinaryBuffer } from './binary';
 
 /** Thin error shape the skill methods throw on validation failure. */
@@ -39,6 +50,13 @@ type SkillValidationError = Error & { code?: string; issues?: ValidationIssue[] 
 
 /** Mongo duplicate-key shape. */
 type DuplicateKeyError = Error & { code?: number | string };
+
+/** Only authorized, loaded SkillFile records may select another storage owner. */
+function skillFileDeletionRequest(req: ServerRequest, file: ISkillFile): ServerRequest {
+  const ownerId = file.author?.toString();
+  if (!ownerId || !req.user) throw new Error('Skill file has no storage owner');
+  return { ...req, user: { ...req.user, id: ownerId, _id: file.author } } as ServerRequest;
+}
 
 /**
  * All dependencies required to serve skill HTTP requests. Every dep is resolved
@@ -49,25 +67,21 @@ export interface SkillsHandlersDeps {
   /** Skill CRUD — from `@librechat/data-schemas` `createMethods` output. */
   createSkill: (data: CreateSkillInput) => Promise<CreateSkillResult>;
   getSkillById: (id: string | Types.ObjectId) => Promise<(ISkill & { _id: Types.ObjectId }) | null>;
-  listSkillsByAccess: (params: {
-    accessibleIds: Types.ObjectId[];
-    category?: string;
-    search?: string;
-    limit: number;
-    cursor?: string | null;
-  }) => Promise<ListSkillsByAccessResult>;
+  listSkillsByAccess: (params: ListSkillsByAccessParams) => Promise<ListSkillsByAccessResult>;
   updateSkill: (params: {
     id: string;
     expectedVersion: number;
     update: UpdateSkillInput;
   }) => Promise<UpdateSkillResult>;
-  deleteSkill: (id: string) => Promise<{ deleted: boolean }>;
+  deleteSkill: (id: string) => Promise<DeleteSkillResult>;
+  deleteSkillById: (id: string) => Promise<SkillDeletionProgress>;
   listSkillFiles: (
     skillId: string | Types.ObjectId,
   ) => Promise<Array<ISkillFile & { _id: Types.ObjectId }>>;
   deleteSkillFile: (
     skillId: string | Types.ObjectId,
     relativePath: string,
+    expectedFileId?: string,
   ) => Promise<{ deleted: boolean }>;
 
   /** Access-control primitives from PermissionService. */
@@ -104,6 +118,7 @@ export interface SkillsHandlersDeps {
     skillId: string | Types.ObjectId,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ) => Promise<void>;
 
   /** Storage strategy resolver — returns stream/URL helpers keyed by source. */
@@ -156,7 +171,7 @@ function serializeSkill(
     author: skill.author.toString(),
     authorName: skill.authorName,
     version: skill.version,
-    source: skill.source,
+    source: skill.source ?? 'inline',
     sourceMetadata: serializeSourceMetadata(skill.sourceMetadata),
     fileCount: skill.fileCount,
     alwaysApply: skill.alwaysApply,
@@ -184,7 +199,7 @@ function serializeSkillSummary(
     author: skill.author.toString(),
     authorName: skill.authorName,
     version: skill.version,
-    source: skill.source,
+    source: skill.source ?? 'inline',
     sourceMetadata: serializeSourceMetadata(skill.sourceMetadata),
     fileCount: skill.fileCount,
     alwaysApply: skill.alwaysApply,
@@ -206,6 +221,7 @@ function serializeSkillFile(file: ISkillFile & { _id: Types.ObjectId }): TSkillF
     storageKey: file.storageKey,
     storageRegion: file.storageRegion,
     source: file.source as TSkillFile['source'],
+    sourceMetadata: file.sourceMetadata as TSkillFile['sourceMetadata'],
     mimeType: file.mimeType,
     bytes: file.bytes,
     category: file.category,
@@ -262,19 +278,69 @@ function parseLimit(raw: unknown): number {
   return Math.min(Math.max(1, parsed), 100);
 }
 
+function blockFilteredSkillContent(
+  req: ServerRequest,
+  res: Response,
+  input: TCreateSkill | TUpdateSkillPayload,
+): boolean {
+  if (req.config?.filters == null) {
+    return false;
+  }
+  const inlineFrontmatter =
+    typeof input.body === 'string' ? parseSkillMarkdown(input.body).frontmatter : undefined;
+  const { finding, traversalError } = inspectContentWithTraversal(
+    () =>
+      extractSkillContent({
+        name: input.name,
+        displayTitle: input.displayTitle,
+        description: input.description,
+        body: input.body,
+        frontmatter: {
+          ...inlineFrontmatter,
+          ...(input.frontmatter as Record<string, unknown> | undefined),
+        },
+        category: input.category,
+      }),
+    { filters: req.config?.filters },
+  );
+  if (finding != null) {
+    res.status(400).json(contentFilterBlockResponse(finding));
+    return true;
+  }
+  if (traversalError != null) {
+    res.status(traversalError.statusCode).json(traversalError.body);
+    return true;
+  }
+  return false;
+}
+
+type SkillResponseOptions = { includePublicStatus?: boolean };
+
+type SkillListOptions = Pick<ListSkillsByAccessParams, 'manageTenantId' | 'limit' | 'cursor'>;
+
 /**
  * Factory for the typed Express handlers served at `/api/skills`.
  * The legacy `api/server/routes/skills.js` imports this, passes in concrete
  * deps from `~/models` + `PermissionService`, and wires the returned handlers
  * onto the Express router.
  */
-export function createSkillsHandlers(deps: SkillsHandlersDeps) {
+export function createSkillsHandlers(deps: SkillsHandlersDeps): {
+  list: (req: ServerRequest, res: Response, options?: SkillListOptions) => Promise<Response>;
+  create: (req: ServerRequest, res: Response) => Promise<Response>;
+  get: (req: ServerRequest, res: Response, options?: SkillResponseOptions) => Promise<Response>;
+  patch: (req: ServerRequest, res: Response, options?: SkillResponseOptions) => Promise<Response>;
+  delete: (req: ServerRequest, res: Response) => Promise<Response>;
+  listFiles: (req: ServerRequest, res: Response) => Promise<Response>;
+  downloadFile: (req: ServerRequest, res: Response) => Promise<Response | undefined>;
+  deleteFile: (req: ServerRequest, res: Response) => Promise<Response>;
+} {
   const {
     createSkill,
     getSkillById,
     listSkillsByAccess,
     updateSkill,
     deleteSkill,
+    deleteSkillById,
     listSkillFiles,
     deleteSkillFile,
     getSkillFileByPath,
@@ -300,7 +366,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
     }
   }
 
-  async function listHandler(req: ServerRequest, res: Response) {
+  async function listHandler(req: ServerRequest, res: Response, options?: SkillListOptions) {
     try {
       const user = req.user;
       if (!user || !user.id) {
@@ -314,18 +380,20 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
       };
       const parsedLimit = parseLimit(limit);
 
-      const [accessibleIds, publicIds] = await Promise.all([
-        findAccessibleResources({
-          userId: user.id,
-          role: user.role,
-          resourceType: ResourceType.SKILL,
-          requiredPermissions: PermissionBits.VIEW,
-        }),
-        findPubliclyAccessibleResources({
-          resourceType: ResourceType.SKILL,
-          requiredPermissions: PermissionBits.VIEW,
-        }),
-      ]);
+      const [accessibleIds, publicIds] = options?.manageTenantId
+        ? [getDeploymentSkillIds(), []]
+        : await Promise.all([
+            findAccessibleResources({
+              userId: user.id,
+              role: user.role,
+              resourceType: ResourceType.SKILL,
+              requiredPermissions: PermissionBits.VIEW,
+            }),
+            findPubliclyAccessibleResources({
+              resourceType: ResourceType.SKILL,
+              requiredPermissions: PermissionBits.VIEW,
+            }),
+          ]);
 
       const mergedIds = Array.from(
         new Map([...accessibleIds, ...publicIds].map((id) => [id.toString(), id])).values(),
@@ -335,8 +403,10 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
         accessibleIds: mergedIds,
         category: typeof category === 'string' && category.length > 0 ? category : undefined,
         search: typeof search === 'string' && search.length > 0 ? search : undefined,
-        limit: parsedLimit,
-        cursor: typeof cursor === 'string' && cursor.length > 0 ? cursor : null,
+        manageTenantId: options?.manageTenantId,
+        limit: options?.limit ?? parsedLimit,
+        cursor:
+          options?.cursor ?? (typeof cursor === 'string' && cursor.length > 0 ? cursor : null),
       });
 
       const publicSet = new Set(publicIds.map((id) => id.toString()));
@@ -367,6 +437,9 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
       }
       if (!body.description || typeof body.description !== 'string') {
         return res.status(400).json({ error: 'Skill description is required' });
+      }
+      if (blockFilteredSkillContent(req, res, body)) {
+        return res;
       }
 
       const authorId = (user._id ?? user.id) as unknown as Types.ObjectId;
@@ -413,7 +486,12 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
           permissionError,
         );
         try {
-          await deleteSkill(skill._id.toString());
+          const deletion = await deleteSkillWithRetry(deleteSkill, skill._id.toString());
+          if (!deletion.cleanupComplete) {
+            logger.error(
+              `[POST /skills] Compensating delete incomplete for orphaned skill ${skill._id.toString()}: ${deletion.failedCleanupSteps.join(', ')}`,
+            );
+          }
         } catch (rollbackError) {
           logger.error(
             `[POST /skills] Compensating delete failed for orphaned skill ${skill._id.toString()}:`,
@@ -434,7 +512,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
     }
   }
 
-  async function getHandler(req: ServerRequest, res: Response) {
+  async function getHandler(req: ServerRequest, res: Response, options?: SkillResponseOptions) {
     try {
       const { id } = req.params as { id: string };
       // The canAccessSkillResource middleware already resolved the skill via
@@ -449,7 +527,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
       if (!skill) {
         return res.status(404).json({ error: 'Skill not found' });
       }
-      const pub = await isSkillPublic(skill._id);
+      const pub = options?.includePublicStatus === false ? false : await isSkillPublic(skill._id);
       return res.status(200).json(serializeSkill(skill, pub));
     } catch (error) {
       logger.error('[GET /skills/:id] Error fetching skill', error);
@@ -457,7 +535,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
     }
   }
 
-  async function patchHandler(req: ServerRequest, res: Response) {
+  async function patchHandler(req: ServerRequest, res: Response, options?: SkillResponseOptions) {
     try {
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as TUpdateSkillPayload & { expectedVersion?: number };
@@ -491,6 +569,9 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
       if (Object.keys(update).length === 0) {
         return res.status(400).json({ error: 'At least one field must be provided for update' });
       }
+      if (blockFilteredSkillContent(req, res, rest)) {
+        return res;
+      }
 
       let result: UpdateSkillResult;
       try {
@@ -508,7 +589,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
       if (result.status === 'not_found') {
         return res.status(404).json({ error: 'Skill not found' });
       }
-      const pub = await isSkillPublic(id);
+      const pub = options?.includePublicStatus === false ? false : await isSkillPublic(id);
       if (result.status === 'conflict') {
         const conflict: TSkillConflictResponse = {
           error: 'skill_version_conflict',
@@ -532,34 +613,18 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
         return res.status(400).json({ error: 'Invalid skill id' });
       }
 
-      // Collect file records before deletion so we can clean up storage blobs
-      const files = await listSkillFiles(id);
-
-      const result = await deleteSkill(id);
-      if (!result.deleted) {
+      const progress = await deleteSkillById(id);
+      if (!progress.found) {
         return res.status(404).json({ error: 'Skill not found' });
       }
-
-      // Fire-and-forget blob cleanup for each file
-      for (const file of files) {
-        const { deleteFile: deleteBlob } = getStrategyFunctions(file.source);
-        if (deleteBlob) {
-          deleteBlob(req, {
-            filepath: file.filepath,
-            storageKey: file.storageKey,
-            storageRegion: file.storageRegion,
-            user: file.author?.toString?.(),
-            tenantId: file.tenantId?.toString?.(),
-          }).catch((e) =>
-            logger.error(`[deleteSkill] Blob cleanup failed for ${file.relativePath}:`, e),
-          );
-        }
-      }
-
-      const response: TDeleteSkillResponse = { id, deleted: true };
+      const response: TDeleteSkillResponse = {
+        id,
+        deleted: true,
+        cleanupComplete: progress.cleanupComplete,
+      };
       return res.status(200).json(response);
     } catch (error) {
-      logger.error('[DELETE /skills/:id] Error deleting skill', error);
+      logger.error('[DELETE /skills/:id] Error deleting skill', getSafeErrorMetadata(error));
       return res.status(500).json({ error: 'Error deleting skill' });
     }
   }
@@ -589,17 +654,22 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
 
   async function downloadFileHandler(req: ServerRequest, res: Response) {
     try {
-      const { id, relativePath } = req.params as { id: string; relativePath: string };
-      let decodedPath: string;
-      try {
-        decodedPath = decodeURIComponent(relativePath);
-      } catch {
-        return res.status(400).json({ error: 'Invalid file path encoding' });
+      const { id } = req.params as { id: string };
+      const decodedPath = resolveSkillFilePathParam(
+        (req.params as { relativePath?: string | string[] }).relativePath,
+      );
+      if (decodedPath == null) {
+        return res.status(404).json({ error: 'Skill file not found' });
       }
 
       // SKILL.md is the skill body itself, not a SkillFile document
       if (decodedPath === 'SKILL.md') {
-        const skill = await getSkillById(id);
+        const resolved = (
+          req as ServerRequest & {
+            resourceAccess?: { resourceInfo?: ISkill & { _id: Types.ObjectId } };
+          }
+        ).resourceAccess?.resourceInfo;
+        const skill = resolved ?? (await getSkillById(id));
         if (!skill) {
           return res.status(404).json({ error: 'Skill not found' });
         }
@@ -637,7 +707,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
           'Content-Disposition',
           `${isImageMime ? 'inline' : 'attachment'}; filename="${safeName}"`,
         );
-        const stream = await strategy.getDownloadStream(req, file.storageKey || file.filepath);
+        const stream = await strategy.getDownloadStream(req, resolveDownloadPath(file));
         stream.on('error', (err: Error) => {
           logger.error('[downloadFile] Stream error:', err);
           if (!res.headersSent) {
@@ -646,11 +716,18 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
             res.destroy();
           }
         });
+        /** Release the upstream when the client leaves before the body is flushed. */
+        res.once('close', () => {
+          if ('destroy' in stream && typeof stream.destroy === 'function') {
+            stream.destroy();
+          }
+        });
         stream.pipe(res);
         return;
       }
 
       const base: Omit<TSkillFileContentResponse, 'content' | 'isBinary'> = {
+        fileId: file.file_id,
         mimeType: file.mimeType,
         relativePath: file.relativePath,
         filename: file.filename,
@@ -671,7 +748,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
       // destroy (binary) or continue reading (text) in the same iteration.
       // N.B. breaking out of `for await...of` destroys the stream via
       // iterator.return(), so we must NOT use break + a second loop.
-      const stream = await strategy.getDownloadStream(req, file.storageKey || file.filepath);
+      const stream = await strategy.getDownloadStream(req, resolveDownloadPath(file));
       const chunks: Buffer[] = [];
       let totalBytes = 0;
       let binaryChecked = false;
@@ -684,7 +761,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
         if (!binaryChecked && totalBytes >= 8192) {
           binaryChecked = true;
           if (isBinaryBuffer(Buffer.concat(chunks))) {
-            updateSkillFileContent(id, decodedPath, { isBinary: true }).catch((e) =>
+            updateSkillFileContent(id, decodedPath, { isBinary: true }, file.file_id).catch((e) =>
               logger.error('[downloadFile] Cache write failed:', e),
             );
             if ('destroy' in stream && typeof stream.destroy === 'function') {
@@ -705,36 +782,38 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
         }
       }
 
-      // File was shorter than 8 KB — check what we have
-      if (!binaryChecked && isBinaryBuffer(Buffer.concat(chunks))) {
-        updateSkillFileContent(id, decodedPath, { isBinary: true }).catch((e) =>
+      const buffer = Buffer.concat(chunks);
+      if (isBinaryBuffer(buffer)) {
+        updateSkillFileContent(id, decodedPath, { isBinary: true }, file.file_id).catch((e) =>
           logger.error('[downloadFile] Cache write failed:', e),
         );
         return res.status(200).json({ ...base, isBinary: true });
       }
 
-      const buffer = Buffer.concat(chunks);
       const text = buffer.toString('utf-8');
       if (buffer.length <= MAX_TEXT_CACHE_BYTES) {
-        updateSkillFileContent(id, decodedPath, { content: text, isBinary: false }).catch((e) =>
-          logger.error('[downloadFile] Cache write failed:', e),
-        );
+        updateSkillFileContent(
+          id,
+          decodedPath,
+          { content: text, isBinary: false },
+          file.file_id,
+        ).catch((e) => logger.error('[downloadFile] Cache write failed:', e));
       }
       return res.status(200).json({ ...base, isBinary: false, content: text });
     } catch (error) {
-      logger.error('[GET /skills/:id/files/:relativePath] Error', error);
+      logger.error('[GET /skills/:id/files/*relativePath] Error', error);
       return res.status(500).json({ error: 'Error downloading skill file' });
     }
   }
 
   async function deleteFileHandler(req: ServerRequest, res: Response) {
     try {
-      const { id, relativePath } = req.params as { id: string; relativePath: string };
-      let decodedPath: string;
-      try {
-        decodedPath = decodeURIComponent(relativePath);
-      } catch {
-        return res.status(400).json({ error: 'Invalid file path encoding' });
+      const { id } = req.params as { id: string };
+      const decodedPath = resolveSkillFilePathParam(
+        (req.params as { relativePath?: string | string[] }).relativePath,
+      );
+      if (decodedPath == null) {
+        return res.status(404).json({ error: 'Skill file not found' });
       }
 
       // Look up the file record so we can clean up the storage blob
@@ -743,21 +822,22 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
         return res.status(404).json({ error: 'Skill file not found' });
       }
 
-      const result = await deleteSkillFile(id, decodedPath);
-      if (!result.deleted) {
-        return res.status(404).json({ error: 'Skill file not found' });
-      }
-
-      // Clean up the stored blob — fire-and-forget so the response isn't delayed
       const { deleteFile: deleteBlob } = getStrategyFunctions(file.source);
-      if (deleteBlob) {
-        deleteBlob(req, {
-          filepath: file.filepath,
-          storageKey: file.storageKey,
-          storageRegion: file.storageRegion,
-          user: file.author?.toString?.(),
-          tenantId: file.tenantId?.toString?.(),
-        }).catch((e) => logger.error('[deleteFile] Storage cleanup failed:', e));
+      if (!deleteBlob) {
+        logger.error(`[deleteFile] No delete strategy for ${file.source}`);
+        return res.status(500).json({ error: 'Error deleting skill file' });
+      }
+      await deleteBlob(skillFileDeletionRequest(req, file), {
+        filepath: file.filepath,
+        storageKey: file.storageKey,
+        storageRegion: file.storageRegion,
+        user: file.author?.toString?.(),
+        tenantId: file.tenantId?.toString?.(),
+      });
+
+      const result = await deleteSkillFile(id, decodedPath, file.file_id);
+      if (!result.deleted) {
+        return res.status(409).json({ error: 'Skill file changed while it was being deleted' });
       }
 
       const response: TDeleteSkillFileResponse = {
@@ -767,7 +847,10 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps) {
       };
       return res.status(200).json(response);
     } catch (error) {
-      logger.error('[DELETE /skills/:id/files/:relativePath] Error', error);
+      if ((error as { code?: unknown })?.code === 'SKILL_DELETING') {
+        return res.status(409).json({ error: 'SKILL_DELETING' });
+      }
+      logger.error('[DELETE /skills/:id/files/*relativePath] Error', getSafeErrorMetadata(error));
       return res.status(500).json({ error: 'Error deleting skill file' });
     }
   }

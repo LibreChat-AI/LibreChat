@@ -17,6 +17,8 @@ jest.mock('@librechat/agents', () => ({
  * and has its own dedicated `identity.spec.ts` covering the validation
  * matrix; this stub just mirrors enough behavior for the surrounding
  * crud tests to exercise the upload/download flow. */
+jest.mock('~/models', () => ({ clearFileCodeEnvRefs: jest.fn().mockResolvedValue(true) }));
+
 const VALID_KINDS = new Set(['skill', 'agent', 'user']);
 const validateIdentity = ({ kind, id, version }, label) => {
   if (!kind || !VALID_KINDS.has(kind)) throw new Error(`${label}: invalid kind "${kind}"`);
@@ -33,6 +35,8 @@ jest.mock('@librechat/api', () => {
   const http = require('http');
   const https = require('https');
   return {
+    ...jest.requireActual('../../../../../packages/api/src/files/code/delete'),
+    ...jest.requireActual('../../../../../packages/api/src/files/dispatch'),
     appendCodeEnvFile: jest.fn((form, stream, filename) => {
       form.append('file', stream, { filename });
     }),
@@ -42,6 +46,14 @@ jest.mock('@librechat/api', () => {
       form.append('id', identity.id);
       if (identity.version != null) form.append('version', String(identity.version));
     }),
+    wrapCodeApiUploadError: jest.fn((error, message) => {
+      const wrapped = new Error(`${message} ${error.message}`, { cause: error });
+      if (error?.isAxiosError === true) {
+        wrapped.isAxiosError = true;
+        wrapped.response = error.response;
+      }
+      return wrapped;
+    }),
     buildCodeEnvDownloadQuery: jest.fn((identity) => {
       validateIdentity(identity, 'buildCodeEnvDownloadQuery');
       const params = new URLSearchParams({ kind: identity.kind, id: identity.id });
@@ -50,6 +62,14 @@ jest.mock('@librechat/api', () => {
     }),
     logAxiosError: jest.fn(({ message }) => message),
     getCodeApiAuthHeaders: jest.fn(async () => ({})),
+    getCodeExecutionBaseUrl: jest.fn((profile) =>
+      profile === 'stateful' ? 'https://code-stateful.example.com' : 'https://code-api.example.com',
+    ),
+    codeExecutionHeaders: jest.fn(({ executionProfile, bridgeWorkerId }) => ({
+      'X-CodeAPI-Expected-Profile': executionProfile,
+      ...(bridgeWorkerId ? { 'X-LibreChat-Code-Worker-ID': bridgeWorkerId } : {}),
+    })),
+    CODE_API_EXPECTED_PROFILE_HEADER: 'X-CodeAPI-Expected-Profile',
     createAxiosInstance: jest.fn(() => mockAxios),
     codeServerHttpAgent: new http.Agent({ keepAlive: false }),
     codeServerHttpsAgent: new https.Agent({ keepAlive: false }),
@@ -60,13 +80,55 @@ const {
   codeServerHttpAgent,
   codeServerHttpsAgent,
   getCodeApiAuthHeaders,
+  getCodeExecutionBaseUrl,
 } = require('@librechat/api');
-const { getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./crud');
+const {
+  deleteCodeEnvFile,
+  getCodeOutputDownloadStream,
+  uploadCodeEnvFile,
+  batchUploadCodeEnvFiles,
+} = require('./crud');
 
 describe('Code CRUD', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     getCodeApiAuthHeaders.mockResolvedValue({});
+  });
+
+  it('marks upload dispatch after authentication and before a lost HTTP response', async () => {
+    const onUploadStart = jest.fn();
+    mockAxios.post.mockImplementationOnce(async () => {
+      expect(onUploadStart).toHaveBeenCalledTimes(1);
+      throw new Error('transport response lost');
+    });
+    await expect(
+      uploadCodeEnvFile({
+        req: { user: { id: 'user-123' } },
+        stream: Readable.from('data'),
+        filename: 'data.csv',
+        kind: 'user',
+        id: 'user-123',
+        onUploadStart,
+      }),
+    ).rejects.toThrow('transport response lost');
+    expect(onUploadStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not mark remote dispatch when upload authentication fails locally', async () => {
+    const onUploadStart = jest.fn();
+    getCodeApiAuthHeaders.mockRejectedValueOnce(new Error('credential lookup unavailable'));
+    await expect(
+      uploadCodeEnvFile({
+        req: { user: { id: 'user-123' } },
+        stream: Readable.from('data'),
+        filename: 'data.csv',
+        kind: 'user',
+        id: 'user-123',
+        onUploadStart,
+      }),
+    ).rejects.toThrow('credential lookup unavailable');
+    expect(onUploadStart).not.toHaveBeenCalled();
+    expect(mockAxios.post).not.toHaveBeenCalled();
   });
 
   describe('getCodeOutputDownloadStream', () => {
@@ -107,6 +169,26 @@ describe('Code CRUD', () => {
       expect(callConfig.timeout).toBe(15000);
     });
 
+    it('uses the trusted stateful route and fail-closed profile header', async () => {
+      mockAxios.mockResolvedValue({ data: Readable.from(['chunk']) });
+
+      await getCodeOutputDownloadStream('session-1/file-1', userIdentity, undefined, {
+        baseUrl: 'https://code-stateful.example.com',
+        executionProfile: 'stateful',
+        bridgeWorkerId: 'personal-worker-1',
+      });
+
+      expect(mockAxios).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: 'https://code-stateful.example.com/download/session-1/file-1?kind=user&id=user-123',
+          headers: expect.objectContaining({
+            'X-CodeAPI-Expected-Profile': 'stateful',
+            'X-LibreChat-Code-Worker-ID': 'personal-worker-1',
+          }),
+        }),
+      );
+    });
+
     it('forwards Code API auth headers when a request is provided', async () => {
       const req = { user: { id: 'user-123' } };
       getCodeApiAuthHeaders.mockResolvedValue({ Authorization: 'Bearer codeapi-token' });
@@ -115,7 +197,7 @@ describe('Code CRUD', () => {
       await getCodeOutputDownloadStream('session-1/file-1', userIdentity, req);
 
       const callConfig = mockAxios.mock.calls[0][0];
-      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(req);
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(req, undefined);
       expect(callConfig.headers.Authorization).toBe('Bearer codeapi-token');
     });
 
@@ -152,6 +234,211 @@ describe('Code CRUD', () => {
       mockAxios.mockRejectedValue(new Error('ECONNREFUSED'));
 
       await expect(getCodeOutputDownloadStream('s/f', userIdentity)).rejects.toThrow();
+    });
+  });
+
+  describe('deleteCodeEnvFile', () => {
+    const req = { user: { id: 'user-123' } };
+    const file = {
+      metadata: {
+        codeEnvRef: {
+          kind: 'agent',
+          id: 'agent-abc',
+          storage_session_id: 'session-1',
+          file_id: 'file-1',
+        },
+      },
+    };
+
+    it('deletes the code environment object with resource identity and auth headers', async () => {
+      getCodeApiAuthHeaders.mockResolvedValue({ Authorization: 'Bearer codeapi-token' });
+      mockAxios.mockResolvedValue({ status: 204 });
+
+      await deleteCodeEnvFile(req, file);
+
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(req, undefined);
+      expect(mockAxios).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'delete',
+          url: 'https://code-api.example.com/files/session-1/file-1?kind=agent&id=agent-abc',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer codeapi-token',
+            'User-Agent': 'LibreChat/1.0',
+          }),
+          httpAgent: codeServerHttpAgent,
+          httpsAgent: codeServerHttpsAgent,
+          timeout: 15000,
+        }),
+      );
+    });
+
+    it('deletes a stateful artifact from its originating profile', async () => {
+      mockAxios.mockResolvedValue({ status: 204 });
+      const statefulFile = {
+        metadata: {
+          codeEnvRef: {
+            ...file.metadata.codeEnvRef,
+            executionProfile: 'stateful',
+          },
+        },
+      };
+
+      await deleteCodeEnvFile(req, statefulFile);
+
+      expect(mockAxios).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: 'https://code-stateful.example.com/files/session-1/file-1?kind=agent&id=agent-abc',
+          headers: expect.objectContaining({
+            'X-CodeAPI-Expected-Profile': 'stateful',
+          }),
+        }),
+      );
+    });
+
+    it('deletes every profile-local object retained for a shared file record', async () => {
+      mockAxios.mockResolvedValue({ status: 204 });
+      const dualProfileFile = {
+        metadata: {
+          codeEnvRef: file.metadata.codeEnvRef,
+          codeEnvRefs: {
+            default: file.metadata.codeEnvRef,
+            stateful: {
+              ...file.metadata.codeEnvRef,
+              storage_session_id: 'stateful-session',
+              file_id: 'stateful-file',
+              executionProfile: 'stateful',
+            },
+          },
+        },
+      };
+
+      await deleteCodeEnvFile(req, dualProfileFile);
+
+      expect(mockAxios).toHaveBeenCalledTimes(2);
+      expect(mockAxios).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          url: expect.stringContaining('/files/session-1/file-1'),
+          headers: expect.objectContaining({ 'X-CodeAPI-Expected-Profile': 'default' }),
+        }),
+      );
+      expect(mockAxios).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          url: expect.stringContaining('/files/stateful-session/stateful-file'),
+          headers: expect.objectContaining({ 'X-CodeAPI-Expected-Profile': 'stateful' }),
+        }),
+      );
+    });
+
+    it('skips remote cleanup instead of falling back when a historical route is unmapped', async () => {
+      const historicalRoute = 'stateful:0123456789abcdef0123456789abcdef';
+      const historicalFile = {
+        metadata: {
+          codeEnvRefs: {
+            [historicalRoute]: {
+              ...file.metadata.codeEnvRef,
+              executionProfile: 'stateful',
+              executionRouteKey: historicalRoute,
+            },
+          },
+        },
+      };
+
+      await expect(deleteCodeEnvFile(req, historicalFile)).resolves.toBeUndefined();
+
+      expect(mockAxios).not.toHaveBeenCalled();
+    });
+
+    it('skips legacy stateful cleanup after its endpoint is retired', async () => {
+      getCodeExecutionBaseUrl.mockImplementationOnce(() => {
+        throw new Error('LIBRECHAT_CODE_BASEURL_STATEFUL is not configured');
+      });
+      const legacyStatefulFile = {
+        metadata: {
+          codeEnvRef: {
+            ...file.metadata.codeEnvRef,
+            executionProfile: 'stateful',
+          },
+        },
+      };
+
+      await expect(deleteCodeEnvFile(req, legacyStatefulFile)).resolves.toBeUndefined();
+
+      expect(mockAxios).not.toHaveBeenCalled();
+    });
+
+    it('never calls the file-server path that only newer codeapi mounts', async () => {
+      mockAxios.mockResolvedValue({ status: 204 });
+
+      await deleteCodeEnvFile(req, file);
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: expect.stringContaining('/sessions/session-1/objects/file-1'),
+        }),
+      );
+    });
+
+    it('surfaces an unsupported delete method instead of retrying elsewhere', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('method not allowed'), { response: { status: 405 } }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).rejects.toThrow('method not allowed');
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips files without a code environment ref', async () => {
+      await deleteCodeEnvFile(req, {});
+
+      expect(mockAxios).not.toHaveBeenCalled();
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+    });
+
+    it('treats missing code environment objects as already deleted', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('missing'), { response: { status: 404 } }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).resolves.toEqual({ deleted: true });
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats objects on a profile the deployment no longer serves as unreachable', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 409'), {
+          response: {
+            status: 409,
+            data: {
+              error: 'execution_profile_mismatch',
+              expected_profile: 'default',
+              actual_profile: 'stateful',
+            },
+          },
+        }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).resolves.toBeUndefined();
+    });
+
+    it('throws on other conflicts', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('conflict'), {
+          response: { status: 409, data: { error: 'session_busy' } },
+        }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).rejects.toThrow('conflict');
+    });
+
+    it('throws when code environment deletion fails', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('unavailable'), { response: { status: 500 } }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).rejects.toThrow('unavailable');
     });
   });
 
@@ -209,7 +496,11 @@ describe('Code CRUD', () => {
       });
 
       const result = await uploadCodeEnvFile(baseUploadParams);
-      expect(result).toEqual({ storage_session_id: 'sess-1', file_id: 'fid-1' });
+      expect(result).toEqual({
+        storage_session_id: 'sess-1',
+        file_id: 'fid-1',
+        filename: 'data.csv',
+      });
     });
 
     it('forwards Code API auth headers on upload requests', async () => {
@@ -225,8 +516,31 @@ describe('Code CRUD', () => {
       await uploadCodeEnvFile(baseUploadParams);
 
       const callConfig = mockAxios.post.mock.calls[0][2];
-      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(baseUploadParams.req);
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(baseUploadParams.req, undefined);
       expect(callConfig.headers.Authorization).toBe('Bearer codeapi-token');
+    });
+
+    it('routes uploads through the trusted stateful endpoint and profile header', async () => {
+      mockAxios.post.mockResolvedValue({
+        data: {
+          message: 'success',
+          storage_session_id: 'sess-1',
+          files: [{ fileId: 'fid-1', filename: 'data.csv' }],
+        },
+      });
+
+      await uploadCodeEnvFile({
+        ...baseUploadParams,
+        codeApiBaseUrl: 'https://stateful-code.example.com',
+        executionProfile: 'stateful',
+        bridgeWorkerId: 'personal-worker-1',
+      });
+
+      const [url, , callConfig] = mockAxios.post.mock.calls[0];
+      expect(url).toBe('https://stateful-code.example.com/upload');
+      expect(callConfig.headers['X-CodeAPI-Expected-Profile']).toBe('stateful');
+      expect(callConfig.headers['X-LibreChat-Code-Worker-ID']).toBe('personal-worker-1');
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(baseUploadParams.req, 'personal-worker-1');
     });
 
     /* Phase C / option α (codeapi #1455): the upload wire carries the
@@ -325,6 +639,54 @@ describe('Code CRUD', () => {
       mockAxios.post.mockRejectedValue(new Error('ECONNREFUSED'));
 
       await expect(uploadCodeEnvFile(baseUploadParams)).rejects.toThrow();
+    });
+
+    it('preserves rate-limit metadata through the upload logging boundary', async () => {
+      const rateLimit = Object.assign(new Error('Too Many Requests'), {
+        isAxiosError: true,
+        response: { status: 429, headers: { 'retry-after': '7' } },
+      });
+      mockAxios.post.mockRejectedValue(rateLimit);
+
+      await expect(uploadCodeEnvFile(baseUploadParams)).rejects.toMatchObject({
+        isAxiosError: true,
+        response: { status: 429, headers: { 'retry-after': '7' } },
+        cause: rateLimit,
+      });
+    });
+  });
+
+  describe('batchUploadCodeEnvFiles', () => {
+    it('routes batch uploads through the selected bridge worker', async () => {
+      const controller = new AbortController();
+      const req = { user: { id: 'user-123' } };
+      mockAxios.post.mockResolvedValue({
+        data: {
+          message: 'success',
+          storage_session_id: 'sess-1',
+          files: [{ status: 'success', fileId: 'fid-1', filename: 'data.csv' }],
+          succeeded: 1,
+          failed: 0,
+        },
+      });
+
+      await batchUploadCodeEnvFiles({
+        req,
+        files: [{ stream: Readable.from(['file-content']), filename: 'data.csv' }],
+        kind: 'user',
+        id: 'user-123',
+        codeApiBaseUrl: 'https://stateful-code.example.com',
+        executionProfile: 'stateful',
+        bridgeWorkerId: 'personal-worker-1',
+        signal: controller.signal,
+      });
+
+      const [url, , callConfig] = mockAxios.post.mock.calls[0];
+      expect(url).toBe('https://stateful-code.example.com/upload/batch');
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(req, 'personal-worker-1');
+      expect(callConfig.headers['X-CodeAPI-Expected-Profile']).toBe('stateful');
+      expect(callConfig.headers['X-LibreChat-Code-Worker-ID']).toBe('personal-worker-1');
+      expect(callConfig.signal).toBe(controller.signal);
     });
   });
 });

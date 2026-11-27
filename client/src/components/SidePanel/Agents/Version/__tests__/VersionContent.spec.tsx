@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/extend-expect';
 import { render, fireEvent } from '@testing-library/react';
+import type { VersionContext } from '../types';
 import VersionContent from '../VersionContent';
-import { VersionContext } from '../VersionPanel';
 
 const mockRestore = 'Restore';
 

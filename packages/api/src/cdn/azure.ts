@@ -47,7 +47,7 @@ export const initializeAzureBlobService = async (): Promise<BlobServiceClient | 
  * @returns The Azure ContainerClient.
  */
 export const getAzureContainerClient = async (
-  containerName = process.env.AZURE_CONTAINER_NAME || 'files',
+  containerName: string = process.env.AZURE_CONTAINER_NAME || 'files',
 ): Promise<ContainerClient | null> => {
   const serviceClient = await initializeAzureBlobService();
   return serviceClient ? serviceClient.getContainerClient(containerName) : null;

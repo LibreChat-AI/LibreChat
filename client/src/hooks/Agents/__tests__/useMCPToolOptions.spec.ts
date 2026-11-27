@@ -632,6 +632,78 @@ describe('useMCPToolOptions', () => {
     });
   });
 
+  describe('intent (describe_intent)', () => {
+    it('reads the flag only when explicitly true', () => {
+      (useWatch as jest.Mock).mockReturnValue({
+        tool1: { describe_intent: true },
+        tool2: { run_in_background: true },
+      });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(result.current.isToolIntent('tool1')).toBe(true);
+      expect(result.current.isToolIntent('tool2')).toBe(false);
+    });
+
+    it('toggling on writes describe_intent without clobbering sibling flags', () => {
+      mockGetValues.mockReturnValue({ tool1: { run_in_background: true } });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+      act(() => result.current.toggleToolIntent('tool1'));
+
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tool_options',
+        { tool1: { run_in_background: true, describe_intent: true } },
+        { shouldDirty: true },
+      );
+    });
+
+    it('toggling off removes the flag and drops an empty entry', () => {
+      mockGetValues.mockReturnValue({ tool1: { describe_intent: true } });
+      (useWatch as jest.Mock).mockReturnValue({ tool1: { describe_intent: true } });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+      act(() => result.current.toggleToolIntent('tool1'));
+
+      expect(mockSetValue).toHaveBeenCalledWith('tool_options', {}, { shouldDirty: true });
+    });
+
+    it('bulk toggle marks every tool and unmarks when all are set', () => {
+      const tools = [createMockTool('tool1'), createMockTool('tool2')];
+      mockGetValues.mockReturnValue({});
+
+      const { result } = renderHook(() => useMCPToolOptions());
+      act(() => result.current.toggleIntentAll(tools));
+
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tool_options',
+        { tool1: { describe_intent: true }, tool2: { describe_intent: true } },
+        { shouldDirty: true },
+      );
+    });
+  });
+
+  describe('isToolProgrammaticOnly', () => {
+    it('mirrors the backend canInjectIntentParam gate exactly', () => {
+      (useWatch as jest.Mock).mockReturnValue({
+        codeOnly: { allowed_callers: ['code_execution'] },
+        both: { allowed_callers: ['direct', 'code_execution'] },
+        directOnly: { allowed_callers: ['direct'] },
+        empty: { allowed_callers: [] },
+        unset: { defer_loading: true },
+      });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(result.current.isToolProgrammaticOnly('codeOnly')).toBe(true);
+      expect(result.current.isToolProgrammaticOnly('both')).toBe(false);
+      expect(result.current.isToolProgrammaticOnly('directOnly')).toBe(false);
+      expect(result.current.isToolProgrammaticOnly('empty')).toBe(false);
+      expect(result.current.isToolProgrammaticOnly('unset')).toBe(false);
+      expect(result.current.isToolProgrammaticOnly('missing')).toBe(false);
+    });
+  });
+
   describe('formToolOptions', () => {
     it('should return undefined when useWatch returns undefined', () => {
       (useWatch as jest.Mock).mockReturnValue(undefined);

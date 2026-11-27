@@ -27,8 +27,25 @@ describe('CustomUserVarsSection', () => {
 
     const input = screen.getByLabelText(/My API Key/);
     expect(input).toHaveAttribute('autocomplete', 'new-password');
-    expect(input).toHaveAttribute('type', 'new-password');
+    expect(input).toHaveAttribute('type', 'password');
     expect(input).toHaveAttribute('data-lpignore', 'true');
     expect(input).toHaveAttribute('data-1p-ignore', 'true');
+  });
+
+  it('renders non-sensitive fields as unmasked text while keeping secrets masked', () => {
+    render(
+      <CustomUserVarsSection
+        serverName="test-server"
+        fields={{
+          api_key: { title: 'My API Key', description: 'Your API key' },
+          project_key: { title: 'Project Key', description: 'Your project key', sensitive: false },
+        }}
+        onSave={jest.fn()}
+        onRevoke={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText(/My API Key/)).toHaveAttribute('type', 'password');
+    expect(screen.getByLabelText(/Project Key/)).toHaveAttribute('type', 'text');
   });
 });

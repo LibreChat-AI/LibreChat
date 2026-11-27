@@ -1,10 +1,11 @@
-import logger from '~/config/winston';
+import { RetentionMode } from 'librechat-data-provider';
 import type { AppConfig } from '~/types';
+import logger from '~/config/winston';
 
 /**
  * Default retention period for temporary chats in hours
  */
-export const DEFAULT_RETENTION_HOURS = 24 * 30; // 30 days
+export const DEFAULT_RETENTION_HOURS: number = 24 * 30; // 30 days
 
 /**
  * Minimum allowed retention period in hours
@@ -74,4 +75,23 @@ export function getTempChatRetentionHours(
 export function createTempChatExpirationDate(interfaceConfig?: AppConfig['interfaceConfig']): Date {
   const retentionHours = getTempChatRetentionHours(interfaceConfig);
   return new Date(Date.now() + retentionHours * 60 * 60 * 1000);
+}
+
+/** Regular chats fall back to the temporary retention policy for existing configurations. */
+export function createChatExpirationDate(
+  interfaceConfig?: AppConfig['interfaceConfig'],
+  isTemporary: boolean = false,
+): Date {
+  if (
+    isTemporary ||
+    interfaceConfig?.retentionMode !== RetentionMode.ALL ||
+    interfaceConfig.generalChatRetention === undefined
+  ) {
+    return createTempChatExpirationDate(interfaceConfig);
+  }
+
+  return createTempChatExpirationDate({
+    ...interfaceConfig,
+    temporaryChatRetention: interfaceConfig.generalChatRetention,
+  });
 }

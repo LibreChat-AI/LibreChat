@@ -5,12 +5,10 @@ describe('enrichWithSkillConfigurable', () => {
   const accessibleSkillIds = ['skill-a', 'skill-b'];
 
   it('augments configurable with req, accessibleSkillIds, and codeEnvAvailable', () => {
-    const result = enrichWithSkillConfigurable(
-      { loadedTools: [], configurable: { other: 'value' } },
-      req,
-      accessibleSkillIds,
-      true,
-    );
+    const result = enrichWithSkillConfigurable({
+      result: { loadedTools: [], configurable: { other: 'value' } },
+      context: { req, accessibleSkillIds, codeEnvAvailable: true },
+    });
 
     expect(result.configurable).toEqual({
       other: 'value',
@@ -18,21 +16,36 @@ describe('enrichWithSkillConfigurable', () => {
       codeEnvAvailable: true,
       accessibleSkillIds,
       skillPrimedIdsByName: undefined,
+      skillAuthoringAvailable: undefined,
+      fileAuthoringToolNames: undefined,
     });
   });
 
   it('propagates codeEnvAvailable=false verbatim (not coerced)', () => {
-    const result = enrichWithSkillConfigurable(
-      { loadedTools: [], configurable: {} },
-      req,
-      accessibleSkillIds,
-      false,
-    );
+    const result = enrichWithSkillConfigurable({
+      result: { loadedTools: [], configurable: {} },
+      context: { req, accessibleSkillIds, codeEnvAvailable: false },
+    });
 
     expect(result.configurable.codeEnvAvailable).toBe(false);
   });
 
   it('threads skillPrimedIdsByName through unchanged', () => {
+    const primed = { 'brand-guidelines': 'abc123' };
+    const result = enrichWithSkillConfigurable({
+      result: { loadedTools: [], configurable: {} },
+      context: {
+        req,
+        accessibleSkillIds,
+        codeEnvAvailable: true,
+        skillPrimedIdsByName: primed,
+      },
+    });
+
+    expect(result.configurable.skillPrimedIdsByName).toBe(primed);
+  });
+
+  it('supports the legacy positional shape', () => {
     const primed = { 'brand-guidelines': 'abc123' };
     const result = enrichWithSkillConfigurable(
       { loadedTools: [], configurable: {} },
@@ -45,14 +58,29 @@ describe('enrichWithSkillConfigurable', () => {
     expect(result.configurable.skillPrimedIdsByName).toBe(primed);
   });
 
+  it('threads skill authoring gates through unchanged', () => {
+    const fileAuthoringToolNames = new Set(['create_file', 'edit_file']);
+    const result = enrichWithSkillConfigurable({
+      result: { loadedTools: [], configurable: {} },
+      context: {
+        req,
+        accessibleSkillIds,
+        codeEnvAvailable: true,
+        skillAuthoringAvailable: true,
+        fileAuthoringToolNames,
+      },
+    });
+
+    expect(result.configurable.skillAuthoringAvailable).toBe(true);
+    expect(result.configurable.fileAuthoringToolNames).toBe(fileAuthoringToolNames);
+  });
+
   it('preserves loadedTools unchanged', () => {
     const tools = [{ name: 'x' }];
-    const result = enrichWithSkillConfigurable(
-      { loadedTools: tools, configurable: undefined },
-      req,
-      accessibleSkillIds,
-      false,
-    );
+    const result = enrichWithSkillConfigurable({
+      result: { loadedTools: tools, configurable: undefined },
+      context: { req, accessibleSkillIds, codeEnvAvailable: false },
+    });
 
     expect(result.loadedTools).toBe(tools);
   });

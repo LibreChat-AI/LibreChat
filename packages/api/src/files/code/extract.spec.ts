@@ -1,11 +1,24 @@
 import * as os from 'os';
 import * as path from 'path';
+import { logger } from '@librechat/data-schemas';
 import {
+  extractCodeArtifactRawText,
+  extractCodeArtifactInspectionText,
   extractCodeArtifactText,
   getExtractedTextFormat,
+  resolveMaxTextExtractBytes,
   MAX_TEXT_CACHE_BYTES,
   MAX_TEXT_EXTRACT_BYTES,
 } from './extract';
+import { parseDocument } from '~/files/documents/crud';
+
+jest.mock('@librechat/data-schemas', () => ({
+  logger: {
+    debug: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  },
+}));
 
 const docxText = '__DOCX_PARSED__';
 /* parseDocument throws on any originalname containing this token, so
@@ -202,13 +215,13 @@ describe('extractCodeArtifactText', () => {
   });
 
   describe('skipped categories', () => {
-    it('returns null for pptx when HTML rendering also fails', async () => {
+    it('returns null for presentations when HTML rendering also fails', async () => {
       mockOfficeHtml.mockResolvedValueOnce(null);
       const text = await extractCodeArtifactText(
         Buffer.from('PK'),
         'slides.pptx',
         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'pptx',
+        'presentation',
       );
       expect(text).toBeNull();
     });
@@ -248,9 +261,21 @@ describe('extractCodeArtifactText', () => {
         Buffer.from('PK'),
         'deck.pptx',
         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'pptx',
+        'presentation',
       );
       expect(text).toContain('slides');
+    });
+
+    it('returns the HTML rendering for a potx when the producer succeeds', async () => {
+      const html = '<!DOCTYPE html><html><body>template</body></html>';
+      mockOfficeHtml.mockResolvedValueOnce(html);
+      const text = await extractCodeArtifactText(
+        Buffer.from('PK'),
+        'template.potx',
+        'application/vnd.openxmlformats-officedocument.presentationml.template',
+        'presentation',
+      );
+      expect(text).toBe(html);
     });
 
     it('returns the HTML rendering for csv (overriding utf8-text raw output)', async () => {
@@ -421,11 +446,12 @@ describe('extractCodeArtifactText', () => {
       ['deck', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
     ])('routes extensionless office files by MIME alone (%s, %s)', async (name, mime) => {
       mockOfficeHtml.mockResolvedValueOnce('<!DOCTYPE html><body>x</body></html>');
-      const category = mime.includes('presentation')
-        ? 'pptx'
-        : mime.startsWith('text/')
-          ? 'utf8-text'
-          : 'document';
+      let category: 'presentation' | 'utf8-text' | 'document' = 'document';
+      if (mime.includes('presentation')) {
+        category = 'presentation';
+      } else if (mime.startsWith('text/')) {
+        category = 'utf8-text';
+      }
       const text = await extractCodeArtifactText(Buffer.from('PK'), name, mime, category);
       expect(mockOfficeHtml).toHaveBeenCalledWith(expect.any(Buffer), name, mime);
       expect(text).toContain('<body>');
@@ -499,6 +525,119 @@ describe('extractCodeArtifactText', () => {
       expect(mockOfficeHtml).not.toHaveBeenCalled();
       expect(text).toBeNull();
     });
+  });
+});
+
+describe('extractCodeArtifactRawText', () => {
+  it('returns the full inspectable text beyond the preview cache limit', () => {
+    const suffix = 'BLOCK-LATE';
+    const buffer = Buffer.from(`${'a'.repeat(MAX_TEXT_CACHE_BYTES + 1024)}${suffix}`);
+
+    const text = extractCodeArtifactRawText(buffer, 'utf8-text');
+
+    expect(text).toHaveLength(buffer.length);
+    expect(text?.endsWith(suffix)).toBe(true);
+    expect(text).not.toContain('…[truncated]');
+  });
+
+  it('rejects binary, unsupported, and oversized raw content', () => {
+    expect(extractCodeArtifactRawText(Buffer.from([0x00, 0x01]), 'utf8-text')).toBeNull();
+    expect(extractCodeArtifactRawText(Buffer.from('text'), 'document')).toBeNull();
+    expect(
+      extractCodeArtifactRawText(Buffer.alloc(MAX_TEXT_EXTRACT_BYTES + 1, 'a'), 'utf8-text'),
+    ).toBeNull();
+  });
+});
+
+describe('extractCodeArtifactInspectionText', () => {
+  beforeEach(() => {
+    mockOfficeHtml.mockReset();
+    parseDocumentCalls.length = 0;
+  });
+
+  it('returns complete plain text beyond the persisted preview cache limit', async () => {
+    const suffix = 'BLOCK-LATE';
+    const buffer = Buffer.from(`${'a'.repeat(MAX_TEXT_CACHE_BYTES + 1024)}${suffix}`);
+
+    const result = await extractCodeArtifactInspectionText(
+      buffer,
+      'output.txt',
+      'text/plain',
+      'utf8-text',
+    );
+
+    expect(result.complete).toBe(true);
+    expect(result.text?.endsWith(suffix)).toBe(true);
+    expect(result.text).not.toContain('…[truncated]');
+  });
+
+  it('returns complete parsed document text when the derived output fits the inspection limit', async () => {
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('%PDF'),
+      'report.pdf',
+      'application/pdf',
+      'document',
+    );
+
+    expect(result).toEqual({
+      text: docxText,
+      complete: true,
+    });
+  });
+
+  it('marks parsed document text incomplete when the derived output exceeds the inspection limit', async () => {
+    const suffix = 'BLOCK-DOCUMENT-SUFFIX';
+    const text = `${'a'.repeat(MAX_TEXT_EXTRACT_BYTES + 1)}${suffix}`;
+    jest.mocked(parseDocument).mockResolvedValueOnce({
+      filename: 'large.pdf',
+      bytes: Buffer.byteLength(text),
+      filepath: 'document_parser',
+      text,
+      images: [],
+    });
+
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('%PDF'),
+      'large.pdf',
+      'application/pdf',
+      'document',
+    );
+
+    expect(result.complete).toBe(false);
+    expect(result.text).toContain('…[truncated]');
+    expect(result.text).not.toContain(suffix);
+  });
+
+  it('marks an oversized office preview banner as incomplete', async () => {
+    mockOfficeHtml.mockResolvedValueOnce('x'.repeat(MAX_TEXT_CACHE_BYTES + 1));
+
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('PK'),
+      'slides.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'presentation',
+    );
+
+    expect(result.complete).toBe(false);
+    expect(result.text).toContain('Preview exceeds the size limit');
+  });
+
+  it('keeps parser diagnostics free of generated filenames and parser errors', async () => {
+    jest.mocked(parseDocument).mockRejectedValueOnce(new Error('PRIVATE-PARSER-ERROR'));
+
+    await expect(
+      extractCodeArtifactInspectionText(
+        Buffer.from('%PDF'),
+        'PRIVATE-FILENAME.pdf',
+        'application/pdf',
+        'document',
+      ),
+    ).resolves.toEqual({ text: null, complete: false });
+
+    expect(logger.debug).toHaveBeenCalledWith(
+      '[extractCodeArtifactInspectionText] Artifact inspection failed',
+    );
+    expect(JSON.stringify(jest.mocked(logger.debug).mock.calls)).not.toContain('PRIVATE-');
   });
 });
 
@@ -674,5 +813,45 @@ describe('extractCodeArtifactText office-html concurrency', () => {
     const htmlCount = results.filter((t) => t != null && t.includes('<!DOCTYPE html>')).length;
     expect(nullCount).toBe(1);
     expect(htmlCount).toBe(4);
+  });
+});
+
+describe('resolveMaxTextExtractBytes', () => {
+  const TWO_MB = 2 * 1024 * 1024;
+
+  it('defaults to 2 MB when unset or blank', () => {
+    expect(resolveMaxTextExtractBytes(undefined)).toBe(TWO_MB);
+    expect(resolveMaxTextExtractBytes('')).toBe(TWO_MB);
+    expect(resolveMaxTextExtractBytes('   ')).toBe(TWO_MB);
+  });
+
+  it('honors a valid positive byte override', () => {
+    expect(resolveMaxTextExtractBytes('1048576')).toBe(1048576);
+    expect(resolveMaxTextExtractBytes('5242880')).toBe(5242880);
+  });
+
+  it('floors fractional values', () => {
+    expect(resolveMaxTextExtractBytes('1048576.9')).toBe(1048576);
+  });
+
+  it('falls back to the default on non-numeric or non-positive input', () => {
+    expect(resolveMaxTextExtractBytes('nope')).toBe(TWO_MB);
+    expect(resolveMaxTextExtractBytes('0')).toBe(TWO_MB);
+    expect(resolveMaxTextExtractBytes('-100')).toBe(TWO_MB);
+  });
+
+  it('falls back to the default for sub-byte values that floor to zero', () => {
+    expect(resolveMaxTextExtractBytes('0.5')).toBe(TWO_MB);
+    expect(resolveMaxTextExtractBytes('0.999')).toBe(TWO_MB);
+  });
+
+  it('wires the exported ceiling through the resolver for the current env', () => {
+    /* Asserting a literal 2 MB here would falsely fail when the suite runs
+     * with FILE_PREVIEW_MAX_EXTRACT_BYTES set (the export is initialized
+     * from the env at module load). Verify the export tracks the resolver
+     * instead; the `undefined` case above pins the 2 MB default. */
+    expect(MAX_TEXT_EXTRACT_BYTES).toBe(
+      resolveMaxTextExtractBytes(process.env.FILE_PREVIEW_MAX_EXTRACT_BYTES),
+    );
   });
 });

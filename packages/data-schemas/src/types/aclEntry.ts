@@ -22,6 +22,8 @@ export type AclEntry = {
   grantedBy?: Types.ObjectId;
   /** When this permission was granted */
   grantedAt?: Date;
+  /** Optional expiration date for permissions tied to expiring resources */
+  expiredAt?: Date;
   tenantId?: string;
 };
 

@@ -1,6 +1,6 @@
 import { useRecoilValue } from 'recoil';
-import { QueryKeys, dataService } from 'librechat-data-provider';
 import { useQuery } from '@tanstack/react-query';
+import { QueryKeys, dataService } from 'librechat-data-provider';
 import type { QueryObserverResult, UseQueryOptions } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import store from '~/store';
@@ -32,7 +32,7 @@ export const useGraphTokenQuery = (
 
   return useQuery({
     queryKey: [QueryKeys.graphToken, scopes],
-    queryFn: () => dataService.getGraphApiToken({ scopes }),
+    queryFn: () => dataService.getGraphApiToken({ scopes: scopes ?? '' }),
     enabled,
     staleTime: 50 * 60 * 1000, // 50 minutes (tokens expire in 60 minutes)
     retry: 1,
@@ -40,5 +40,18 @@ export const useGraphTokenQuery = (
     refetchOnReconnect: false,
     refetchOnMount: false,
     ...config,
+  });
+};
+
+export const usePasskeysQuery = (
+  config?: UseQueryOptions<t.TPasskeysResponse>,
+): QueryObserverResult<t.TPasskeysResponse> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  return useQuery<t.TPasskeysResponse>([QueryKeys.passkeys], () => dataService.getPasskeys(), {
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+    ...config,
+    enabled: (config?.enabled ?? true) === true && queriesEnabled,
   });
 };

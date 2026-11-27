@@ -6,6 +6,8 @@ jest.mock('@modelcontextprotocol/sdk/client/auth.js', () => ({
 }));
 
 jest.mock('~/auth', () => ({
+  createSSRFSafeUndiciConnect: jest.fn(() => ({ lookup: jest.fn() })),
+  isOAuthUrlAllowed: jest.fn(() => false),
   isSSRFTarget: jest.fn(() => false),
   resolveHostnameSSRF: jest.fn(async () => false),
 }));

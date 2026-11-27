@@ -9,8 +9,8 @@ body:
         Thanks for taking the time to fill out this bug report!
         
         Before submitting, please:
-        - Search existing [Issues and Discussions](https://github.com/danny-avila/LibreChat/discussions) to see if your bug has already been reported
-        - Use [Discussions](https://github.com/danny-avila/LibreChat/discussions) instead of Issues for:
+        - Search existing [Issues and Discussions](https://github.com/LibreChat-AI/LibreChat/discussions) to see if your bug has already been reported
+        - Use [Discussions](https://github.com/LibreChat-AI/LibreChat/discussions) instead of Issues for:
           - General inquiries
           - Help with setup
           - Questions about whether you're experiencing a bug
@@ -27,16 +27,13 @@ body:
     attributes:
       label: Version Information
       description: |
-        If using Docker, please run and provide the output of:
-        ```bash
-        docker images | grep librechat
-        ```
-        
-        If running from source, please run and provide the output of:
-        ```bash
-        git rev-parse HEAD
-        ```
-      placeholder: Paste the output here
+        In LibreChat, open **Settings → About** and click **Copy diagnostics**, then paste the result here.
+        This captures the exact version, commit, branch, and build date so maintainers can pinpoint the build you're running.
+
+        If the About panel is unavailable (older version / self-hosted with it disabled), please provide as much of the following as possible instead:
+        - Docker: `docker images | grep librechat` (image tag) and `docker inspect <image> | grep -i "\"Commit\\|BUILD_"` if build args were set
+        - Source: `git rev-parse HEAD` and `git rev-parse --abbrev-ref HEAD`
+      placeholder: Paste the diagnostics block here
     validations:
       required: true
   - type: textarea
@@ -90,7 +87,7 @@ body:
     id: terms
     attributes:
       label: Code of Conduct
-      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/danny-avila/LibreChat/blob/main/.github/CODE_OF_CONDUCT.md)
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/LibreChat-AI/LibreChat/blob/main/.github/CODE_OF_CONDUCT.md)
       options:
         - label: I agree to follow this project's Code of Conduct
           required: true

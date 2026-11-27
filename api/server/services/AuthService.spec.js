@@ -1,31 +1,123 @@
-jest.mock('@librechat/data-schemas', () => ({
-  logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
-  DEFAULT_SESSION_EXPIRY: 900000,
-  DEFAULT_REFRESH_TOKEN_EXPIRY: 604800000,
-}));
-jest.mock('librechat-data-provider', () => ({
-  ErrorTypes: {},
-  SystemRoles: { USER: 'USER', ADMIN: 'ADMIN' },
-  errorsToString: jest.fn(),
-}));
-jest.mock('@librechat/api', () => ({
-  isEnabled: jest.fn((val) => val === 'true' || val === true),
-  checkEmailConfig: jest.fn(),
-  isEmailDomainAllowed: jest.fn(),
-  math: jest.fn((val, fallback) => (val ? Number(val) : fallback)),
-  shouldUseSecureCookie: jest.fn(() => false),
-  resolveAppConfigForUser: jest.fn(async (_getAppConfig, _user) => ({})),
-  setCloudFrontCookies: jest.fn(() => true),
-  getCloudFrontConfig: jest.fn(() => ({
-    domain: 'https://cdn.example.com',
-    imageSigning: 'cookies',
-    cookieDomain: '.example.com',
-    privateKey: 'test-private-key',
-    keyPairId: 'K123ABC',
-  })),
-  parseCloudFrontCookieScope: jest.fn(() => null),
-  CLOUDFRONT_SCOPE_COOKIE: 'LibreChat-CloudFront-Scope',
-}));
+/** Installed packages need real module IDs when Jest reuses a resolver across suites. */
+jest.mock(
+  '@librechat/data-schemas',
+  () => ({
+    logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+    runAsSystem: (callback) => callback(),
+    getTenantId: jest.fn(() => undefined),
+    DEFAULT_SESSION_EXPIRY: 900000,
+    DEFAULT_REFRESH_TOKEN_EXPIRY: 604800000,
+  }),
+  { virtual: false },
+);
+jest.mock(
+  'librechat-data-provider',
+  () => ({
+    ...jest.requireActual('librechat-data-provider'),
+    ErrorTypes: {},
+    SystemRoles: { USER: 'USER', ADMIN: 'ADMIN' },
+    errorsToString: jest.fn(),
+    SESSION_HINT_COOKIE: 'session_hint',
+  }),
+  { virtual: false },
+);
+jest.mock(
+  '@librechat/api',
+  () => {
+    const shouldUseSecureCookie = jest.fn(() => false);
+    return {
+      isEnabled: jest.fn((val) => val === 'true' || val === true),
+      /** Real bcrypt on the test thread; the worker pool has its own spec in packages/api. */
+      hashSecret: jest.fn((plain) => require('bcryptjs').hash(plain, 4)),
+      compareSecret: jest.fn((plain, hash) => require('bcryptjs').compare(plain, hash)),
+      getOpenIDBearerAudiences: jest.requireActual('@librechat/api').getOpenIDBearerAudiences,
+      getOpenIDAppAccessToken: jest.requireActual('@librechat/api').getOpenIDAppAccessToken,
+      checkEmailConfig: jest.fn(),
+      isEmailDomainAllowed: jest.fn(),
+      getSafeErrorMetadata: jest.fn((error) => ({ type: error?.name ?? 'UnknownError' })),
+      math: jest.fn((val, fallback) => (val ? Number(val) : fallback)),
+      storeOpenIdSession: jest.fn(),
+      shouldUseSecureCookie,
+      setRefreshTokenCookie: jest.fn((res, refreshToken, expires) => {
+        res.cookie('refreshToken', refreshToken, {
+          expires,
+          httpOnly: true,
+          secure: shouldUseSecureCookie(),
+          sameSite: 'strict',
+        });
+      }),
+      setLocalSessionCookies: jest.fn(),
+      setOpenIDMarkerCookies: jest.fn((res, { userId, expires }) => {
+        res.cookie('token_provider', 'openid', {
+          expires,
+          httpOnly: true,
+          secure: shouldUseSecureCookie(),
+          sameSite: 'strict',
+        });
+        if (userId) {
+          res.cookie('openid_user_id', `signed:${userId}`, {
+            expires,
+            httpOnly: true,
+            secure: shouldUseSecureCookie(),
+            sameSite: 'strict',
+          });
+        }
+      }),
+      normalizeExpiresIn: (value) => {
+        const normalized = typeof value === 'string' && value.trim() ? Number(value) : value;
+        return typeof normalized === 'number' && Number.isFinite(normalized)
+          ? normalized
+          : undefined;
+      },
+      resolveAppConfigForUser: jest.fn(async (_getAppConfig, _user) => ({})),
+      /** Mirrors the real resolver's options so `getAppConfig` mocks still decide the result. */
+      resolvePreAuthAppConfig: jest.fn((getAppConfig) =>
+        getAppConfig({ skipRuntimeAugmentation: true, failClosed: true }),
+      ),
+      ...jest.requireActual('../../../packages/api/src/auth/resetRequest'),
+      resetPasswordWithToken: jest.fn(),
+      /** The notice policy is covered by passwordReset.spec.ts; this double keeps the wiring. */
+      sendPasswordResetNotice: jest.fn(async (user, deps) => {
+        if (deps.isEmailConfigured()) {
+          await deps.sendEmail({ email: user.email, template: 'passwordReset.handlebars' });
+        }
+      }),
+      createOpenIDSessionIdentity: jest.fn(
+        ({ user, userId, openidSubject, tenantId, openidIssuer }) => {
+          const normalize = (value) => {
+            if (value == null) {
+              return undefined;
+            }
+            const normalized = typeof value === 'string' ? value.trim() : value.toString().trim();
+            return normalized || undefined;
+          };
+          const normalizeIssuer = (value) =>
+            normalize(value)
+              ?.replace(/\/\.well-known\/openid-configuration$/, '')
+              .replace(/\/+$/, '');
+          return {
+            appUserId: normalize(userId) ?? normalize(user?._id) ?? normalize(user?.id),
+            openidSubject: normalize(openidSubject) ?? normalize(user?.openidId),
+            tenantId: normalize(tenantId) ?? normalize(user?.tenantId),
+            openidIssuer: normalizeIssuer(openidIssuer) ?? normalizeIssuer(user?.openidIssuer),
+          };
+        },
+      ),
+      setCloudFrontCookies: jest.fn(() => true),
+      clearCloudFrontCookies: jest.fn(),
+      getCloudFrontConfig: jest.fn(() => ({
+        domain: 'https://cdn.example.com',
+        imageSigning: 'cookies',
+        cookieDomain: '.example.com',
+        privateKey: 'test-private-key',
+        keyPairId: 'K123ABC',
+      })),
+      parseCloudFrontCookieScope: jest.fn(() => null),
+      CLOUDFRONT_SCOPE_COOKIE: 'LibreChat-CloudFront-Scope',
+    };
+  },
+  { virtual: false },
+);
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
   findToken: jest.fn(),
@@ -38,38 +130,120 @@ jest.mock('~/models', () => ({
   deleteTokens: jest.fn(),
   deleteSession: jest.fn(),
   createSession: jest.fn(),
+  upsertSession: jest.fn(),
   generateToken: jest.fn(),
   deleteUserById: jest.fn(),
   generateRefreshToken: jest.fn(),
 }));
-jest.mock('~/strategies/validators', () => ({ registerSchema: { parse: jest.fn() } }));
+jest.mock('~/strategies/validators', () => ({
+  registerSchema: {
+    safeParse: jest.fn((user) => ({
+      success: true,
+      data: {
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        password: user.password,
+        confirm_password: user.confirm_password,
+      },
+    })),
+  },
+}));
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 jest.mock('~/server/utils', () => ({ sendEmail: jest.fn() }));
 
-const {
-  shouldUseSecureCookie,
-  isEmailDomainAllowed,
-  resolveAppConfigForUser,
-  setCloudFrontCookies,
-  getCloudFrontConfig,
-  parseCloudFrontCookieScope,
-} = require('@librechat/api');
-const jwt = require('jsonwebtoken');
-const { logger } = require('@librechat/data-schemas');
-const {
-  findUser,
-  getUserById,
-  generateToken,
-  generateRefreshToken,
-  createSession,
-} = require('~/models');
-const { getAppConfig } = require('~/server/services/Config');
-const {
-  setOpenIDAuthTokens,
-  requestPasswordReset,
-  setAuthTokens,
-  setCloudFrontAuthCookies,
-} = require('./AuthService');
+let checkEmailConfig;
+let isEmailDomainAllowed;
+let resolveAppConfigForUser;
+let resolvePreAuthAppConfig;
+let setRefreshTokenCookie;
+let setOpenIDMarkerCookies;
+let setLocalSessionCookies;
+let setCloudFrontCookies;
+let getCloudFrontConfig;
+let parseCloudFrontCookieScope;
+let storeOpenIdSession;
+let jwt;
+let logger;
+let registerSchema;
+let getTenantId;
+let findUser;
+let findToken;
+let createUser;
+let updateUser;
+let deleteUserById;
+let countUsers;
+let getUserById;
+let generateToken;
+let generateRefreshToken;
+let createSession;
+let upsertSession;
+let deleteSession;
+let createToken;
+let deleteTokens;
+let getAppConfig;
+let sendEmail;
+let bcrypt;
+let setOpenIDAuthTokens;
+let storeOpenIDSession;
+let requestPasswordReset;
+let registerUser;
+let resetPassword;
+let resendVerificationEmail;
+let setAuthTokens;
+let setCloudFrontAuthCookies;
+let verifyEmail;
+let resetPasswordWithToken;
+
+jest.isolateModules(() => {
+  ({
+    checkEmailConfig,
+    isEmailDomainAllowed,
+    resolveAppConfigForUser,
+    resolvePreAuthAppConfig,
+    resetPasswordWithToken,
+    setRefreshTokenCookie,
+    setOpenIDMarkerCookies,
+    setLocalSessionCookies,
+    setCloudFrontCookies,
+    getCloudFrontConfig,
+    parseCloudFrontCookieScope,
+    storeOpenIdSession,
+  } = require('@librechat/api'));
+  jwt = require('jsonwebtoken');
+  ({ registerSchema } = require('~/strategies/validators'));
+  ({ logger, getTenantId } = require('@librechat/data-schemas'));
+  ({
+    findUser,
+    findToken,
+    createUser,
+    updateUser,
+    deleteUserById,
+    countUsers,
+    getUserById,
+    generateToken,
+    generateRefreshToken,
+    createSession,
+    upsertSession,
+    deleteSession,
+    createToken,
+    deleteTokens,
+  } = require('~/models'));
+  ({ getAppConfig } = require('~/server/services/Config'));
+  ({ sendEmail } = require('~/server/utils'));
+  bcrypt = require('bcryptjs');
+  ({
+    setOpenIDAuthTokens,
+    storeOpenIDSession,
+    requestPasswordReset,
+    registerUser,
+    resetPassword,
+    resendVerificationEmail,
+    setAuthTokens,
+    setCloudFrontAuthCookies,
+    verifyEmail,
+  } = require('./AuthService'));
+});
 
 /** Helper to build a mock Express response */
 function mockResponse() {
@@ -172,6 +346,56 @@ describe('setOpenIDAuthTokens', () => {
       expect(result).toBe('id-token-jwt-signed-by-idp');
       expect(result).not.toBe('opaque-graph-api-token');
     });
+
+    describe('with configured bearer audiences', () => {
+      const originalClientId = process.env.OPENID_CLIENT_ID;
+      const originalAudience = process.env.OPENID_AUDIENCE;
+      const signAccessToken = (aud) =>
+        jwt.sign({ aud, exp: Math.floor(Date.now() / 1000) + 600 }, 'idp-secret');
+
+      beforeEach(() => {
+        process.env.OPENID_CLIENT_ID = 'app-client-id';
+        process.env.OPENID_AUDIENCE = 'api://app-resource';
+      });
+
+      afterEach(() => {
+        for (const [key, value] of [
+          ['OPENID_CLIENT_ID', originalClientId],
+          ['OPENID_AUDIENCE', originalAudience],
+        ]) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      });
+
+      it('does not return a JWT access token minted for another resource', () => {
+        const tokenset = {
+          access_token: signAccessToken('00000003-0000-0000-c000-000000000000'),
+          refresh_token: 'the-refresh-token',
+        };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBeUndefined();
+      });
+
+      it('returns a JWT access token minted for a configured audience', () => {
+        const accessToken = signAccessToken('api://app-resource');
+        const tokenset = { access_token: accessToken, refresh_token: 'the-refresh-token' };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBe(accessToken);
+      });
+
+      it('keeps returning an opaque access token', () => {
+        const tokenset = { access_token: 'opaque-access-token', refresh_token: 'refresh' };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBe('opaque-access-token');
+      });
+    });
   });
 
   describe('session token storage', () => {
@@ -189,7 +413,94 @@ describe('setOpenIDAuthTokens', () => {
       expect(req.session.openidTokens.accessToken).toBe('the-access-token');
       expect(req.session.openidTokens.idToken).toBe('the-id-token');
       expect(req.session.openidTokens.refreshToken).toBe('the-refresh-token');
+      expect(req.session.openidTokens.browserRefreshToken).toBe('the-refresh-token');
       expect(req.session.openidTokens.lastRefreshedAt).toEqual(expect.any(Number));
+    });
+
+    it('should bind session tokens to the OpenID user identity', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, {
+        userId: 'user-123',
+        openidSubject: 'oidc-sub-123',
+        tenantId: 'tenantA',
+        openidIssuer: 'https://issuer.example.com/.well-known/openid-configuration',
+      });
+
+      expect(req.session.openidTokens).toEqual(
+        expect.objectContaining({
+          appUserId: 'user-123',
+          openidSubject: 'oidc-sub-123',
+          tenantId: 'tenantA',
+          openidIssuer: 'https://issuer.example.com',
+        }),
+      );
+    });
+
+    /**
+     * Codex Finding 5: persist the access-token's expiry (unix seconds) so the
+     * first OBO call after login or SPA refresh can reuse a still-valid OPAQUE
+     * access token without burning a redundant inline refresh. The expiry comes
+     * from the IdP's `tokenset.expires_in`; downstream consumers (notably
+     * `OpenIDSessionRefresh.getAccessTokenExp`) read it as a fallback when the
+     * access token isn't a JWT and can't be decoded.
+     */
+    it('should persist accessTokenExpiresAt when tokenset.expires_in is provided', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+        expires_in: 3600,
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+      const beforeSec = Math.floor(Date.now() / 1000);
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      const persisted = req.session.openidTokens.accessTokenExpiresAt;
+      expect(typeof persisted).toBe('number');
+      expect(persisted).toBeGreaterThanOrEqual(beforeSec + 3590);
+      expect(persisted).toBeLessThanOrEqual(beforeSec + 3610);
+    });
+
+    it('should persist accessTokenExpiresAt when tokenset.expires_in is a numeric string', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+        expires_in: '3600',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+      const beforeSec = Math.floor(Date.now() / 1000);
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens.accessTokenExpiresAt).toBeGreaterThanOrEqual(
+        beforeSec + 3590,
+      );
+    });
+
+    it('should NOT persist accessTokenExpiresAt when tokenset.expires_in is missing', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+        // expires_in deliberately omitted
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens).not.toHaveProperty('accessTokenExpiresAt');
     });
 
     it('should return the existing unexpired session id_token when refresh omits one', () => {
@@ -244,6 +555,43 @@ describe('setOpenIDAuthTokens', () => {
       expect(req.session.openidTokens.accessToken).toBe('new-access-token');
     });
 
+    it('falls back to access_token when the refresh carried an expired id_token forward', () => {
+      const expiredIdToken = jwt.sign(
+        { sub: 'user-123', exp: Math.floor(Date.now() / 1000) - 60 },
+        'idp-signing-secret',
+      );
+      const tokenset = {
+        id_token: expiredIdToken,
+        access_token: 'new-access-token',
+        refresh_token: 'new-refresh-token',
+      };
+      const req = mockRequest({
+        openidTokens: {
+          accessToken: 'old-access-token',
+          idToken: expiredIdToken,
+          refreshToken: 'old-refresh-token',
+        },
+      });
+      const res = mockResponse();
+
+      const result = setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(result).toBe('new-access-token');
+      expect(req.session.openidTokens.idToken).toBe(expiredIdToken);
+    });
+
+    it('still prefers an id_token whose expiry cannot be read', () => {
+      const tokenset = {
+        id_token: 'opaque-but-not-a-jwt',
+        access_token: 'new-access-token',
+        refresh_token: 'new-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      expect(setOpenIDAuthTokens(tokenset, req, res, 'user-123')).toBe('opaque-but-not-a-jwt');
+    });
+
     it('should fall back to access_token when the existing session id_token is near expiry', () => {
       const nearExpiryIdToken = jwt.sign(
         { sub: 'user-123', exp: Math.floor(Date.now() / 1000) + 10 },
@@ -270,8 +618,40 @@ describe('setOpenIDAuthTokens', () => {
     });
   });
 
-  describe('cookie secure flag', () => {
-    it('should call shouldUseSecureCookie for every cookie set', () => {
+  it('stores an OpenID refresh token for durable revocation checks', async () => {
+    storeOpenIdSession.mockResolvedValue(true);
+
+    await storeOpenIDSession('user-123', 'the-refresh-token', 'tenant-a');
+
+    expect(storeOpenIdSession).toHaveBeenCalledWith(
+      {
+        userId: 'user-123',
+        refreshToken: 'the-refresh-token',
+        tenantId: 'tenant-a',
+        previousRefreshToken: undefined,
+      },
+      { upsertSession, deleteSession },
+    );
+  });
+
+  it('revokes the previous durable session when the IdP rotates the refresh token', async () => {
+    storeOpenIdSession.mockResolvedValue(true);
+
+    await storeOpenIDSession('user-123', 'new-refresh-token', 'tenant-a', 'old-refresh-token');
+
+    expect(storeOpenIdSession).toHaveBeenCalledWith(
+      {
+        userId: 'user-123',
+        refreshToken: 'new-refresh-token',
+        tenantId: 'tenant-a',
+        previousRefreshToken: 'old-refresh-token',
+      },
+      { upsertSession, deleteSession },
+    );
+  });
+
+  describe('OpenID cookie delegation', () => {
+    it('delegates session-path refresh and marker cookies to shared cookie helpers', () => {
       const tokenset = {
         id_token: 'the-id-token',
         access_token: 'the-access-token',
@@ -282,37 +662,30 @@ describe('setOpenIDAuthTokens', () => {
 
       setOpenIDAuthTokens(tokenset, req, res, 'user-123');
 
-      // token_provider + openid_user_id (session path, so no refreshToken/openid_access_token cookies)
-      const secureCalls = shouldUseSecureCookie.mock.calls.length;
-      expect(secureCalls).toBeGreaterThanOrEqual(2);
-
-      // Verify all cookies use the result of shouldUseSecureCookie
-      for (const [, cookie] of Object.entries(res._cookies)) {
-        expect(cookie.options.secure).toBe(false);
-      }
+      expect(setRefreshTokenCookie).toHaveBeenCalledWith(
+        res,
+        'the-refresh-token',
+        expect.any(Date),
+      );
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(res, {
+        userId: 'user-123',
+        expires: expect.any(Date),
+        refreshExpiryMs: 604800000,
+        refreshToken: 'the-refresh-token',
+      });
+      expect(res.cookie).not.toHaveBeenCalledWith(
+        'openid_access_token',
+        expect.any(String),
+        expect.any(Object),
+      );
+      expect(res.cookie).not.toHaveBeenCalledWith(
+        'openid_id_token',
+        expect.any(String),
+        expect.any(Object),
+      );
     });
 
-    it('should set secure: true when shouldUseSecureCookie returns true', () => {
-      shouldUseSecureCookie.mockReturnValue(true);
-
-      const tokenset = {
-        id_token: 'the-id-token',
-        access_token: 'the-access-token',
-        refresh_token: 'the-refresh-token',
-      };
-      const req = mockRequest();
-      const res = mockResponse();
-
-      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
-
-      for (const [, cookie] of Object.entries(res._cookies)) {
-        expect(cookie.options.secure).toBe(true);
-      }
-    });
-
-    it('should use shouldUseSecureCookie for cookie fallback path (no session)', () => {
-      shouldUseSecureCookie.mockReturnValue(false);
-
+    it('uses cookie fallback for OpenID access tokens when no session is available', () => {
       const tokenset = {
         id_token: 'the-id-token',
         access_token: 'the-access-token',
@@ -323,21 +696,34 @@ describe('setOpenIDAuthTokens', () => {
 
       setOpenIDAuthTokens(tokenset, req, res, 'user-123');
 
-      // In the cookie fallback path, we get: refreshToken, openid_access_token, token_provider, openid_user_id
-      expect(res.cookie).toHaveBeenCalledWith(
-        'refreshToken',
-        expect.any(String),
-        expect.objectContaining({ secure: false }),
+      expect(setRefreshTokenCookie).toHaveBeenCalledWith(
+        res,
+        'the-refresh-token',
+        expect.any(Date),
       );
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(res, {
+        userId: 'user-123',
+        expires: expect.any(Date),
+        refreshExpiryMs: 604800000,
+        refreshToken: 'the-refresh-token',
+      });
       expect(res.cookie).toHaveBeenCalledWith(
         'openid_access_token',
-        expect.any(String),
-        expect.objectContaining({ secure: false }),
+        'the-access-token',
+        expect.objectContaining({
+          expires: expect.any(Date),
+          httpOnly: true,
+          sameSite: 'strict',
+        }),
       );
       expect(res.cookie).toHaveBeenCalledWith(
-        'token_provider',
-        'openid',
-        expect.objectContaining({ secure: false }),
+        'openid_id_token',
+        'the-id-token',
+        expect.objectContaining({
+          expires: expect.any(Date),
+          httpOnly: true,
+          sameSite: 'strict',
+        }),
       );
     });
   });
@@ -381,9 +767,250 @@ describe('setOpenIDAuthTokens', () => {
   });
 });
 
+const loggedText = () =>
+  JSON.stringify(['info', 'warn', 'error', 'debug'].map((level) => logger[level].mock.calls));
+
+describe('registerUser', () => {
+  const registrationPayload = {
+    name: 'Test User',
+    username: 'testuser',
+    email: 'test@example.com',
+    password: 'Password123!',
+    confirm_password: 'Password123!',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.ALLOW_UNVERIFIED_EMAIL_LOGIN = 'false';
+    checkEmailConfig.mockReturnValue(false);
+    isEmailDomainAllowed.mockReturnValue(true);
+    getAppConfig.mockResolvedValue({
+      balance: { enabled: false },
+      registration: { allowedDomains: [] },
+    });
+    findUser.mockResolvedValue(null);
+    countUsers.mockResolvedValue(1);
+    createUser.mockResolvedValue({ _id: 'new-user-id' });
+    updateUser.mockResolvedValue({ _id: 'new-user-id' });
+  });
+
+  it('ignores provider values from the public registration payload', async () => {
+    const result = await registerUser({ ...registrationPayload, provider: 'google' });
+
+    expect(result.status).toBe(200);
+    expect(createUser.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        email: registrationPayload.email,
+        provider: 'local',
+      }),
+    );
+  });
+
+  it('allows trusted callers to set provider through additional data', async () => {
+    const result = await registerUser(registrationPayload, {
+      emailVerified: true,
+      provider: 'google',
+    });
+
+    expect(result.status).toBe(200);
+    expect(createUser.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        email: registrationPayload.email,
+        emailVerified: true,
+        provider: 'google',
+      }),
+    );
+  });
+
+  it('normalizes mixed-case emails when issuing the verification token and link', async () => {
+    checkEmailConfig.mockReturnValue(true);
+
+    const result = await registerUser({
+      ...registrationPayload,
+      email: 'Mixed.Case@Example.com',
+    });
+
+    expect(result.status).toBe(200);
+    expect(createToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'mixed.case@example.com',
+        type: 'email_verification',
+      }),
+    );
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'mixed.case@example.com',
+        payload: expect.objectContaining({
+          verificationLink: expect.stringContaining(encodeURIComponent('mixed.case@example.com')),
+        }),
+      }),
+    );
+  });
+
+  it('contains a failed cleanup of the temporary user and logs safe metadata only', async () => {
+    checkEmailConfig.mockReturnValue(true);
+    sendEmail.mockRejectedValueOnce(new Error('smtp rejected leak@example.com'));
+    deleteUserById.mockRejectedValueOnce(new Error('db failure leak@example.com'));
+
+    const result = await registerUser(registrationPayload);
+
+    expect(result).toEqual({ status: 500, message: 'Something went wrong' });
+    expect(loggedText()).not.toContain('leak@example.com');
+  });
+
+  it('logs a duplicate registration by id without the body or existing user', async () => {
+    findUser.mockResolvedValue({ _id: 'existing-id', email: 'dup@example.com' });
+
+    const result = await registerUser({ ...registrationPayload, email: 'dup@example.com' });
+
+    expect(result.status).toBe(200);
+    expect(createUser).not.toHaveBeenCalled();
+    expect(logger.info.mock.calls).toEqual([
+      ['[registerUser] Email in use [User ID: existing-id]'],
+    ]);
+    const logged = loggedText();
+    for (const secret of [
+      'dup@example.com',
+      'testuser',
+      'Test User',
+      registrationPayload.password,
+    ]) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+
+  it('does not log the registration body on validation failure', async () => {
+    registerSchema.safeParse.mockReturnValueOnce({
+      success: false,
+      error: { errors: [{ path: ['password'], message: 'Password too short' }] },
+    });
+
+    const result = await registerUser({
+      ...registrationPayload,
+      email: 'pii-leak@example.com',
+    });
+
+    expect(result.status).toBe(404);
+    expect(logger.info).toHaveBeenCalled();
+    const logged = loggedText();
+    for (const secret of [
+      'pii-leak@example.com',
+      'testuser',
+      'Test User',
+      registrationPayload.password,
+    ]) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+});
+
+describe('verifyEmail public response handling', () => {
+  const email = 'user@example.com';
+  const encodedEmail = encodeURIComponent(email);
+  const invalidEmailVerificationMessage = 'Invalid or expired email verification token';
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('does not reveal that an account is already verified without a valid token', async () => {
+    findUser.mockResolvedValue({ _id: 'user-id', email, emailVerified: true });
+    findToken.mockResolvedValue(null);
+
+    const result = await verifyEmail({ body: { email: encodedEmail, token: 'not-the-token' } });
+
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe(invalidEmailVerificationMessage);
+    expect(updateUser).not.toHaveBeenCalled();
+    expect(deleteTokens).not.toHaveBeenCalled();
+  });
+
+  it('returns the same generic error for missing users and invalid tokens', async () => {
+    findUser.mockResolvedValueOnce(null);
+
+    const missingUserResult = await verifyEmail({
+      body: { email: encodedEmail, token: 'not-the-token' },
+    });
+
+    findUser.mockResolvedValueOnce({ _id: 'user-id', email, emailVerified: false });
+    findToken.mockResolvedValueOnce({
+      userId: 'user-id',
+      email,
+      token: bcrypt.hashSync('real-token', 10),
+    });
+
+    const invalidTokenResult = await verifyEmail({
+      body: { email: encodedEmail, token: 'not-the-token' },
+    });
+
+    expect(missingUserResult).toBeInstanceOf(Error);
+    expect(invalidTokenResult).toBeInstanceOf(Error);
+    expect(missingUserResult.message).toBe(invalidEmailVerificationMessage);
+    expect(invalidTokenResult.message).toBe(invalidEmailVerificationMessage);
+  });
+
+  it('verifies an unverified account when the token is valid', async () => {
+    const hashedToken = bcrypt.hashSync('real-token', 10);
+    findUser.mockResolvedValue({ _id: 'user-id', email, emailVerified: false });
+    findToken.mockResolvedValue({ userId: 'user-id', email, token: hashedToken });
+    updateUser.mockResolvedValue({ _id: 'user-id', emailVerified: true });
+
+    const result = await verifyEmail({ body: { email: encodedEmail, token: 'real-token' } });
+
+    expect(result).toEqual({
+      message: 'Email verification was successful',
+      status: 'success',
+    });
+    expect(updateUser).toHaveBeenCalledWith('user-id', { emailVerified: true });
+    expect(deleteTokens).toHaveBeenCalledWith({
+      token: hashedToken,
+      userId: 'user-id',
+      email,
+      identifier: null,
+      type: null,
+    });
+  });
+
+  it('returns the generic error when a valid verification update fails', async () => {
+    const hashedToken = bcrypt.hashSync('real-token', 10);
+    findUser.mockResolvedValue({ _id: 'user-id', email, emailVerified: false });
+    findToken.mockResolvedValue({ userId: 'user-id', email, token: hashedToken });
+    updateUser.mockResolvedValue(null);
+
+    const result = await verifyEmail({ body: { email: encodedEmail, token: 'real-token' } });
+
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe(invalidEmailVerificationMessage);
+    expect(deleteTokens).not.toHaveBeenCalled();
+  });
+
+  it('allows idempotent success only when an already verified account presents a valid token', async () => {
+    const hashedToken = bcrypt.hashSync('real-token', 10);
+    findUser.mockResolvedValue({ _id: 'user-id', email, emailVerified: true });
+    findToken.mockResolvedValue({ userId: 'user-id', email, token: hashedToken });
+
+    const result = await verifyEmail({ body: { email: encodedEmail, token: 'real-token' } });
+
+    expect(result).toEqual({
+      message: 'Email verification was successful',
+      status: 'success',
+    });
+    expect(updateUser).not.toHaveBeenCalled();
+    expect(deleteTokens).toHaveBeenCalledWith({
+      token: hashedToken,
+      userId: 'user-id',
+      email,
+      identifier: null,
+      type: null,
+    });
+  });
+});
+
 describe('requestPasswordReset', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    checkEmailConfig.mockReturnValue(true);
+    sendEmail.mockReset().mockResolvedValue(undefined);
     isEmailDomainAllowed.mockReturnValue(true);
     getAppConfig.mockResolvedValue({
       registration: { allowedDomains: ['example.com'] },
@@ -393,15 +1020,55 @@ describe('requestPasswordReset', () => {
     });
   });
 
-  it('should fast-fail with base config before DB lookup for blocked domains', async () => {
+  it.each([false, true])(
+    'never returns recovery credentials (email enabled: %s)',
+    async (enabled) => {
+      checkEmailConfig.mockReturnValue(enabled);
+      findUser.mockResolvedValue({ _id: 'user-reset', email: 'user@example.com' });
+
+      const known = await requestPasswordReset({ body: { email: 'user@example.com' } });
+      findUser.mockResolvedValue(null);
+      const unknown = await requestPasswordReset({ body: { email: 'nobody@example.com' } });
+
+      expect(known).toEqual({
+        message: 'If an account with that email exists, a password reset link has been sent to it.',
+      });
+      expect(unknown).toEqual(known);
+      expect(known).not.toHaveProperty('link');
+      expect(known).not.toHaveProperty('token');
+      if (enabled) {
+        const { link } = sendEmail.mock.calls[0][0].payload;
+        expect(link).toContain('/reset-password?token=');
+        expect(createToken).toHaveBeenCalledTimes(1);
+        expect(loggedText()).not.toContain(link);
+      } else {
+        expect(deleteTokens).not.toHaveBeenCalled();
+        expect(createToken).not.toHaveBeenCalled();
+        expect(sendEmail).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('should fast-fail with the pre-auth config before DB lookup for blocked domains', async () => {
     isEmailDomainAllowed.mockReturnValue(false);
 
     const req = { body: { email: 'blocked@evil.com' }, ip: '127.0.0.1' };
     const result = await requestPasswordReset(req);
 
-    expect(getAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+    expect(resolvePreAuthAppConfig).toHaveBeenCalledWith(getAppConfig);
+    expect(getAppConfig).not.toHaveBeenCalledWith({ baseOnly: true });
     expect(findUser).not.toHaveBeenCalled();
     expect(result).toBeInstanceOf(Error);
+  });
+
+  it('should propagate a pre-auth config read failure before the user lookup', async () => {
+    getAppConfig.mockRejectedValue(new Error('override read failed'));
+
+    const req = { body: { email: 'user@example.com' }, ip: '127.0.0.1' };
+
+    await expect(requestPasswordReset(req)).rejects.toThrow('override read failed');
+    expect(findUser).not.toHaveBeenCalled();
+    expect(createToken).not.toHaveBeenCalled();
   });
 
   it('should call resolveAppConfigForUser for tenant user', async () => {
@@ -419,13 +1086,58 @@ describe('requestPasswordReset', () => {
     expect(resolveAppConfigForUser).toHaveBeenCalledWith(getAppConfig, user);
   });
 
-  it('should reuse baseConfig for non-tenant user without calling resolveAppConfigForUser', async () => {
-    findUser.mockResolvedValue({ _id: 'user-no-tenant', email: 'user@example.com' });
+  it('should resolve the account config for a user without a tenant', async () => {
+    const user = { _id: 'user-no-tenant', email: 'user@example.com', role: 'USER' };
+    findUser.mockResolvedValue(user);
 
     const req = { body: { email: 'user@example.com' }, ip: '127.0.0.1' };
     await requestPasswordReset(req);
 
+    expect(resolveAppConfigForUser).toHaveBeenCalledWith(getAppConfig, user);
+  });
+
+  it('should keep the pre-auth config when no account exists', async () => {
+    findUser.mockResolvedValue(null);
+
+    const req = { body: { email: 'nobody@example.com' }, ip: '127.0.0.1' };
+    const result = await requestPasswordReset(req);
+
     expect(resolveAppConfigForUser).not.toHaveBeenCalled();
+    expect(result.message).toContain('If an account with that email exists');
+  });
+
+  it("should return the generic response when a role's config blocks the domain", async () => {
+    const user = { _id: 'user-no-tenant', email: 'user@example.com', role: 'USER' };
+    findUser.mockResolvedValue(user);
+    isEmailDomainAllowed.mockReturnValueOnce(true).mockReturnValueOnce(false);
+
+    const req = { body: { email: 'user@example.com' }, ip: '127.0.0.1' };
+    const result = await requestPasswordReset(req);
+
+    expect(result).not.toBeInstanceOf(Error);
+    expect(result.message).toContain('If an account with that email exists');
+    expect(createToken).not.toHaveBeenCalled();
+  });
+
+  it("issues no link, with the generic answer, when the account's config cannot be read", async () => {
+    const user = { _id: 'user-no-tenant', email: 'user@example.com', role: 'USER' };
+    findUser.mockResolvedValue(user);
+    getAppConfig.mockResolvedValue({ registration: { allowedDomains: ['example.com'] } });
+    resolveAppConfigForUser.mockRejectedValue(new Error('role read failed user@example.com'));
+
+    const req = { body: { email: 'user@example.com' }, ip: '127.0.0.1' };
+    const result = await requestPasswordReset(req);
+
+    expect(result).toEqual({
+      message: 'If an account with that email exists, a password reset link has been sent to it.',
+    });
+    expect(deleteTokens).not.toHaveBeenCalled();
+    expect(createToken).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      "[requestPasswordReset] Failed to resolve the account's config; no link issued:",
+      { type: 'Error' },
+    );
+    expect(loggedText()).not.toContain('user@example.com');
   });
 
   it('should return generic response when tenant config blocks the domain (non-enumerable)', async () => {
@@ -443,6 +1155,355 @@ describe('requestPasswordReset', () => {
 
     expect(result).not.toBeInstanceOf(Error);
     expect(result.message).toContain('If an account with that email exists');
+  });
+
+  it('should only delete existing password reset tokens when issuing a new reset link', async () => {
+    const user = { _id: 'user-reset', email: 'user@example.com' };
+    findUser.mockResolvedValue(user);
+
+    const req = { body: { email: 'user@example.com' }, ip: '127.0.0.1' };
+    await requestPasswordReset(req);
+
+    expect(deleteTokens).toHaveBeenCalledWith({
+      userId: user._id,
+      type: 'password_reset',
+    });
+    expect(deleteTokens).toHaveBeenCalledWith({
+      userId: user._id,
+      email: null,
+      identifier: null,
+      type: null,
+    });
+    expect(createToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: user._id,
+        email: user.email,
+        type: 'password_reset',
+      }),
+    );
+  });
+});
+
+describe('resetPassword', () => {
+  /** The reset policy itself (address binding, the compare-and-set, the email change
+   *  sweep) lives in `@librechat/api` and is covered by passwordReset.spec.ts. What
+   *  remains here is this file's wiring: which token lookup it injects, and which token
+   *  it deletes once the policy has committed. The double runs the injected lookup so
+   *  that wiring is still exercised, and decides nothing else. */
+  const resolvedUser = { email: 'user@example.com' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    checkEmailConfig.mockReturnValue(false);
+    resetPasswordWithToken.mockImplementation(async (deps, { userId }) => {
+      const resetToken = await deps.findResetToken(userId);
+      if (!resetToken) {
+        return { ok: false };
+      }
+      await deps.consumeResetToken(resetToken);
+      await deps.sendResetNotice(resolvedUser);
+      return { ok: true, tokenConsumed: true };
+    });
+  });
+
+  it('looks for a typed reset token before the untyped legacy shape', async () => {
+    findToken.mockResolvedValue(null);
+
+    const result = await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(result).toEqual({ ok: false });
+    expect(findToken).toHaveBeenNthCalledWith(
+      1,
+      { userId: 'user-reset', type: 'password_reset' },
+      { sort: { createdAt: -1 } },
+    );
+    expect(findToken).toHaveBeenNthCalledWith(
+      2,
+      { userId: 'user-reset', email: null, identifier: null, type: null },
+      { sort: { createdAt: -1 } },
+    );
+    expect(deleteTokens).not.toHaveBeenCalled();
+  });
+
+  it('hands the policy the database and password surfaces it needs', async () => {
+    findToken.mockResolvedValue({
+      token: 'reset-hash',
+      userId: 'user-reset',
+      type: 'password_reset',
+    });
+
+    await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(resetPasswordWithToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        consumeResetToken: expect.any(Function),
+        sendResetNotice: expect.any(Function),
+        findResetToken: expect.any(Function),
+        getUserById: expect.any(Function),
+        updateUser: expect.any(Function),
+        deleteTokens: expect.any(Function),
+        compareToken: expect.any(Function),
+        hashPassword: expect.any(Function),
+      }),
+      { userId: 'user-reset', token: 'reset-token', password: 'new-password' },
+    );
+  });
+
+  it('deletes only the typed reset token the policy consumed', async () => {
+    findToken.mockResolvedValue({
+      token: 'reset-hash',
+      userId: 'user-reset',
+      email: 'user@example.com',
+      type: 'password_reset',
+    });
+
+    const result = await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(result).toEqual({ ok: true, tokenConsumed: true });
+    expect(deleteTokens).toHaveBeenCalledWith({ token: 'reset-hash', type: 'password_reset' });
+  });
+
+  it('deletes an untyped legacy token by its exact stored shape', async () => {
+    findToken.mockImplementation(async (query) =>
+      query.type === 'password_reset'
+        ? null
+        : { token: 'legacy-hash', userId: 'user-reset', email: null, identifier: null, type: null },
+    );
+
+    const result = await resetPassword('user-reset', 'legacy-reset-token', 'new-password');
+
+    expect(result).toEqual({ ok: true, tokenConsumed: true });
+    expect(deleteTokens).toHaveBeenCalledWith({
+      token: 'legacy-hash',
+      email: null,
+      identifier: null,
+      type: null,
+    });
+  });
+
+  it('returns the generic error and touches nothing when the policy refuses', async () => {
+    findToken.mockResolvedValue(null);
+
+    const result = await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(result).toEqual({ ok: false });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(deleteTokens).not.toHaveBeenCalled();
+  });
+
+  it('notifies the account once the reset has committed', async () => {
+    checkEmailConfig.mockReturnValue(true);
+    findToken.mockResolvedValue({
+      token: 'reset-hash',
+      userId: 'user-reset',
+      type: 'password_reset',
+    });
+
+    await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'user@example.com',
+        template: 'passwordReset.handlebars',
+      }),
+    );
+  });
+});
+
+describe('verifyEmail', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should scope verification token lookup to the user and token category', async () => {
+    const verificationHash = bcrypt.hashSync('verification-token', 10);
+    const user = {
+      _id: 'user-verify',
+      email: 'user@example.com',
+      emailVerified: false,
+    };
+    findUser.mockResolvedValue(user);
+    findToken.mockImplementation(async (query) => {
+      if (query.type === 'email_verification') {
+        return {
+          userId: user._id,
+          email: user.email,
+          token: verificationHash,
+          type: 'email_verification',
+        };
+      }
+      return null;
+    });
+    updateUser.mockResolvedValue({ ...user, emailVerified: true });
+
+    const result = await verifyEmail({
+      body: {
+        email: encodeURIComponent(user.email),
+        token: 'verification-token',
+      },
+    });
+
+    expect(result).toEqual({
+      message: 'Email verification was successful',
+      status: 'success',
+    });
+    expect(findToken).toHaveBeenCalledWith(
+      {
+        userId: user._id,
+        email: user.email,
+        type: 'email_verification',
+      },
+      { sort: { createdAt: -1 } },
+    );
+    expect(deleteTokens).toHaveBeenCalledWith({
+      token: verificationHash,
+      type: 'email_verification',
+    });
+  });
+
+  it('should fall back only to legacy verification tokens for the same user', async () => {
+    const verificationHash = bcrypt.hashSync('legacy-verification-token', 10);
+    const user = {
+      _id: 'user-verify',
+      email: 'user@example.com',
+      emailVerified: false,
+    };
+    findUser.mockResolvedValue(user);
+    findToken.mockImplementation(async (query) => {
+      if (query.type === 'email_verification') {
+        return null;
+      }
+      if (query.type === null && query.identifier === null && query.userId === user._id) {
+        return {
+          userId: user._id,
+          email: user.email,
+          token: verificationHash,
+        };
+      }
+      return null;
+    });
+    updateUser.mockResolvedValue({ ...user, emailVerified: true });
+
+    const result = await verifyEmail({
+      body: {
+        email: encodeURIComponent(user.email),
+        token: 'legacy-verification-token',
+      },
+    });
+
+    expect(result).toEqual({
+      message: 'Email verification was successful',
+      status: 'success',
+    });
+    expect(findToken).toHaveBeenCalledWith(
+      {
+        userId: user._id,
+        email: user.email,
+        identifier: null,
+        type: null,
+      },
+      { sort: { createdAt: -1 } },
+    );
+    expect(deleteTokens).toHaveBeenCalledWith({
+      token: verificationHash,
+      userId: user._id,
+      email: user.email,
+      identifier: null,
+      type: null,
+    });
+  });
+});
+
+describe('resendVerificationEmail', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('logs a failed resend without the error message or address', async () => {
+    findUser.mockResolvedValue({ _id: 'user-fail', email: 'leak@example.com', name: 'Leaky' });
+    checkEmailConfig.mockReturnValue(true);
+    sendEmail.mockRejectedValueOnce(new Error('rejected leak@example.com'));
+
+    await resendVerificationEmail({ body: { email: 'leak@example.com' } });
+
+    expect(logger.error.mock.calls).toEqual([
+      ['[resendVerificationEmail] Error resending verification email:', { type: 'Error' }],
+    ]);
+    expect(loggedText()).not.toContain('leak@example.com');
+  });
+
+  it('should not delete tokens when no user exists for the email', async () => {
+    findUser.mockResolvedValue(null);
+
+    const result = await resendVerificationEmail({
+      body: { email: 'missing@example.com' },
+    });
+
+    expect(result).toEqual({
+      status: 200,
+      message: 'Please check your email to verify your email address.',
+    });
+    expect(deleteTokens).not.toHaveBeenCalled();
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(createToken).not.toHaveBeenCalled();
+  });
+
+  it('should delete only verification tokens scoped to the resolved user', async () => {
+    const user = {
+      _id: 'user-verify',
+      email: 'user@example.com',
+      name: 'User Verify',
+    };
+    findUser.mockResolvedValue(user);
+
+    const result = await resendVerificationEmail({
+      body: { email: user.email },
+    });
+
+    expect(result).toEqual({
+      status: 200,
+      message: 'Please check your email to verify your email address.',
+    });
+    expect(deleteTokens).toHaveBeenCalledWith({
+      userId: user._id,
+      email: user.email,
+      type: 'email_verification',
+    });
+    expect(deleteTokens).toHaveBeenCalledWith({
+      userId: user._id,
+      email: user.email,
+      identifier: null,
+      type: null,
+    });
+    expect(deleteTokens).not.toHaveBeenCalledWith({ email: user.email });
+    expect(createToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: user._id,
+        email: user.email,
+        type: 'email_verification',
+      }),
+    );
+  });
+
+  it('returns the generic response when delivery fails', async () => {
+    const user = {
+      _id: 'user-delivery-failure',
+      email: 'delivery-failure@example.com',
+      name: 'Delivery Failure',
+    };
+    findUser.mockResolvedValue(user);
+    sendEmail.mockRejectedValue(new Error('mail transport unavailable'));
+
+    const result = await resendVerificationEmail({ body: { email: user.email } });
+
+    expect(result).toEqual({
+      status: 200,
+      message: 'Please check your email to verify your email address.',
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      '[resendVerificationEmail] Error resending verification email:',
+      { type: 'Error' },
+    );
   });
 });
 
@@ -805,6 +1866,39 @@ describe('CloudFront cookie integration', () => {
       );
     });
 
+    it('names the session owner and expiry in the readable cookie the theme replay checks', async () => {
+      const expiration = new Date(Date.now() + 604800000);
+      createSession.mockResolvedValueOnce({
+        session: { expiration },
+        refreshToken: 'mock-refresh-token',
+      });
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res);
+
+      expect(setLocalSessionCookies).toHaveBeenCalledWith(res, {
+        refreshToken: 'mock-refresh-token',
+        expires: expiration,
+        userId: 'user-123',
+        tenantId: 'tenantA',
+      });
+    });
+
+    it('re-stamps the expiry of the session a refresh keeps', async () => {
+      const expiration = new Date(Date.now() + 3600000);
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res, { _id: 'session-1', expiration });
+
+      expect(createSession).not.toHaveBeenCalled();
+      expect(setLocalSessionCookies).toHaveBeenCalledWith(res, {
+        refreshToken: 'mock-refresh-token',
+        expires: expiration,
+        userId: 'user-123',
+        tenantId: 'tenantA',
+      });
+    });
+
     it('succeeds even when setCloudFrontCookies returns false', async () => {
       setCloudFrontCookies.mockReturnValue(false);
 
@@ -814,5 +1908,174 @@ describe('CloudFront cookie integration', () => {
 
       expect(result).toBe('mock-access-token');
     });
+  });
+});
+
+describe('registerUser - allowedDomains admin-panel override', () => {
+  const validUser = {
+    email: 'new-user@example.com',
+    password: 'a-secure-password',
+    name: 'New User',
+    username: 'new-user',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getTenantId.mockReturnValue(undefined);
+    isEmailDomainAllowed.mockReturnValue(true);
+    getAppConfig.mockResolvedValue({
+      registration: { allowedDomains: ['example.com'] },
+      balance: undefined,
+    });
+    findUser.mockResolvedValue(null);
+    countUsers.mockResolvedValue(0);
+  });
+
+  it('should resolve the pre-auth config so admin-panel overrides on the __base__ principal apply', async () => {
+    // Regression guard for getAppConfig({ baseOnly: true }): that option short-circuits
+    // before the DB override merge, which silently ignores any admin-panel edits to
+    // registration.allowedDomains (the admin panel writes overrides to the __base__
+    // principal in the configs collection). registerUser uses the same pre-auth config
+    // as the SSO, LDAP and password-reset checks. The tenant comes from ALS
+    // (preAuthTenantMiddleware), which scopes both the query and the cache key.
+    await registerUser(validUser);
+
+    expect(resolvePreAuthAppConfig).toHaveBeenCalledWith(getAppConfig);
+    expect(getAppConfig).toHaveBeenCalledTimes(1);
+    expect(getAppConfig).not.toHaveBeenCalledWith(expect.objectContaining({ baseOnly: true }));
+  });
+
+  it('should fail closed when the pre-auth config cannot be read', async () => {
+    getAppConfig.mockRejectedValue(new Error('override read failed'));
+
+    const result = await registerUser(validUser);
+
+    expect(result).toEqual({ status: 500, message: 'Something went wrong' });
+    expect(findUser).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it('does not bootstrap a tenant-scoped registrant as an administrator', async () => {
+    getTenantId.mockReturnValue('attacker-selected-tenant');
+    createUser.mockResolvedValue({ _id: 'new-user', emailVerified: true });
+    checkEmailConfig.mockReturnValue(false);
+
+    await registerUser(validUser);
+
+    expect(countUsers).not.toHaveBeenCalled();
+    expect(createUser).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'USER' }),
+      undefined,
+      expect.any(Boolean),
+      true,
+    );
+  });
+
+  it('preserves first-user administrator bootstrap without a tenant context', async () => {
+    createUser.mockResolvedValue({ _id: 'new-user', emailVerified: true });
+    checkEmailConfig.mockReturnValue(false);
+
+    await registerUser(validUser);
+
+    expect(countUsers).toHaveBeenCalledTimes(1);
+    expect(createUser).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'ADMIN' }),
+      undefined,
+      expect.any(Boolean),
+      true,
+    );
+  });
+
+  describe('the config of the role the account is created with', () => {
+    const roleConfigs = {
+      USER: { registration: { allowedDomains: ['corp.example'] } },
+      ADMIN: {
+        registration: { allowedDomains: ['example.com'] },
+        balance: { enabled: true, startBalance: 100 },
+      },
+    };
+
+    beforeEach(() => {
+      countUsers.mockResolvedValue(1);
+      resolveAppConfigForUser.mockImplementation(
+        async (_getAppConfig, { role }) => roleConfigs[role],
+      );
+    });
+
+    afterEach(() => {
+      resolveAppConfigForUser.mockImplementation(async () => ({}));
+    });
+
+    it("refuses a domain the USER role's list excludes, creating nothing", async () => {
+      isEmailDomainAllowed.mockReturnValueOnce(true).mockReturnValueOnce(false);
+
+      const result = await registerUser(validUser);
+
+      expect(result).toEqual({ status: 403, message: expect.stringMatching(/cannot be used/i) });
+      expect(resolveAppConfigForUser).toHaveBeenCalledWith(getAppConfig, { role: 'USER' });
+      expect(isEmailDomainAllowed).toHaveBeenLastCalledWith(validUser.email, ['corp.example']);
+      expect(createUser).not.toHaveBeenCalled();
+    });
+
+    it('gives a registered email the same refusal, so it reveals no account', async () => {
+      isEmailDomainAllowed.mockReturnValueOnce(true).mockReturnValueOnce(false);
+      findUser.mockResolvedValue({ _id: 'existing-id', email: validUser.email });
+
+      const result = await registerUser(validUser);
+
+      expect(result.status).toBe(403);
+      expect(createUser).not.toHaveBeenCalled();
+    });
+
+    it("creates the deployment's first account under the ADMIN role's config", async () => {
+      countUsers.mockResolvedValue(0);
+      createUser.mockResolvedValue({ _id: 'new-user', emailVerified: true });
+
+      const result = await registerUser(validUser);
+
+      expect(result.status).toBe(200);
+      expect(resolveAppConfigForUser).toHaveBeenCalledWith(getAppConfig, { role: 'ADMIN' });
+      expect(createUser).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'ADMIN' }),
+        roleConfigs.ADMIN.balance,
+        expect.any(Boolean),
+        true,
+      );
+    });
+
+    it('checks the role a trusted caller creates the account with', async () => {
+      createUser.mockResolvedValue({ _id: 'new-user', emailVerified: true });
+
+      const result = await registerUser(validUser, { role: 'ADMIN' });
+
+      expect(result.status).toBe(200);
+      expect(resolveAppConfigForUser).toHaveBeenCalledWith(getAppConfig, { role: 'ADMIN' });
+      expect(createUser).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'ADMIN' }),
+        roleConfigs.ADMIN.balance,
+        expect.any(Boolean),
+        true,
+      );
+    });
+
+    it("fails closed when the role's config cannot be read", async () => {
+      resolveAppConfigForUser.mockRejectedValue(new Error('role read failed'));
+
+      const result = await registerUser(validUser);
+
+      expect(result).toEqual({ status: 500, message: 'Something went wrong' });
+      expect(createUser).not.toHaveBeenCalled();
+    });
+  });
+
+  it('should block registration when the resolved allowedDomains rejects the email', async () => {
+    isEmailDomainAllowed.mockReturnValue(false);
+
+    const result = await registerUser({ ...validUser, email: 'blocked@evil.com' });
+
+    expect(result.status).toBe(403);
+    expect(result.message).toMatch(/cannot be used/i);
+    // Domain check must happen before any DB user lookup.
+    expect(findUser).not.toHaveBeenCalled();
   });
 });

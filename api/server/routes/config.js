@@ -1,14 +1,44 @@
 const express = require('express');
 const {
   isEnabled,
+  resolveEmailChangeSettings,
+  checkEmailConfig,
+  isLangfuseSettingsAvailable,
+  getLangfuseSettingsAccess,
+  isLangfuseFanoutEnabled,
   getBalanceConfig,
   getCloudFrontConfig,
+  getAppConfigOptionsFromUser,
+  resolveBuildInfo,
+  resolveTitleTiming,
+  getConversationTitleCapabilities,
   sanitizeModelSpecs,
+  excludeHiddenModelSpecs,
+  isFileSnapshotEnabled,
+  getEndpointsDropParamsMap,
+  resolveCodeEnvironmentDecisionVersion,
+  isPasskeyEnabled,
+  buildPreLoginInterface,
+  resolveMaxPasskeysPerUser,
+  resolveCodeEnvironmentMoveCapabilities,
+  resolveCodeWorkspaceInheritanceCapability,
+  resolveCodeEnvironmentTransitionVersion,
+  loadConversationListLimits,
+  getClientLimits,
+  resolvePullRequestCapabilities,
+  resolvePreLoginAppConfig,
+  withSafePolicyLinks,
 } = require('@librechat/api');
-const { defaultSocialLogins } = require('librechat-data-provider');
-const { logger, getTenantId, SystemCapabilities } = require('@librechat/data-schemas');
-const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const {
+  DEFAULT_MCP_APP_CSP_LIMITS,
+  EModelEndpoint,
+  defaultSocialLogins,
+  resolveMCPAppsPolicy,
+} = require('librechat-data-provider');
+const { logger, SystemCapabilities, configCapability } = require('@librechat/data-schemas');
+const { hasCapability, getHeldCapabilities } = require('~/server/middleware/roles/capabilities');
 const { getLdapConfig } = require('~/server/services/Config/ldap');
+const { getRumConfig } = require('~/server/services/Config/rum');
 const { getAppConfig } = require('~/server/services/Config/app');
 
 const router = express.Router();
@@ -25,15 +55,29 @@ const publicSharedLinksEnabled =
 const sharePointFilePickerEnabled = isEnabled(process.env.ENABLE_SHAREPOINT_FILEPICKER);
 const openidReuseTokens = isEnabled(process.env.OPENID_REUSE_TOKENS);
 
+/**
+ * Resolve build metadata eagerly at module load so the first `/api/config`
+ * request does not pay the cost of `execFileSync('git', ...)` on the hot path.
+ * The resolver caches its result after the first call.
+ */
+resolveBuildInfo();
+
 function isBirthday() {
   const today = new Date();
   return today.getMonth() === 1 && today.getDate() === 11;
 }
 
-function buildSharedPayload() {
+/**
+ * Pre-login fields rendered by the unauthenticated login, registration, password-reset,
+ * and email-verification pages. Any field added here is readable by anonymous callers
+ * of `GET /api/config`, so keep this set strictly to what those pages need.
+ *
+ * See client consumers under `client/src/components/Auth/` and `client/src/routes/Layouts/Startup.tsx`.
+ */
+function buildPreLoginPayload() {
   const isOpenIdEnabled =
     !!process.env.OPENID_CLIENT_ID &&
-    !!process.env.OPENID_CLIENT_SECRET &&
+    (isEnabled(process.env.OPENID_USE_PKCE) || !!process.env.OPENID_CLIENT_SECRET?.trim()) &&
     !!process.env.OPENID_ISSUER &&
     !!process.env.OPENID_SESSION_SECRET;
 
@@ -57,6 +101,7 @@ function buildSharedPayload() {
       !!process.env.APPLE_TEAM_ID &&
       !!process.env.APPLE_KEY_ID &&
       !!process.env.APPLE_PRIVATE_KEY_PATH,
+    passkeyLoginEnabled: isPasskeyEnabled(),
     openidLoginEnabled: isOpenIdEnabled,
     openidLabel: process.env.OPENID_BUTTON_LABEL || 'Continue with OpenID',
     openidImageUrl: process.env.OPENID_IMAGE_URL,
@@ -68,25 +113,9 @@ function buildSharedPayload() {
     emailLoginEnabled,
     registrationEnabled: !ldap?.enabled && isEnabled(process.env.ALLOW_REGISTRATION),
     socialLoginEnabled: isEnabled(process.env.ALLOW_SOCIAL_LOGIN),
-    emailEnabled:
-      (!!process.env.EMAIL_SERVICE || !!process.env.EMAIL_HOST) &&
-      !!process.env.EMAIL_USERNAME &&
-      !!process.env.EMAIL_PASSWORD &&
-      !!process.env.EMAIL_FROM,
+    emailEnabled: checkEmailConfig(),
     passwordResetEnabled,
-    showBirthdayIcon:
-      isBirthday() ||
-      isEnabled(process.env.SHOW_BIRTHDAY_ICON) ||
-      process.env.SHOW_BIRTHDAY_ICON === '',
-    helpAndFaqURL: process.env.HELP_AND_FAQ_URL || 'https://librechat.ai',
-    sharedLinksEnabled,
-    publicSharedLinksEnabled,
-    analyticsGtmId: process.env.ANALYTICS_GTM_ID,
-    openidReuseTokens,
-    /** Read inline (not module-level) for per-request evaluation and test isolation */
-    allowAccountDeletion:
-      process.env.ALLOW_ACCOUNT_DELETION === undefined ||
-      isEnabled(process.env.ALLOW_ACCOUNT_DELETION),
+    twoFactorAuthenticationRequired: isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION),
   };
 
   const minPasswordLength = parseInt(process.env.MIN_PASSWORD_LENGTH, 10);
@@ -98,11 +127,70 @@ function buildSharedPayload() {
     payload.ldap = ldap;
   }
 
+  return payload;
+}
+
+/**
+ * Fields shared by authenticated chat and share-view config. Anonymous share
+ * views receive these through `/api/share/:shareId/config` after share access
+ * checks, not through the generic startup config endpoint.
+ */
+function buildPublicSharePayload() {
+  /** @type {Partial<TStartupConfig>} */
+  const payload = {
+    analyticsGtmId: process.env.ANALYTICS_GTM_ID,
+  };
+
   if (typeof process.env.CUSTOM_FOOTER === 'string') {
     payload.customFooter = process.env.CUSTOM_FOOTER;
   }
 
   return payload;
+}
+
+/**
+ * Post-login fields appended only when `req.user` is present. These describe the
+ * authenticated UX (account-settings links, share-link feature flags, birthday icon,
+ * openid token-reuse marker) and are not needed on the pre-login screens, so they
+ * are not exposed to unauthenticated callers.
+ */
+function buildPostLoginPayload(appConfig) {
+  /** @type {Partial<TStartupConfig>} */
+  const payload = {
+    showBirthdayIcon:
+      isBirthday() ||
+      isEnabled(process.env.SHOW_BIRTHDAY_ICON) ||
+      process.env.SHOW_BIRTHDAY_ICON === '',
+    helpAndFaqURL: process.env.HELP_AND_FAQ_URL || 'https://librechat.ai',
+    sharedLinksEnabled,
+    publicSharedLinksEnabled,
+    openidReuseTokens,
+    ragEnabled: Boolean(process.env.RAG_API_URL?.trim()),
+    /** Read inline (not module-level) for per-request evaluation and test isolation */
+    allowAccountDeletion:
+      process.env.ALLOW_ACCOUNT_DELETION === undefined ||
+      isEnabled(process.env.ALLOW_ACCOUNT_DELETION),
+    allowEmailChange: resolveEmailChangeSettings(appConfig?.emailChange).enabled,
+    maxPasskeysPerUser: resolveMaxPasskeysPerUser(appConfig?.passkeys),
+  };
+
+  return payload;
+}
+
+function buildBuildInfoPayload(interfaceConfig) {
+  if (interfaceConfig?.buildInfo === false) {
+    return undefined;
+  }
+  const info = resolveBuildInfo();
+  if (!info.commit && !info.branch && !info.buildDate) {
+    return undefined;
+  }
+  return {
+    commit: info.commit,
+    commitShort: info.commitShort,
+    branch: info.branch,
+    buildDate: info.buildDate,
+  };
 }
 
 function buildWebSearchConfig(appConfig) {
@@ -143,50 +231,103 @@ function buildCloudFrontStartupConfig() {
 
 router.get('/', async function (req, res) {
   try {
-    const sharedPayload = buildSharedPayload();
-    const cloudFront = buildCloudFrontStartupConfig();
+    const preLoginPayload = buildPreLoginPayload();
+    const publicSharePayload = buildPublicSharePayload();
 
     if (!req.user) {
-      const tenantId = getTenantId();
-      const baseConfig = await getAppConfig(tenantId ? { tenantId } : { baseOnly: true });
+      const baseConfig = await resolvePreLoginAppConfig(getAppConfig);
 
       /** @type {Partial<TStartupConfig>} */
       const payload = {
-        ...sharedPayload,
+        ...preLoginPayload,
         socialLogins: baseConfig?.registration?.socialLogins ?? defaultSocialLogins,
         turnstile: baseConfig?.turnstileConfig,
-        ...(cloudFront ? { cloudFront } : {}),
+        rum: getRumConfig(baseConfig?.config?.telemetry),
+        clientLimits: getClientLimits(baseConfig?.config?.clientLimits),
       };
 
       const interfaceConfig = baseConfig?.interfaceConfig;
-      if (interfaceConfig?.privacyPolicy || interfaceConfig?.termsOfService) {
-        payload.interface = {};
-        if (interfaceConfig.privacyPolicy) {
-          payload.interface.privacyPolicy = interfaceConfig.privacyPolicy;
-        }
-        if (interfaceConfig.termsOfService) {
-          payload.interface.termsOfService = interfaceConfig.termsOfService;
-        }
+      const preLoginInterface = buildPreLoginInterface(interfaceConfig);
+      if (preLoginInterface) {
+        payload.interface = preLoginInterface;
+      }
+
+      const unauthBuildInfo = buildBuildInfoPayload(interfaceConfig);
+      if (unauthBuildInfo) {
+        payload.buildInfo = unauthBuildInfo;
       }
 
       return res.status(200).send(payload);
     }
 
-    const appConfig = await getAppConfig({
-      role: req.user.role,
-      userId: req.user.id,
-      tenantId: req.user.tenantId || getTenantId(),
-    });
+    const [appConfig, conversationListLimits] = await Promise.all([
+      getAppConfig({
+        ...getAppConfigOptionsFromUser(req.user),
+        failClosed: true,
+      }),
+      loadConversationListLimits(getAppConfig),
+    ]);
+    const codeEnvironmentDecisionVersion = resolveCodeEnvironmentDecisionVersion(
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION,
+    );
+    const codeEnvironmentMoveCapabilities = resolveCodeEnvironmentMoveCapabilities(appConfig);
+    const codeEnvironmentTransitionVersion = resolveCodeEnvironmentTransitionVersion(appConfig);
+
+    const endpointsDropParamsMap = getEndpointsDropParamsMap(appConfig?.endpoints);
 
     const balanceConfig = getBalanceConfig(appConfig);
+    const cloudFront = buildCloudFrontStartupConfig();
+    const langfuseFanoutEnabled = isLangfuseFanoutEnabled();
+    const langfuseSettingsAvailable = isLangfuseSettingsAvailable();
+    let canManageLangfuse = false;
+    // Running a sync also requires the prompt-management capability.
+    let langfusePromptManageAccess = false;
+
+    if (langfuseSettingsAvailable) {
+      try {
+        const userId = req.user.id ?? req.user._id?.toString();
+        if (userId) {
+          const capabilityUser = {
+            id: userId,
+            role: req.user.role ?? '',
+            tenantId: req.user.tenantId,
+            idOnTheSource: req.user.idOnTheSource ?? null,
+          };
+          const held = await getHeldCapabilities(capabilityUser, [
+            SystemCapabilities.ACCESS_ADMIN,
+            SystemCapabilities.MANAGE_CONFIGS,
+            configCapability('langfuse'),
+            SystemCapabilities.MANAGE_PROMPTS,
+          ]);
+          const hasAdminAccess = held.has(SystemCapabilities.ACCESS_ADMIN);
+          canManageLangfuse =
+            hasAdminAccess &&
+            (held.has(SystemCapabilities.MANAGE_CONFIGS) || held.has(configCapability('langfuse')));
+          langfusePromptManageAccess =
+            canManageLangfuse && held.has(SystemCapabilities.MANAGE_PROMPTS);
+        }
+      } catch (err) {
+        logger.warn(`[config] Langfuse capability check failed: ${err.message}`);
+      }
+    }
 
     /** @type {TStartupConfig} */
     const payload = {
-      ...sharedPayload,
+      ...preLoginPayload,
+      ...publicSharePayload,
+      ...buildPostLoginPayload(appConfig),
+      ...getConversationTitleCapabilities(appConfig?.interfaceConfig),
+      conversationListLimits,
+      sharedLinksSnapshotFilesEnabled: sharedLinksEnabled && isFileSnapshotEnabled(appConfig),
       socialLogins: appConfig?.registration?.socialLogins ?? defaultSocialLogins,
-      interface: appConfig?.interfaceConfig,
+      projects: appConfig?.projects,
+      interface: withSafePolicyLinks(appConfig?.interfaceConfig),
+      titleGenerationTiming: resolveTitleTiming({
+        appConfig,
+        endpoint: EModelEndpoint.agents,
+      }),
       turnstile: appConfig?.turnstileConfig,
-      modelSpecs: sanitizeModelSpecs(appConfig?.modelSpecs),
+      modelSpecs: sanitizeModelSpecs(excludeHiddenModelSpecs(appConfig?.modelSpecs)),
       balance: balanceConfig,
       bundlerURL: process.env.SANDPACK_BUNDLER_URL,
       staticBundlerURL: process.env.SANDPACK_STATIC_BUNDLER_URL,
@@ -197,7 +338,32 @@ router.get('/', async function (req, res) {
       conversationImportMaxFileSize: process.env.CONVERSATION_IMPORT_MAX_FILE_SIZE_BYTES
         ? parseInt(process.env.CONVERSATION_IMPORT_MAX_FILE_SIZE_BYTES, 10)
         : 0,
+      langfuseFanoutEnabled,
+      ...getLangfuseSettingsAccess(canManageLangfuse),
+      langfusePromptManageAccess,
+      insightsEnabled: isEnabled(process.env.ENABLE_INSIGHTS),
+      /** Lets the client skip the pull request lookup entirely when the feature is off. */
+      ...resolvePullRequestCapabilities(appConfig, process.env),
+      compactionEnabled: appConfig?.summarization?.enabled !== false,
+      ...(codeEnvironmentDecisionVersion != null ? { codeEnvironmentDecisionVersion } : {}),
+      mcpApps: resolveMCPAppsPolicy(
+        appConfig?.mcpSettings?.apps,
+        appConfig?.mcpAppSandbox ?? DEFAULT_MCP_APP_CSP_LIMITS,
+        appConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+        appConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+        appConfig?.mcpAppSandbox?.url,
+        appConfig?.mcpAppSandbox?.maxActiveViews,
+        appConfig?.mcpAppSandbox?.maxActionPreviewChars,
+        appConfig?.mcpAppSandbox?.operationLimits,
+      ),
+      ...codeEnvironmentMoveCapabilities,
+      ...resolveCodeWorkspaceInheritanceCapability(process.env.CODE_ENVIRONMENT_DECISION_VERSION),
+      ...(codeEnvironmentTransitionVersion != null ? { codeEnvironmentTransitionVersion } : {}),
       ...(cloudFront ? { cloudFront } : {}),
+      rum: getRumConfig(appConfig?.config?.telemetry),
+      clientLimits: getClientLimits(appConfig?.config?.clientLimits),
+      fileUploadSseEnabled: isEnabled(process.env.FILE_UPLOAD_SSE_ENABLED),
+      endpointsDropParamsMap: endpointsDropParamsMap,
     };
 
     const webSearch = buildWebSearchConfig(appConfig);
@@ -205,15 +371,24 @@ router.get('/', async function (req, res) {
       payload.webSearch = webSearch;
     }
 
-    if (!payload.allowAccountDeletion) {
+    const buildInfo = buildBuildInfoPayload(appConfig?.interfaceConfig);
+    if (buildInfo) {
+      payload.buildInfo = buildInfo;
+    }
+
+    const adminPanelURL = process.env.ADMIN_PANEL_URL;
+    if (adminPanelURL || !payload.allowAccountDeletion) {
       try {
         const userId = req.user.id ?? req.user._id?.toString();
         if (userId) {
-          const canDelete = await hasCapability(
+          const hasAdminAccess = await hasCapability(
             { id: userId, role: req.user.role ?? '', tenantId: req.user.tenantId },
             SystemCapabilities.ACCESS_ADMIN,
           );
-          if (canDelete) {
+          if (hasAdminAccess && adminPanelURL) {
+            payload.adminPanelURL = adminPanelURL;
+          }
+          if (hasAdminAccess && !payload.allowAccountDeletion) {
             payload.allowAccountDeletion = true;
           }
         }
@@ -225,7 +400,7 @@ router.get('/', async function (req, res) {
     return res.status(200).send(payload);
   } catch (err) {
     logger.error('Error in startup config', err);
-    return res.status(500).send({ error: err.message });
+    return res.status(500).send({ error: 'Failed to load startup config' });
   }
 });
 

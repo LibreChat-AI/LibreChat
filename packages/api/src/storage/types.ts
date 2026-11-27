@@ -1,5 +1,5 @@
 import type { TFile } from 'librechat-data-provider';
-import type { ServerRequest } from '~/types';
+import type { ServerRequest } from '~/types/http';
 
 export interface SaveBufferParams {
   userId: string;

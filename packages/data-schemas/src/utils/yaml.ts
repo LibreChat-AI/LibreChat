@@ -10,6 +10,10 @@
  */
 export function stripYamlTrailingComment(value: string): string {
   if (value.trimStart().startsWith('#')) return '';
-  const match = value.match(/^(.*?)\s+#.*$/);
-  return match ? match[1] : value;
+  for (let i = 1; i < value.length; i++) {
+    if (value[i] === '#' && /\s/.test(value[i - 1])) {
+      return value.slice(0, i).trimEnd();
+    }
+  }
+  return value;
 }

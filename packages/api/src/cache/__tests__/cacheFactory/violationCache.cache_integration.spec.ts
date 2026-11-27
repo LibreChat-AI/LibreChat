@@ -1,3 +1,5 @@
+import { closeRedisClients } from '../redisClients.helper';
+
 interface ViolationData {
   count?: number;
   timestamp?: number;
@@ -57,6 +59,7 @@ describe('violationCache', () => {
   });
 
   afterEach(async () => {
+    await closeRedisClients();
     process.env = originalEnv;
     jest.resetModules();
   });

@@ -1,4 +1,6 @@
-export default function SquirclePlusIcon() {
+import { JSX } from 'react/jsx-runtime';
+
+export default function SquirclePlusIcon(): JSX.Element {
   return (
     <svg
       stroke="currentColor"

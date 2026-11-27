@@ -1,24 +1,29 @@
 import { useEffect, memo } from 'react';
 import { usePanelRef } from 'react-resizable-panels';
 import { ResizableHandleAlt, ResizablePanel } from '@librechat/client';
+import useDirection from '~/hooks/Nav/useDirection';
 
 interface ArtifactsPanelProps {
-  artifacts: React.ReactNode | null;
+  panel: React.ReactNode | null;
   minSizeMain: string;
   shouldRender: boolean;
   onRenderChange: (shouldRender: boolean) => void;
+  /** Rendered before the messages panel (RTL), so the handle follows the panel. */
+  reversed?: boolean;
 }
 
 const ArtifactsPanel = memo(function ArtifactsPanel({
-  artifacts,
+  panel,
   minSizeMain,
   shouldRender,
   onRenderChange,
+  reversed = false,
 }: ArtifactsPanelProps) {
   const artifactsPanelRef = usePanelRef();
+  const direction = useDirection();
 
   useEffect(() => {
-    if (artifacts != null) {
+    if (panel != null) {
       onRenderChange(true);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -28,17 +33,17 @@ const ArtifactsPanel = memo(function ArtifactsPanel({
     } else if (shouldRender) {
       onRenderChange(false);
     }
-  }, [artifacts, shouldRender, onRenderChange, artifactsPanelRef]);
+  }, [panel, shouldRender, onRenderChange, artifactsPanelRef]);
 
   if (!shouldRender) {
     return null;
   }
 
+  const handle = panel != null && <ResizableHandleAlt withHandle className="text-text-primary" />;
+
   return (
     <>
-      {artifacts != null && (
-        <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
-      )}
+      {!reversed && handle}
       <ResizablePanel
         defaultSize="50"
         maxSize="70"
@@ -47,9 +52,11 @@ const ArtifactsPanel = memo(function ArtifactsPanel({
         minSize={minSizeMain}
         panelRef={artifactsPanelRef}
         id="artifacts-panel"
+        dir={direction}
       >
-        <div className="h-full min-w-[400px] overflow-hidden">{artifacts}</div>
+        <div className="h-full min-w-[min(25rem,100%)] overflow-hidden">{panel}</div>
       </ResizablePanel>
+      {reversed && handle}
     </>
   );
 });

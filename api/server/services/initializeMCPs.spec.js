@@ -27,7 +27,16 @@ jest.mock('@librechat/data-schemas', () => ({
 
 // Mock config functions
 const mockGetAppConfig = jest.fn();
+const mockSyncStaticTools = jest.fn();
 const mockMergeAppTools = jest.fn();
+const mockInvalidateCachedTools = jest.fn();
+const mockStartMCPAuthorizationFenceRetryWorker = jest.fn();
+
+jest.mock('./MCPAuthorizationFenceRetry', () => ({
+  get startMCPAuthorizationFenceRetryWorker() {
+    return mockStartMCPAuthorizationFenceRetryWorker;
+  },
+}));
 
 jest.mock('./Config', () => ({
   get getAppConfig() {
@@ -36,12 +45,20 @@ jest.mock('./Config', () => ({
   get mergeAppTools() {
     return mockMergeAppTools;
   },
+  get syncStaticTools() {
+    return mockSyncStaticTools;
+  },
+  get invalidateCachedTools() {
+    return mockInvalidateCachedTools;
+  },
 }));
 
 // Mock MCP singletons
 const mockCreateMCPServersRegistry = jest.fn();
 const mockCreateMCPManager = jest.fn();
 const mockMCPManagerInstance = {
+  connectAppServers: jest.fn(),
+  disconnectAppServers: jest.fn(),
   getAppToolFunctions: jest.fn(),
 };
 
@@ -51,6 +68,71 @@ jest.mock('~/config', () => ({
   },
   get createMCPManager() {
     return mockCreateMCPManager;
+  },
+}));
+
+const mockSetMCPToolsChangedHandler = jest.fn();
+const mockSetMCPToolsChangedGenerationHandler = jest.fn();
+const mockSetMCPToolsChangedGenerationRenewalHandler = jest.fn();
+const mockSetMCPToolsChangedRevisionHandler = jest.fn();
+const mockRegisterShutdownTask = jest.fn();
+const mockAppBindingCodec = { create: jest.fn(), verify: jest.fn() };
+const mockUpdateMCPServerTools = jest.fn();
+const mockGetMCPToolsCacheGeneration = jest.fn();
+const mockRenewMCPToolsCacheGeneration = jest.fn();
+const mockGetNextAppToolsPublicationRevision = jest.fn();
+const mockGetDeploymentPluginMcpServers = jest.fn(() => ({}));
+const mockPolicyResolver = jest.fn();
+const mockCreateMCPPolicyResolver = jest.fn(() => mockPolicyResolver);
+const mockReportStoredMCPTombstones = jest.fn();
+const mockListConfigTombstones = jest.fn();
+
+jest.mock('~/models', () => ({
+  get listConfigTombstones() {
+    return mockListConfigTombstones;
+  },
+}));
+
+jest.mock('@librechat/api', () => ({
+  createMCPAppBindingCodec: jest.fn(() => mockAppBindingCodec),
+  get createMCPPolicyResolver() {
+    return mockCreateMCPPolicyResolver;
+  },
+  get reportStoredMCPTombstones() {
+    return mockReportStoredMCPTombstones;
+  },
+  get registerShutdownTask() {
+    return mockRegisterShutdownTask;
+  },
+  get getDeploymentPluginMcpServers() {
+    return mockGetDeploymentPluginMcpServers;
+  },
+  get setMCPToolsChangedHandler() {
+    return mockSetMCPToolsChangedHandler;
+  },
+  get setMCPToolsChangedGenerationHandler() {
+    return mockSetMCPToolsChangedGenerationHandler;
+  },
+  get setMCPToolsChangedGenerationRenewalHandler() {
+    return mockSetMCPToolsChangedGenerationRenewalHandler;
+  },
+  get setMCPToolsChangedRevisionHandler() {
+    return mockSetMCPToolsChangedRevisionHandler;
+  },
+}));
+
+jest.mock('./Config/mcp', () => ({
+  get updateMCPServerTools() {
+    return mockUpdateMCPServerTools;
+  },
+  get getMCPToolsCacheGeneration() {
+    return mockGetMCPToolsCacheGeneration;
+  },
+  get renewMCPToolsCacheGeneration() {
+    return mockRenewMCPToolsCacheGeneration;
+  },
+  get getNextAppToolsPublicationRevision() {
+    return mockGetNextAppToolsPublicationRevision;
   },
 }));
 
@@ -65,7 +147,56 @@ describe('initializeMCPs', () => {
     mockCreateMCPServersRegistry.mockReturnValue(undefined);
     mockCreateMCPManager.mockResolvedValue(mockMCPManagerInstance);
     mockMCPManagerInstance.getAppToolFunctions.mockResolvedValue({});
+    mockMCPManagerInstance.connectAppServers.mockResolvedValue(undefined);
+    mockMCPManagerInstance.disconnectAppServers.mockResolvedValue(undefined);
+    mockSyncStaticTools.mockResolvedValue(undefined);
     mockMergeAppTools.mockResolvedValue(undefined);
+    mockReportStoredMCPTombstones.mockResolvedValue(undefined);
+  });
+
+  describe('stored MCP tombstones', () => {
+    it('reports the tombstoned profiles against the librechat.yaml servers once registry is ready', async () => {
+      const mcpConfig = { github: { type: 'streamable-http', url: 'https://github.example.com' } };
+      const profiles = [
+        { principalType: 'role', principalId: 'USER', tombstones: ['mcpServers.github'] },
+      ];
+      mockGetAppConfig.mockResolvedValue({ mcpConfig });
+      mockListConfigTombstones.mockResolvedValue(profiles);
+
+      await initializeMCPs();
+
+      expect(mockReportStoredMCPTombstones).toHaveBeenCalledWith(expect.any(Function), mcpConfig);
+      const [listProfiles] = mockReportStoredMCPTombstones.mock.calls[0];
+      await expect(listProfiles('mcpServers')).resolves.toBe(profiles);
+      expect(mockListConfigTombstones).toHaveBeenCalledWith('mcpServers');
+      expect(mockCreateMCPServersRegistry.mock.invocationCallOrder[0]).toBeLessThan(
+        mockReportStoredMCPTombstones.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('connects the MCP servers without waiting for the report, and resolves once it is logged', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        mcpConfig: { github: { type: 'streamable-http', url: 'https://github.example.com' } },
+      });
+      let finishReport;
+      mockReportStoredMCPTombstones.mockReturnValue(
+        new Promise((resolve) => {
+          finishReport = resolve;
+        }),
+      );
+      let settled = false;
+
+      const initialized = initializeMCPs().then(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockMCPManagerInstance.connectAppServers).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      finishReport();
+      await initialized;
+      expect(settled).toBe(true);
+    });
   });
 
   describe('MCPServersRegistry initialization', () => {
@@ -82,6 +213,15 @@ describe('initializeMCPs', () => {
         expect.anything(), // mongoose
         ['localhost'],
         undefined,
+        expect.any(Function), // per-request allowlist resolver
+        {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
       );
     });
 
@@ -98,6 +238,15 @@ describe('initializeMCPs', () => {
         expect.anything(),
         allowedDomains,
         undefined,
+        expect.any(Function),
+        {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
       );
     });
 
@@ -113,7 +262,82 @@ describe('initializeMCPs', () => {
         expect.anything(),
         undefined,
         undefined,
+        expect.any(Function),
+        {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
       );
+    });
+
+    it.each([
+      [
+        true,
+        {
+          enabled: true,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
+      ],
+      [
+        false,
+        {
+          enabled: false,
+          legacyHtmlEnabled: false,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
+      ],
+    ])('normalizes the startup MCP Apps policy for apps=%s', async (apps, expected) => {
+      mockGetAppConfig.mockResolvedValue({ mcpConfig: null, mcpSettings: { apps } });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPServersRegistry.mock.calls[0][4]).toEqual(expected);
+    });
+
+    it('publishes the base admission ceiling once to the registry policy', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        mcpConfig: null,
+        mcpSettings: { apps: true },
+        mcpAppSandbox: {
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+          maxAdmissionRequestsPerMinute: 480,
+        },
+      });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPServersRegistry.mock.calls[0][4]).toEqual({
+        enabled: true,
+        legacyHtmlEnabled: true,
+        maxPersistedAppBytes: 1048576,
+        maxAdmissionRequestsPerMinute: 480,
+        maxActiveViews: 3,
+        maxActionPreviewChars: 16384,
+        sandboxUrl: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+      });
+    });
+
+    it('wires the per-request policy resolver over the merged (non-baseOnly) config reader', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        mcpConfig: null,
+        mcpSettings: { allowedDomains: ['yaml.com'] },
+      });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPPolicyResolver).toHaveBeenCalledWith(mockGetAppConfig);
+      expect(mockCreateMCPServersRegistry.mock.calls[0][3]).toBe(mockPolicyResolver);
     });
 
     it('should throw and log error if MCPServersRegistry initialization fails', async () => {
@@ -141,7 +365,14 @@ describe('initializeMCPs', () => {
 
       // MCPManager should be created with empty object when no configured servers
       expect(mockCreateMCPManager).toHaveBeenCalledTimes(1);
-      expect(mockCreateMCPManager).toHaveBeenCalledWith({});
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(
+        {},
+        {
+          catalogRecoveryMaxStateEntries: undefined,
+          catalogRecoveryMaxDetachedDiscoveries: undefined,
+          appBindingCodec: mockAppBindingCodec,
+        },
+      );
     });
 
     it('should initialize MCPManager with configured servers when provided', async () => {
@@ -153,7 +384,71 @@ describe('initializeMCPs', () => {
 
       await initializeMCPs();
 
-      expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers);
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers, {
+        catalogRecoveryMaxStateEntries: undefined,
+        catalogRecoveryMaxDetachedDiscoveries: undefined,
+        appBindingCodec: mockAppBindingCodec,
+      });
+    });
+
+    it('sets process-wide recovery capacity from the base config', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        mcpConfig: {},
+        mcpSettings: {
+          catalogRecovery: {
+            maxStateEntries: 2500,
+            maxDetachedDiscoveries: 8,
+            authorizationFenceRetryIntervalMs: 15_000,
+            authorizationFenceRetryBatchSize: 250,
+            authorizationFenceTimeoutMs: 750,
+          },
+        },
+      });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(
+        {},
+        {
+          catalogRecoveryMaxStateEntries: 2500,
+          catalogRecoveryMaxDetachedDiscoveries: 8,
+          appBindingCodec: mockAppBindingCodec,
+        },
+      );
+      expect(mockStartMCPAuthorizationFenceRetryWorker).toHaveBeenCalledWith(
+        mockInvalidateCachedTools,
+        { intervalMs: 15_000, batchSize: 250, attemptTimeoutMs: 750 },
+      );
+    });
+
+    it('should register app connections for graceful shutdown', async () => {
+      mockGetAppConfig.mockResolvedValue({ mcpConfig: null });
+
+      await initializeMCPs();
+
+      expect(mockRegisterShutdownTask).toHaveBeenCalledWith(
+        'MCP app connections',
+        expect.any(Function),
+      );
+      const shutdown = mockRegisterShutdownTask.mock.calls[0][1];
+      await shutdown();
+      expect(mockMCPManagerInstance.disconnectAppServers).toHaveBeenCalledTimes(1);
+    });
+
+    it('should wire app publication revision allocation into the cache store', async () => {
+      mockGetAppConfig.mockResolvedValue({ mcpConfig: null });
+      mockGetNextAppToolsPublicationRevision.mockResolvedValue('9');
+
+      await initializeMCPs();
+
+      const allocateRevision = mockSetMCPToolsChangedRevisionHandler.mock.calls[0][0];
+      await expect(
+        allocateRevision({ serverName: 'dynamic', configGeneration: 'config-generation' }),
+      ).resolves.toBe('9');
+      expect(mockGetNextAppToolsPublicationRevision).toHaveBeenCalledWith(
+        'dynamic',
+        'config-generation',
+      );
     });
 
     it('should throw and log error if MCPManager initialization fails', async () => {
@@ -170,21 +465,24 @@ describe('initializeMCPs', () => {
   });
 
   describe('Tool merging behavior', () => {
-    it('should NOT merge tools when no configured servers exist', async () => {
+    it('should skip app catalog discovery when no configured servers exist', async () => {
       mockGetAppConfig.mockResolvedValue({
         mcpConfig: null, // No configured servers
+        availableTools: { builtin: { type: 'function' } },
       });
 
       await initializeMCPs();
 
       expect(mockMCPManagerInstance.getAppToolFunctions).not.toHaveBeenCalled();
       expect(mockMergeAppTools).not.toHaveBeenCalled();
+      expect(mockSyncStaticTools).toHaveBeenCalledWith({ builtin: { type: 'function' } });
+      expect(mockMCPManagerInstance.connectAppServers).not.toHaveBeenCalled();
       expect(logger.debug).toHaveBeenCalledWith(
         '[MCP] No servers configured. MCPManager ready for UI-based servers.',
       );
     });
 
-    it('should NOT merge tools when mcpConfig is empty object', async () => {
+    it('should skip app catalog discovery when mcpConfig is empty', async () => {
       mockGetAppConfig.mockResolvedValue({
         mcpConfig: {}, // Empty object
       });
@@ -193,6 +491,8 @@ describe('initializeMCPs', () => {
 
       expect(mockMCPManagerInstance.getAppToolFunctions).not.toHaveBeenCalled();
       expect(mockMergeAppTools).not.toHaveBeenCalled();
+      expect(mockSyncStaticTools).toHaveBeenCalledWith({});
+      expect(mockMCPManagerInstance.connectAppServers).not.toHaveBeenCalled();
       expect(logger.debug).toHaveBeenCalledWith(
         '[MCP] No servers configured. MCPManager ready for UI-based servers.',
       );
@@ -212,7 +512,11 @@ describe('initializeMCPs', () => {
       await initializeMCPs();
 
       expect(mockMCPManagerInstance.getAppToolFunctions).toHaveBeenCalledTimes(1);
-      expect(mockMergeAppTools).toHaveBeenCalledWith(mcpTools);
+      expect(mockMergeAppTools).toHaveBeenCalledWith(mcpTools, {});
+      expect(mockMCPManagerInstance.connectAppServers).toHaveBeenCalledTimes(1);
+      expect(mockMergeAppTools.mock.invocationCallOrder[0]).toBeLessThan(
+        mockMCPManagerInstance.connectAppServers.mock.invocationCallOrder[0],
+      );
       expect(logger.info).toHaveBeenCalledWith(
         '[MCP] Initialized with 1 configured server and 2 tools.',
       );
@@ -226,10 +530,20 @@ describe('initializeMCPs', () => {
       await initializeMCPs();
 
       // Should use empty object fallback
-      expect(mockMergeAppTools).toHaveBeenCalledWith({});
+      expect(mockMergeAppTools).toHaveBeenCalledWith({}, {});
       expect(logger.info).toHaveBeenCalledWith(
         '[MCP] Initialized with 1 configured server and 0 tools.',
       );
+    });
+
+    it('should connect app servers when startup cache synchronization fails', async () => {
+      const mcpServers = { 'test-server': { type: 'sse', url: 'http://localhost:3001' } };
+      mockGetAppConfig.mockResolvedValue({ mcpConfig: mcpServers });
+      mockMergeAppTools.mockRejectedValueOnce(new Error('cache lock timed out'));
+
+      await expect(initializeMCPs()).rejects.toThrow('cache lock timed out');
+
+      expect(mockMCPManagerInstance.connectAppServers).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -284,7 +598,56 @@ describe('initializeMCPs', () => {
       expect(mockCreateMCPManager).toHaveBeenCalledTimes(1);
 
       // Verify manager was created with empty config (not null/undefined)
-      expect(mockCreateMCPManager).toHaveBeenCalledWith({});
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(
+        {},
+        {
+          catalogRecoveryMaxStateEntries: undefined,
+          catalogRecoveryMaxDetachedDiscoveries: undefined,
+          appBindingCodec: mockAppBindingCodec,
+        },
+      );
     });
+  });
+});
+
+describe('refreshChangedServerTools', () => {
+  const { refreshChangedServerTools } = require('./initializeMCPs');
+  const event = {
+    serverName: 'dynamic',
+    serverConfig: { type: 'streamable-http', url: 'https://mcp.example.com' },
+    tools: [{ name: 'tool', inputSchema: { type: 'object' } }],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('publishes the complete refreshed snapshot in its original cache scope', async () => {
+    await refreshChangedServerTools({ ...event, userId: 'user-1' });
+
+    expect(mockUpdateMCPServerTools).toHaveBeenCalledWith({ ...event, userId: 'user-1' });
+    expect(logger.info).toHaveBeenCalledWith(
+      '[MCP][dynamic] Tool list changed; refreshed 1 tool for user user-1',
+    );
+  });
+
+  it('publishes an empty app-level snapshot so removals take effect', async () => {
+    await refreshChangedServerTools({ ...event, tools: [] });
+
+    expect(mockUpdateMCPServerTools).toHaveBeenCalledWith({ ...event, tools: [] });
+  });
+
+  it('is registered as the tools-changed handler during initialization', async () => {
+    mockGetAppConfig.mockResolvedValue({ mcpConfig: null, mcpSettings: {} });
+
+    await initializeMCPs();
+
+    expect(mockSetMCPToolsChangedHandler).toHaveBeenCalledWith(refreshChangedServerTools);
+    expect(mockSetMCPToolsChangedGenerationHandler).toHaveBeenCalledWith(
+      mockGetMCPToolsCacheGeneration,
+    );
+    expect(mockSetMCPToolsChangedGenerationRenewalHandler).toHaveBeenCalledWith(
+      mockRenewMCPToolsCacheGeneration,
+    );
   });
 });

@@ -8,24 +8,26 @@ To add a new language to LibreChat, follow these steps:
 
 ### 1. Add the Language to Locize Project
 
-- Navigate to the [LibreChat locize project](https://www.locize.app/cat/62uyy7c9), 
+- Navigate to the [LibreChat locize project](https://www.locize.app/cat/62uyy7c9),
 - Click the "ADD LANGUAGE" button, typically found within the "..." menu of the "Start to translate" card on the project overview page.
 
 ### 2. Update the Language Selector Component
 
-Edit `client/src/components/Nav/SettingsTabs/General/General.tsx` and add your new language option to the `languageOptions` array:
+Edit `client/src/components/Appearance/Selectors.tsx` and add your new language option to the `languageOptions` array:
 
 ```typescript
 { value: 'language-code', label: localize('com_nav_lang_language_name') },
 ```
 
 Example:
+
 ```typescript
 { value: 'bo', label: localize('com_nav_lang_tibetan') },
 { value: 'uk-UA', label: localize('com_nav_lang_ukrainian') },
 ```
 
 **Note:** Use the appropriate language code format:
+
 - Use simple codes (e.g., `bo`) for languages without regional variants
 - Use region-specific codes (e.g., `uk-UA`) when needed
 
@@ -38,6 +40,7 @@ In `client/src/locales/en/translation.json`, add the corresponding localization 
 ```
 
 Example:
+
 ```json
 "com_nav_lang_tibetan": "བོད་སྐད་",
 "com_nav_lang_ukrainian": "Українська",
@@ -56,11 +59,11 @@ mkdir -p client/src/locales/[language-code]
 Create `client/src/locales/[language-code]/translation.json` with an empty JSON object:
 
 ```json
-{
-}
+{}
 ```
 
 Example:
+
 - `client/src/locales/bo/translation.json`
 - `client/src/locales/uk/translation.json`
 
@@ -69,11 +72,13 @@ Example:
 Update `client/src/locales/i18n.ts`:
 
 1. Import the new translation file:
+
 ```typescript
 import translationLanguageCode from './language-code/translation.json';
 ```
 
 2. Add it to the `resources` object:
+
 ```typescript
 export const resources = {
   // ... existing languages
@@ -82,6 +87,7 @@ export const resources = {
 ```
 
 Example:
+
 ```typescript
 import translationBo from './bo/translation.json';
 import translationUk from './uk/translation.json';

@@ -1,0 +1,67 @@
+import type { TConversation } from 'librechat-data-provider';
+
+export type ConversationRenderProps = {
+  conversation: TConversation;
+  isGenerating?: boolean;
+  /** Announced on the row's focusable element, and it appears only once the
+   *  owning list can act on it, so a change here has to reach the DOM. */
+  keyShortcuts?: string;
+  showProjectBadge?: boolean;
+};
+
+export function areConversationIconFieldsEqual(
+  prevConversation: TConversation,
+  nextConversation: TConversation,
+) {
+  return (
+    prevConversation.endpoint === nextConversation.endpoint &&
+    prevConversation.endpointType === nextConversation.endpointType &&
+    prevConversation.iconURL === nextConversation.iconURL &&
+    prevConversation.model === nextConversation.model &&
+    prevConversation.modelLabel === nextConversation.modelLabel &&
+    prevConversation.chatGptLabel === nextConversation.chatGptLabel &&
+    prevConversation.spec === nextConversation.spec &&
+    prevConversation.agent_id === nextConversation.agent_id &&
+    prevConversation.assistant_id === nextConversation.assistant_id
+  );
+}
+
+export function areConversationListItemFieldsEqual(
+  prevConversation: TConversation,
+  nextConversation: TConversation,
+) {
+  return (
+    areConversationIconFieldsEqual(prevConversation, nextConversation) &&
+    prevConversation.conversationId === nextConversation.conversationId &&
+    prevConversation.title === nextConversation.title &&
+    prevConversation.chatProjectId === nextConversation.chatProjectId &&
+    prevConversation.pinned === nextConversation.pinned &&
+    prevConversation.isArchived === nextConversation.isArchived &&
+    prevConversation.isShared === nextConversation.isShared &&
+    prevConversation.createdAt === nextConversation.createdAt &&
+    prevConversation.updatedAt === nextConversation.updatedAt &&
+    /* Marking a conversation seen deliberately leaves `updatedAt` alone so the sidebar order
+       holds, which means these have to be compared in their own right. */
+    prevConversation.lastResponseAt === nextConversation.lastResponseAt &&
+    prevConversation.lastResponseIsManual === nextConversation.lastResponseIsManual &&
+    prevConversation.isMarkedUnread === nextConversation.isMarkedUnread &&
+    prevConversation.lastSeenAt === nextConversation.lastSeenAt &&
+    /* Attaching or detaching a workspace changes nothing else on the row, but it decides whether
+       the row asks for a pull request, so it has to reach the render. */
+    prevConversation.codeDecisionListed === nextConversation.codeDecisionListed &&
+    prevConversation.codeEnvironmentMode === nextConversation.codeEnvironmentMode &&
+    prevConversation.codeWorkspaces?.length === nextConversation.codeWorkspaces?.length
+  );
+}
+
+export function areConversationRenderPropsEqual(
+  prevProps: ConversationRenderProps,
+  nextProps: ConversationRenderProps,
+) {
+  return (
+    areConversationListItemFieldsEqual(prevProps.conversation, nextProps.conversation) &&
+    prevProps.isGenerating === nextProps.isGenerating &&
+    prevProps.keyShortcuts === nextProps.keyShortcuts &&
+    prevProps.showProjectBadge === nextProps.showProjectBadge
+  );
+}

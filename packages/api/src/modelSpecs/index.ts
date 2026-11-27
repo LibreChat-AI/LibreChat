@@ -1,6 +1,8 @@
 import {
   parseCompactConvo,
   replaceSpecialVars,
+  resolveModelSpecEndpoint,
+  resolveSpecSkillsEnabled,
   type EModelEndpoint,
   type TConversation,
   type TModelSpec,
@@ -10,7 +12,14 @@ import {
   type TUser,
 } from 'librechat-data-provider';
 
-export const PRIVATE_MODEL_SPEC_PRESET_FIELDS = [
+export const PRIVATE_MODEL_SPEC_PRESET_FIELDS: readonly [
+  'promptPrefix',
+  'instructions',
+  'additional_instructions',
+  'system',
+  'context',
+  'examples',
+] = [
   'promptPrefix',
   'instructions',
   'additional_instructions',
@@ -22,6 +31,10 @@ export const PRIVATE_MODEL_SPEC_PRESET_FIELDS = [
 export type PrivateModelSpecPresetField = (typeof PRIVATE_MODEL_SPEC_PRESET_FIELDS)[number];
 export type ModelSpecParsedBody = Partial<TConversation | TPreset | TModelSpecPreset> &
   Record<string, unknown>;
+
+export const ENFORCED_MODEL_SPEC_REQUEST_FIELDS: readonly ['chatProjectId'] = [
+  'chatProjectId',
+] as const satisfies readonly (keyof ModelSpecParsedBody)[];
 
 export type ApplyModelSpecPresetParams = {
   modelSpec: TModelSpec;
@@ -35,6 +48,10 @@ export type ApplyModelSpecPresetParams = {
 export type ApplyModelSpecPresetResult = {
   parsedBody: ModelSpecParsedBody;
   appliedPrivateFields: Set<PrivateModelSpecPresetField>;
+  /** The keys an enforced spec locks: exactly the fields its preset defines.
+   *  Refusal rules downstream (reasoning-override validation) key off this set,
+   *  so its derivation lives with the facade rather than in route wiring. */
+  enforcedFields: Set<string>;
 };
 
 function hasModelSpecValue(field: PrivateModelSpecPresetField, value: unknown): boolean {
@@ -57,15 +74,30 @@ function hasModelSpecValue(field: PrivateModelSpecPresetField, value: unknown): 
   return value.length > 0;
 }
 
+function pickEnforcedModelSpecRequestFields(parsedBody: ModelSpecParsedBody): ModelSpecParsedBody {
+  const requestFields: ModelSpecParsedBody = {};
+
+  for (const field of ENFORCED_MODEL_SPEC_REQUEST_FIELDS) {
+    if (parsedBody[field] !== undefined) {
+      requestFields[field] = parsedBody[field];
+    }
+  }
+
+  return requestFields;
+}
+
 function mergeModelSpecPreset(
   modelSpec: TModelSpec,
   parsedBody: ModelSpecParsedBody,
   { includePresetDefaults = false }: Pick<ApplyModelSpecPresetParams, 'includePresetDefaults'> = {},
-): ApplyModelSpecPresetResult {
+): Pick<ApplyModelSpecPresetResult, 'parsedBody' | 'appliedPrivateFields'> {
   const preset = modelSpec.preset;
+  const requestFields = includePresetDefaults
+    ? pickEnforcedModelSpecRequestFields(parsedBody)
+    : parsedBody;
   const merged = {
+    ...requestFields,
     ...(includePresetDefaults ? preset : {}),
-    ...parsedBody,
     spec: modelSpec.name,
   } as ModelSpecParsedBody;
   const appliedPrivateFields = new Set<PrivateModelSpecPresetField>();
@@ -104,7 +136,37 @@ export function isModelSpecEndpointMatch(
   modelSpec: Pick<TModelSpec, 'preset'> | undefined,
   endpoint: string | null | undefined,
 ): boolean {
-  return Boolean(modelSpec && endpoint === modelSpec.preset?.endpoint);
+  return Boolean(modelSpec && endpoint === resolveModelSpecEndpoint(modelSpec));
+}
+
+export type ModelSpecEndpointResolution =
+  | { modelSpec: TModelSpec }
+  | { error: 'invalid-model-spec' | 'model-spec-mismatch' };
+
+/**
+ * Resolves the selected spec only when it serves the requested endpoint.
+ * Authorization and endpoint construction use this same result so a preset
+ * cannot change the resource identity after its access check has completed.
+ */
+export function resolveModelSpecForEndpoint({
+  modelSpecs,
+  spec,
+  endpoint,
+}: {
+  modelSpecs: Pick<TSpecsConfig, 'list'> | undefined;
+  spec: string;
+  endpoint: string | null | undefined;
+}): ModelSpecEndpointResolution {
+  const modelSpec = findModelSpecByName(modelSpecs, spec);
+  if (!modelSpec) {
+    return { error: 'invalid-model-spec' };
+  }
+
+  if (!isModelSpecEndpointMatch(modelSpec, endpoint)) {
+    return { error: 'model-spec-mismatch' };
+  }
+
+  return { modelSpec };
 }
 
 export function applyModelSpecPreset({
@@ -138,7 +200,11 @@ export function applyModelSpecPreset({
     modelSpecParsedBody.iconURL = modelSpec.iconURL;
   }
 
-  return { parsedBody: modelSpecParsedBody, appliedPrivateFields };
+  return {
+    parsedBody: modelSpecParsedBody,
+    appliedPrivateFields,
+    enforcedFields: new Set(Object.keys(modelSpec.preset)),
+  };
 }
 
 export function resolveModelSpecPromptPrefixVariables<T extends { promptPrefix?: string | null }>(
@@ -160,6 +226,25 @@ export function resolveModelSpecPromptPrefixVariables<T extends { promptPrefix?:
   };
 }
 
+/**
+ * Drops specs marked `showInMenu: false` so they are not advertised to clients
+ * (the model selector menu and the startup config). Such specs remain resolvable
+ * server-side by name, so a caller that sets `spec: "<name>"` can still use them.
+ * Returns the config unchanged when there is no list. Apply before `sanitizeModelSpecs`.
+ */
+export function excludeHiddenModelSpecs<T extends Partial<TSpecsConfig> | null | undefined>(
+  modelSpecs: T,
+): T {
+  if (!modelSpecs?.list || !Array.isArray(modelSpecs.list)) {
+    return modelSpecs;
+  }
+
+  return {
+    ...modelSpecs,
+    list: modelSpecs.list.filter((modelSpec) => modelSpec?.showInMenu !== false),
+  } as T;
+}
+
 export function sanitizeModelSpecs<T extends Partial<TSpecsConfig> | null | undefined>(
   modelSpecs: T,
 ): T {
@@ -170,9 +255,43 @@ export function sanitizeModelSpecs<T extends Partial<TSpecsConfig> | null | unde
   return {
     ...modelSpecs,
     list: modelSpecs.list.map((modelSpec) => {
-      const preset = modelSpec?.preset;
-      if (!preset || typeof preset !== 'object') {
+      if (!modelSpec || typeof modelSpec !== 'object') {
         return modelSpec;
+      }
+
+      const preset = modelSpec?.preset;
+      const sanitizedModelSpec = { ...modelSpec };
+      /** Skill NAMES reveal the catalog, so they never reach a client — but the
+       *  fact that a spec enables skills does, because the chat badge is seeded
+       *  from it and an absent field is indistinguishable from `skills: false`.
+       *  Narrowed like `subagents` below rather than deleted, and narrowed
+       *  through the same predicate the loaders resolve with so the badge and
+       *  the server can never disagree — an empty allowlist included, which
+       *  scopes to no skills yet still permits skill authoring. */
+      const specSkills = (sanitizedModelSpec as { skills?: TModelSpec['skills'] }).skills;
+      if (Array.isArray(specSkills)) {
+        (sanitizedModelSpec as { skills?: TModelSpec['skills'] }).skills = resolveSpecSkillsEnabled(
+          undefined,
+          specSkills,
+        );
+      }
+      const subagents = sanitizedModelSpec.subagents;
+      if (subagents && typeof subagents === 'object') {
+        const sanitizedSubagents: TModelSpec['subagents'] = {};
+        if (subagents.enabled !== undefined) {
+          sanitizedSubagents.enabled = subagents.enabled;
+        }
+        if (subagents.allowSelf !== undefined) {
+          sanitizedSubagents.allowSelf = subagents.allowSelf;
+        }
+        if (Object.keys(sanitizedSubagents).length > 0) {
+          sanitizedModelSpec.subagents = sanitizedSubagents;
+        } else {
+          delete sanitizedModelSpec.subagents;
+        }
+      }
+      if (!preset || typeof preset !== 'object') {
+        return sanitizedModelSpec;
       }
 
       const sanitizedPreset = { ...preset };
@@ -181,9 +300,12 @@ export function sanitizeModelSpecs<T extends Partial<TSpecsConfig> | null | unde
       }
 
       return {
-        ...modelSpec,
+        ...sanitizedModelSpec,
         preset: sanitizedPreset,
       };
     }),
   } as T;
 }
+export * from './reasoningOverride';
+export * from './persistedReasoningOverride';
+export * from './continuation';

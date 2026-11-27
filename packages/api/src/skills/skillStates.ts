@@ -9,7 +9,7 @@ export const MAX_KEY_LENGTH = 64;
  * Generous upper bound on raw payload size to reject abusive inputs before
  * we spend cycles validating or querying the DB for orphan cleanup.
  */
-export const MAX_RAW_PAYLOAD = MAX_SKILL_STATES * 2;
+export const MAX_RAW_PAYLOAD: number = MAX_SKILL_STATES * 2;
 
 /** Map of skillId → explicit active state override. */
 export type SkillStatesRecord = Record<string, boolean>;

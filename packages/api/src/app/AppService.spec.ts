@@ -9,6 +9,7 @@ import {
   defaultAgentCapabilities,
 } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
+import type { FunctionTool } from '@librechat/data-schemas';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -59,8 +60,26 @@ const azureGroups = [
   } as const,
 ];
 
+/** Default agent capabilities served when no `memory` block is configured —
+ *  `AppService` strips `memory` from the defaults since the capability is inert
+ *  without a memory config. */
+const defaultAgentCapabilitiesWithoutMemory = defaultAgentCapabilities.filter(
+  (capability) => capability !== AgentCapabilities.memory,
+);
+
 describe('AppService', () => {
-  const mockSystemTools = {
+  it('preserves comparison policy in the effective request configuration', async () => {
+    const githubCompare = { enabled: true, timeoutMs: 2000 };
+    expect((await AppService({ config: { githubCompare } })).githubCompare).toEqual(githubCompare);
+    expect((await AppService({ config: {} })).githubCompare).toBeUndefined();
+  });
+
+  it('preserves the YAML passkey cap in the effective configuration', async () => {
+    const result = await AppService({ config: { passkeys: { perUserMax: 2 } } });
+    expect(result?.passkeys).toEqual({ perUserMax: 2 });
+  });
+
+  const mockSystemTools: Record<string, FunctionTool> = {
     ExampleTool: {
       type: 'function',
       function: {
@@ -112,7 +131,7 @@ describe('AppService', () => {
         mcpConfig: null,
         imageOutputType: expect.any(String),
         fileConfig: undefined,
-        secureImageLinks: undefined,
+        secureImageLinks: true,
         balance: { enabled: true },
         filteredTools: undefined,
         includedTools: undefined,
@@ -131,7 +150,7 @@ describe('AppService', () => {
         endpoints: expect.objectContaining({
           agents: expect.objectContaining({
             disableBuilder: false,
-            capabilities: expect.arrayContaining([...defaultAgentCapabilities]),
+            capabilities: expect.arrayContaining([...defaultAgentCapabilitiesWithoutMemory]),
             maxCitations: 30,
             maxCitationsPerFile: 7,
             minRelevanceScore: 0.45,
@@ -153,6 +172,14 @@ describe('AppService', () => {
         imageOutputType: EImageOutputType.WEBP,
       }),
     );
+  });
+
+  it('should require authentication for image links unless explicitly disabled', async () => {
+    const secureResult = await AppService({ config: {} });
+    const legacyResult = await AppService({ config: { secureImageLinks: false } });
+
+    expect(secureResult.secureImageLinks).toBe(true);
+    expect(legacyResult.secureImageLinks).toBe(false);
   });
 
   it('should default to `PNG` `imageOutputType` with no provided type', async () => {
@@ -312,7 +339,7 @@ describe('AppService', () => {
         endpoints: expect.objectContaining({
           [EModelEndpoint.agents]: expect.objectContaining({
             disableBuilder: false,
-            capabilities: expect.arrayContaining([...defaultAgentCapabilities]),
+            capabilities: expect.arrayContaining([...defaultAgentCapabilitiesWithoutMemory]),
           }),
         }),
       }),
@@ -335,7 +362,7 @@ describe('AppService', () => {
         endpoints: expect.objectContaining({
           [EModelEndpoint.agents]: expect.objectContaining({
             disableBuilder: false,
-            capabilities: expect.arrayContaining([...defaultAgentCapabilities]),
+            capabilities: expect.arrayContaining([...defaultAgentCapabilitiesWithoutMemory]),
           }),
           [EModelEndpoint.openAI]: expect.objectContaining({
             titleConvo: true,
@@ -598,9 +625,9 @@ describe('AppService', () => {
     );
 
     // Verify that optional fields are not set when not provided
-    expect(result.endpoints[EModelEndpoint.openAI].titlePrompt).toBeUndefined();
-    expect(result.endpoints[EModelEndpoint.openAI].titlePromptTemplate).toBeUndefined();
-    expect(result.endpoints[EModelEndpoint.openAI].titleMethod).toBeUndefined();
+    expect(result.endpoints![EModelEndpoint.openAI]!.titlePrompt).toBeUndefined();
+    expect(result.endpoints![EModelEndpoint.openAI]!.titlePromptTemplate).toBeUndefined();
+    expect(result.endpoints![EModelEndpoint.openAI]!.titleMethod).toBeUndefined();
   });
 
   it('should correctly configure titleEndpoint when specified', async () => {
@@ -859,7 +886,7 @@ describe('AppService updating app config and issuing warnings', () => {
     );
 
     // Verify excludedIds is undefined when not provided
-    expect(result.endpoints.assistants.excludedIds).toBeUndefined();
+    expect(result.endpoints!.assistants!.excludedIds).toBeUndefined();
   });
 
   it('should not parse environment variable references in OCR config', async () => {

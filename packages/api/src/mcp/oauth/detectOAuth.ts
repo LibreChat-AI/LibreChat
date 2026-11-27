@@ -6,8 +6,11 @@
 // Manual testing ensures the OAuth detection still works against real MCP servers.
 
 import { discoverOAuthProtectedResourceMetadata } from '@modelcontextprotocol/sdk/client/auth.js';
-import { isSSRFTarget, resolveHostnameSSRF } from '~/auth';
+import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport';
+import { isSSRFTarget, resolveHostnameSSRF, isOAuthUrlAllowed } from '~/auth';
 import { probeResourceMetadataHint } from './resourceHint';
+import { createHardenedOAuthFetch } from './hardenedFetch';
+import { getOAuthUrlPort } from './url';
 import { mcpConfig } from '../mcpConfig';
 
 export interface OAuthDetectionResult {
@@ -32,8 +35,13 @@ export interface OAuthDetectionResult {
  *
  * @param serverUrl - The MCP server URL to check for OAuth requirements
  */
-export async function detectOAuthRequirement(serverUrl: string): Promise<OAuthDetectionResult> {
-  const hint = await probeResourceMetadataHint(serverUrl);
+export async function detectOAuthRequirement(
+  serverUrl: string,
+  allowedDomains?: string[] | null,
+  allowedAddresses?: string[] | null,
+): Promise<OAuthDetectionResult> {
+  const fetchFn = createHardenedOAuthFetch({ allowedDomains, allowedAddresses });
+  const hint = await probeResourceMetadataHint(serverUrl, fetchFn);
 
   /**
    * The `resource_metadata` URL is attacker-controlled (it's echoed from the MCP
@@ -42,10 +50,10 @@ export async function detectOAuthRequirement(serverUrl: string): Promise<OAuthDe
    * detection as an SSRF vector against the LibreChat host or its internal network.
    */
   const safeHintUrl = hint?.resourceMetadataUrl
-    ? await validateHintUrl(hint.resourceMetadataUrl)
+    ? await validateHintUrl(hint.resourceMetadataUrl, allowedDomains, allowedAddresses)
     : undefined;
 
-  const metadataResult = await checkProtectedResourceMetadata(serverUrl, safeHintUrl);
+  const metadataResult = await checkProtectedResourceMetadata(serverUrl, safeHintUrl, fetchFn);
   if (metadataResult) return metadataResult;
 
   if (hint?.bearerChallenge) {
@@ -73,7 +81,7 @@ export async function detectOAuthRequirement(serverUrl: string): Promise<OAuthDe
       };
     }
     if (hint === null) {
-      const fallbackResult = await checkAuthErrorFallback(serverUrl);
+      const fallbackResult = await checkAuthErrorFallback(serverUrl, fetchFn);
       if (fallbackResult) return fallbackResult;
     }
   }
@@ -98,11 +106,16 @@ export async function detectOAuthRequirement(serverUrl: string): Promise<OAuthDe
 async function checkProtectedResourceMetadata(
   serverUrl: string,
   resourceMetadataUrl?: URL,
+  fetchFn?: FetchLike,
 ): Promise<OAuthDetectionResult | null> {
   try {
-    const resourceMetadata = await discoverOAuthProtectedResourceMetadata(serverUrl, {
-      resourceMetadataUrl,
-    });
+    const resourceMetadata = await discoverOAuthProtectedResourceMetadata(
+      serverUrl,
+      {
+        resourceMetadataUrl,
+      },
+      fetchFn,
+    );
 
     if (!resourceMetadata?.authorization_servers?.length) return null;
 
@@ -118,15 +131,25 @@ async function checkProtectedResourceMetadata(
 
 /**
  * SSRF-guards an attacker-controlled `resource_metadata` hint before the SDK follows it.
- * `detectOAuthRequirement` runs without admin-scoped `allowedDomains`, so the rejection
- * policy here is stricter than the handler's: any private/loopback/metadata-service
- * target is dropped, regardless of origin relative to the MCP server. On rejection the
- * caller continues with path-aware discovery (safe, since it targets the server itself).
+ * Honors the same allowedDomains/allowedAddresses policy used by the OAuth handler:
+ * trusted admin allowlist matches bypass the private-address block; otherwise hints
+ * are rejected when they target restricted hostnames or resolve to private addresses.
+ * On rejection the caller continues with path-aware discovery.
  */
-async function validateHintUrl(hintUrl: URL): Promise<URL | undefined> {
+async function validateHintUrl(
+  hintUrl: URL,
+  allowedDomains?: string[] | null,
+  allowedAddresses?: string[] | null,
+): Promise<URL | undefined> {
   try {
-    if (isSSRFTarget(hintUrl.hostname)) return undefined;
-    if (await resolveHostnameSSRF(hintUrl.hostname)) return undefined;
+    if (isOAuthUrlAllowed(hintUrl.href, allowedDomains, allowedAddresses)) return hintUrl;
+
+    const port = getOAuthUrlPort(hintUrl);
+    const allowedDomainsActive = Array.isArray(allowedDomains) && allowedDomains.length > 0;
+    const effectiveAddresses = allowedDomainsActive ? null : allowedAddresses;
+
+    if (isSSRFTarget(hintUrl.hostname, effectiveAddresses, port)) return undefined;
+    if (await resolveHostnameSSRF(hintUrl.hostname, effectiveAddresses, port)) return undefined;
     return hintUrl;
   } catch {
     // If validation itself fails (e.g. DNS lookup threw), be conservative and drop the hint.
@@ -135,9 +158,12 @@ async function validateHintUrl(hintUrl: URL): Promise<URL | undefined> {
 }
 
 // Fallback: only called when probing threw. Caller already gates on `OAUTH_ON_AUTH_ERROR`.
-async function checkAuthErrorFallback(serverUrl: string): Promise<OAuthDetectionResult | null> {
+async function checkAuthErrorFallback(
+  serverUrl: string,
+  fetchFn: FetchLike,
+): Promise<OAuthDetectionResult | null> {
   try {
-    const response = await fetch(serverUrl, {
+    const response = await fetchFn(serverUrl, {
       method: 'HEAD',
       signal: AbortSignal.timeout(mcpConfig.OAUTH_DETECTION_TIMEOUT),
     });

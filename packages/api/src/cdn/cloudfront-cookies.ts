@@ -1,12 +1,10 @@
-import { getSignedCookies } from '@aws-sdk/cloudfront-signer';
 import { logger } from '@librechat/data-schemas';
-
+import { getSignedCookies } from '@aws-sdk/cloudfront-signer';
 import type { NextFunction, Response } from 'express';
-
 import { INLINE_AVATAR_PATH_PREFIX, INLINE_IMAGE_PATH_PREFIX } from '~/storage/constants';
 import { assertPathSegment } from '~/storage/validation';
-import { s3Config } from '~/storage/s3/s3Config';
 import { getCloudFrontConfig } from './cloudfront';
+import { s3Config } from '~/storage/s3/s3Config';
 
 const DEFAULT_COOKIE_EXPIRY = 1800;
 
@@ -147,11 +145,17 @@ function getConfiguredCookieExpiry(): number {
   return config?.cookieExpiry ?? DEFAULT_COOKIE_EXPIRY;
 }
 
-export function getCloudFrontCookieRefreshWindowSec(cookieExpiry = getConfiguredCookieExpiry()) {
+export function getCloudFrontCookieRefreshWindowSec(
+  cookieExpiry: number = getConfiguredCookieExpiry(),
+): number {
   return Math.min(300, Math.floor(cookieExpiry / 4));
 }
 
-export function getCloudFrontCookieTiming() {
+export function getCloudFrontCookieTiming(): {
+  expiresInSec: number;
+  refreshAfterSec: number;
+  refreshWindowSec: number;
+} {
   const expiresInSec = getConfiguredCookieExpiry();
   const refreshWindowSec = getCloudFrontCookieRefreshWindowSec(expiresInSec);
   return {
@@ -520,10 +524,6 @@ export function setCloudFrontCookies(
       path: '/',
     });
 
-    logger.debug(
-      `[setCloudFrontCookies] Issued signed CloudFront cookies (paths=${signedCookieSets.length}, expiresInSec=${cookieExpiry}).`,
-    );
-
     return true;
   } catch (error) {
     logger.error('[setCloudFrontCookies] Failed to generate signed cookies:', error);
@@ -571,12 +571,6 @@ export function maybeRefreshCloudFrontAuthCookies(
       : getScopeRefreshReason(previousScope, effectiveScope, refreshWindowSec);
 
     if (!refreshReason) {
-      logger.debug('[maybeRefreshCloudFrontAuthCookies] CloudFront auth cookies still fresh', {
-        attempted: false,
-        refreshed: false,
-        reason: 'fresh',
-        refresh_window_sec: refreshWindowSec,
-      });
       return {
         enabled: true,
         attempted: false,
@@ -599,10 +593,14 @@ export function maybeRefreshCloudFrontAuthCookies(
     };
 
     if (cookiesSet) {
-      logger.debug(
-        '[maybeRefreshCloudFrontAuthCookies] CloudFront auth cookies refreshed',
-        logPayload,
-      );
+      return {
+        enabled: true,
+        attempted: true,
+        refreshed: true,
+        reason: refreshReason,
+        expiresInSec: timing.expiresInSec,
+        refreshAfterSec: timing.refreshAfterSec,
+      };
     } else {
       logger.warn(
         '[maybeRefreshCloudFrontAuthCookies] CloudFront auth cookie refresh failed',
@@ -613,8 +611,8 @@ export function maybeRefreshCloudFrontAuthCookies(
     return {
       enabled: true,
       attempted: true,
-      refreshed: cookiesSet,
-      reason: cookiesSet ? refreshReason : 'set_failed',
+      refreshed: false,
+      reason: 'set_failed',
       expiresInSec: timing.expiresInSec,
       refreshAfterSec: timing.refreshAfterSec,
     };

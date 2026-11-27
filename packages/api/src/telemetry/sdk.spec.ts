@@ -1,15 +1,24 @@
 import { Socket } from 'node:net';
 import { IncomingMessage } from 'node:http';
+import { Agent as HttpsAgent } from 'node:https';
+import type { NodeSDKConfiguration } from '@opentelemetry/sdk-node';
+import type { RequestOptions } from 'node:http';
 import type { Span } from '@opentelemetry/api';
+import { attachLogsTransport, detachLogsTransport } from './logs';
 
 interface HttpInstrumentationOptions {
   requestHook?: (span: Span, request: object) => void;
   startIncomingSpanHook?: (request: IncomingMessage) => Record<string, string>;
+  startOutgoingSpanHook?: (request: RequestOptions) => Record<string, string>;
+}
+
+interface UndiciInstrumentationOptions {
+  startSpanHook?: (request: { origin?: string; path?: string }) => Record<string, string>;
 }
 
 const mockStart = jest.fn();
 const mockShutdown = jest.fn();
-const mockNodeSDK = jest.fn(() => ({
+const mockNodeSDK = jest.fn((_configuration?: Partial<NodeSDKConfiguration>) => ({
   start: mockStart,
   shutdown: mockShutdown,
 }));
@@ -21,84 +30,71 @@ const mockHttpInstrumentation = jest.fn((options?: HttpInstrumentationOptions) =
 const mockIORedisInstrumentation = jest.fn(() => ({ name: 'ioredis' }));
 const mockMongoDBInstrumentation = jest.fn(() => ({ name: 'mongodb' }));
 const mockMongooseInstrumentation = jest.fn(() => ({ name: 'mongoose' }));
-const mockUndiciInstrumentation = jest.fn(() => ({ name: 'undici' }));
+const mockUndiciInstrumentation = jest.fn((options?: UndiciInstrumentationOptions) => ({
+  name: 'undici',
+  options,
+}));
 const mockResourceFromAttributes = jest.fn((attributes: object) => ({ attributes }));
 
-jest.mock(
-  '@opentelemetry/sdk-node',
-  () => ({
-    NodeSDK: mockNodeSDK,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/sdk-node', () => ({
+  NodeSDK: mockNodeSDK,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-express',
-  () => ({
-    ExpressInstrumentation: mockExpressInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-express', () => ({
+  ExpressInstrumentation: mockExpressInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-http',
-  () => ({
-    HttpInstrumentation: mockHttpInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-http', () => ({
+  HttpInstrumentation: mockHttpInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-ioredis',
-  () => ({
-    IORedisInstrumentation: mockIORedisInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-ioredis', () => ({
+  IORedisInstrumentation: mockIORedisInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-mongodb',
-  () => ({
-    MongoDBInstrumentation: mockMongoDBInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-mongodb', () => ({
+  MongoDBInstrumentation: mockMongoDBInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-mongoose',
-  () => ({
-    MongooseInstrumentation: mockMongooseInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-mongoose', () => ({
+  MongooseInstrumentation: mockMongooseInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-undici',
-  () => ({
-    UndiciInstrumentation: mockUndiciInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-undici', () => ({
+  UndiciInstrumentation: mockUndiciInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/resources',
-  () => ({
-    resourceFromAttributes: mockResourceFromAttributes,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/resources', () => ({
+  resourceFromAttributes: mockResourceFromAttributes,
+}));
 
-jest.mock(
-  '@opentelemetry/semantic-conventions',
-  () => ({
-    ATTR_SERVICE_NAME: 'service.name',
-    ATTR_SERVICE_VERSION: 'service.version',
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/semantic-conventions', () => ({
+  ATTR_SERVICE_NAME: 'service.name',
+  ATTR_SERVICE_VERSION: 'service.version',
+}));
 
-async function flushSignalShutdown(): Promise<void> {
-  await new Promise((resolve) => setImmediate(resolve));
+jest.mock('../app/shutdown', () => ({
+  registerShutdownTask: jest.fn(),
+}));
+
+jest.mock('./logs', () => ({
+  attachLogsTransport: jest.fn(),
+  detachLogsTransport: jest.fn(),
+}));
+
+const mockAttachLogsTransport = attachLogsTransport as jest.MockedFunction<
+  typeof attachLogsTransport
+>;
+const mockDetachLogsTransport = detachLogsTransport as jest.MockedFunction<
+  typeof detachLogsTransport
+>;
+
+function getSdkConfiguration(): Partial<NodeSDKConfiguration> {
+  const configuration = mockNodeSDK.mock.calls[0]?.[0];
+  if (!configuration) {
+    throw new Error('NodeSDK was not constructed');
+  }
+  return configuration;
 }
 
 describe('telemetry SDK lifecycle', () => {
@@ -181,6 +177,98 @@ describe('telemetry SDK lifecycle', () => {
     expect(mockExpressInstrumentation).toHaveBeenCalledTimes(1);
     expect(mockMongoDBInstrumentation).toHaveBeenCalledTimes(1);
     expect(mockMongooseInstrumentation).toHaveBeenCalledTimes(1);
+    expect(mockIORedisInstrumentation).not.toHaveBeenCalled();
+    expect(mockUndiciInstrumentation).toHaveBeenCalledTimes(1);
+
+    const configuration = getSdkConfiguration();
+    expect(configuration.instrumentations).toHaveLength(5);
+    expect(configuration.logRecordProcessors).toEqual([]);
+    expect(configuration).not.toHaveProperty('spanProcessors');
+    expect(configuration).not.toHaveProperty('metricReaders');
+    expect(mockAttachLogsTransport).not.toHaveBeenCalled();
+  });
+
+  it('starts logs without instrumentations or trace export when only logs are enabled', () => {
+    const controller = initializeTelemetry({
+      OTEL_LOGS_ENABLED: 'true',
+      OTEL_LOGS_LEVEL: 'warn',
+    });
+
+    expect(controller.enabled).toBe(true);
+    expect(controller.status).toBe('started');
+    expect(mockHttpInstrumentation).not.toHaveBeenCalled();
+    expect(mockExpressInstrumentation).not.toHaveBeenCalled();
+    expect(mockMongoDBInstrumentation).not.toHaveBeenCalled();
+    expect(mockMongooseInstrumentation).not.toHaveBeenCalled();
+    expect(mockUndiciInstrumentation).not.toHaveBeenCalled();
+
+    const configuration = getSdkConfiguration();
+    expect(configuration.instrumentations).toEqual([]);
+    expect(configuration.spanProcessors).toEqual([]);
+    expect(configuration.metricReaders).toEqual([]);
+    expect(configuration).not.toHaveProperty('logRecordProcessors');
+    expect(mockAttachLogsTransport).toHaveBeenCalledTimes(1);
+    expect(mockAttachLogsTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ logsEnabled: true, logsLevel: 'warn', tracingEnabled: false }),
+    );
+  });
+
+  it('keeps instrumentations and leaves log export to the SDK when both signals are enabled', () => {
+    initializeTelemetry({
+      OTEL_LOGS_ENABLED: 'true',
+      OTEL_TRACING_ENABLED: 'true',
+    });
+
+    const configuration = getSdkConfiguration();
+    expect(configuration.instrumentations).toHaveLength(5);
+    expect(configuration).not.toHaveProperty('spanProcessors');
+    expect(configuration).not.toHaveProperty('metricReaders');
+    expect(configuration).not.toHaveProperty('logRecordProcessors');
+    expect(mockAttachLogsTransport).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches the logs transport only after an async SDK start succeeds', async () => {
+    let resolveStart: () => void = () => undefined;
+    mockStart.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+
+    const controller = initializeTelemetry({ OTEL_LOGS_ENABLED: 'true' });
+
+    expect(controller.status).toBe('starting');
+    expect(mockAttachLogsTransport).not.toHaveBeenCalled();
+
+    resolveStart();
+    await controller.shutdown();
+
+    expect(mockAttachLogsTransport).toHaveBeenCalledTimes(1);
+    expect(mockDetachLogsTransport).toHaveBeenCalled();
+  });
+
+  it('detaches the logs transport only once the SDK shuts down', async () => {
+    mockShutdown.mockRejectedValueOnce(new Error('shutdown failed'));
+    initializeTelemetry({ OTEL_LOGS_ENABLED: 'true' });
+    mockDetachLogsTransport.mockClear();
+
+    await expect(shutdownTelemetry()).rejects.toThrow('shutdown failed');
+    expect(mockDetachLogsTransport).not.toHaveBeenCalled();
+
+    await shutdownTelemetry();
+    expect(mockDetachLogsTransport).toHaveBeenCalledTimes(1);
+  });
+
+  it('enables ioredis instrumentation when explicitly configured', () => {
+    initializeTelemetry({
+      OTEL_IOREDIS_TRACING_ENABLED: 'true',
+      OTEL_TRACING_ENABLED: 'true',
+    });
+
+    expect(mockMongooseInstrumentation).toHaveBeenCalledTimes(1);
+    expect(mockHttpInstrumentation).toHaveBeenCalledTimes(1);
+    expect(mockExpressInstrumentation).toHaveBeenCalledTimes(1);
+    expect(mockMongoDBInstrumentation).toHaveBeenCalledTimes(1);
     expect(mockIORedisInstrumentation).toHaveBeenCalledTimes(1);
     expect(mockUndiciInstrumentation).toHaveBeenCalledTimes(1);
   });
@@ -223,6 +311,188 @@ describe('telemetry SDK lifecycle', () => {
     });
     expect(JSON.stringify(attributes)).not.toContain('secret-code');
     expect(JSON.stringify(attributes)).not.toContain('secret-state');
+  });
+
+  it('redacts outgoing HTTP URL query attributes before client spans are exported', () => {
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
+    const instrumentationOptions = mockHttpInstrumentation.mock.calls[0]?.[0];
+    const startOutgoingSpanHook = instrumentationOptions?.startOutgoingSpanHook;
+
+    if (!startOutgoingSpanHook) {
+      throw new Error('HTTP instrumentation startOutgoingSpanHook was not configured');
+    }
+
+    const attributes = startOutgoingSpanHook({
+      protocol: 'http:',
+      hostname: '127.0.0.1',
+      port: 33169,
+      path: '/custom-action?api_key=LC_ACTION_QUERY_SECRET_67890&user_text=sensitive+prompt+words',
+    });
+
+    expect(attributes).toEqual({
+      'http.target': '/custom-action?api_key=[REDACTED]&user_text=[REDACTED]',
+      'http.url': 'http://127.0.0.1:33169/custom-action?api_key=[REDACTED]&user_text=[REDACTED]',
+      'url.full': 'http://127.0.0.1:33169/custom-action?api_key=[REDACTED]&user_text=[REDACTED]',
+      'url.path': '/custom-action',
+      'url.query': 'api_key=[REDACTED]&user_text=[REDACTED]',
+    });
+    expect(JSON.stringify(attributes)).not.toContain('LC_ACTION_QUERY_SECRET_67890');
+    expect(JSON.stringify(attributes)).not.toContain('sensitive+prompt+words');
+  });
+
+  it('redacts delimiter-less outgoing query segments and preserves separate HTTP ports', () => {
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
+    const instrumentationOptions = mockHttpInstrumentation.mock.calls[0]?.[0];
+    const startOutgoingSpanHook = instrumentationOptions?.startOutgoingSpanHook;
+
+    if (!startOutgoingSpanHook) {
+      throw new Error('HTTP instrumentation startOutgoingSpanHook was not configured');
+    }
+
+    const attributes = startOutgoingSpanHook({
+      protocol: 'https:',
+      host: 'api.example.com',
+      port: 8443,
+      path: '/custom-action?LC_ACTION_QUERY_SECRET_67890&user_text=sensitive+prompt+words',
+    });
+
+    expect(attributes).toEqual({
+      'http.target': '/custom-action?[REDACTED]&user_text=[REDACTED]',
+      'http.url': 'https://api.example.com:8443/custom-action?[REDACTED]&user_text=[REDACTED]',
+      'url.full': 'https://api.example.com:8443/custom-action?[REDACTED]&user_text=[REDACTED]',
+      'url.path': '/custom-action',
+      'url.query': '[REDACTED]&user_text=[REDACTED]',
+    });
+    expect(JSON.stringify(attributes)).not.toContain('LC_ACTION_QUERY_SECRET_67890');
+    expect(JSON.stringify(attributes)).not.toContain('sensitive+prompt+words');
+  });
+
+  it('keeps outgoing HTTP URLs absolute when request options omit an origin', () => {
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
+    const instrumentationOptions = mockHttpInstrumentation.mock.calls[0]?.[0];
+    const startOutgoingSpanHook = instrumentationOptions?.startOutgoingSpanHook;
+
+    if (!startOutgoingSpanHook) {
+      throw new Error('HTTP instrumentation startOutgoingSpanHook was not configured');
+    }
+
+    const attributes = startOutgoingSpanHook({
+      protocol: 'http:',
+      path: '/custom-action?api_key=LC_ACTION_QUERY_SECRET_67890',
+    });
+
+    expect(attributes).toEqual({
+      'http.target': '/custom-action?api_key=[REDACTED]',
+      'http.url': 'http://localhost/custom-action?api_key=[REDACTED]',
+      'url.full': 'http://localhost/custom-action?api_key=[REDACTED]',
+      'url.path': '/custom-action',
+      'url.query': 'api_key=[REDACTED]',
+    });
+    expect(JSON.stringify(attributes)).not.toContain('LC_ACTION_QUERY_SECRET_67890');
+  });
+
+  it('uses the agent protocol for outgoing URL attributes when request protocol is absent', () => {
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
+    const instrumentationOptions = mockHttpInstrumentation.mock.calls[0]?.[0];
+    const startOutgoingSpanHook = instrumentationOptions?.startOutgoingSpanHook;
+
+    if (!startOutgoingSpanHook) {
+      throw new Error('HTTP instrumentation startOutgoingSpanHook was not configured');
+    }
+
+    const attributes = startOutgoingSpanHook({
+      agent: new HttpsAgent(),
+      hostname: 'api.example.com',
+      path: '/custom-action?api_key=LC_ACTION_QUERY_SECRET_67890',
+    });
+
+    expect(attributes).toEqual({
+      'http.target': '/custom-action?api_key=[REDACTED]',
+      'http.url': 'https://api.example.com/custom-action?api_key=[REDACTED]',
+      'url.full': 'https://api.example.com/custom-action?api_key=[REDACTED]',
+      'url.path': '/custom-action',
+      'url.query': 'api_key=[REDACTED]',
+    });
+    expect(JSON.stringify(attributes)).not.toContain('LC_ACTION_QUERY_SECRET_67890');
+  });
+
+  it('does not infer HTTPS from port 443 without protocol context', () => {
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
+    const instrumentationOptions = mockHttpInstrumentation.mock.calls[0]?.[0];
+    const startOutgoingSpanHook = instrumentationOptions?.startOutgoingSpanHook;
+
+    if (!startOutgoingSpanHook) {
+      throw new Error('HTTP instrumentation startOutgoingSpanHook was not configured');
+    }
+
+    const attributes = startOutgoingSpanHook({
+      hostname: 'api.example.com',
+      port: 443,
+      path: '/custom-action?api_key=LC_ACTION_QUERY_SECRET_67890',
+    });
+
+    expect(attributes).toEqual({
+      'http.target': '/custom-action?api_key=[REDACTED]',
+      'http.url': 'http://api.example.com:443/custom-action?api_key=[REDACTED]',
+      'url.full': 'http://api.example.com:443/custom-action?api_key=[REDACTED]',
+      'url.path': '/custom-action',
+      'url.query': 'api_key=[REDACTED]',
+    });
+    expect(JSON.stringify(attributes)).not.toContain('LC_ACTION_QUERY_SECRET_67890');
+  });
+
+  it('brackets IPv6 hostnames in outgoing HTTP URL attributes', () => {
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
+    const instrumentationOptions = mockHttpInstrumentation.mock.calls[0]?.[0];
+    const startOutgoingSpanHook = instrumentationOptions?.startOutgoingSpanHook;
+
+    if (!startOutgoingSpanHook) {
+      throw new Error('HTTP instrumentation startOutgoingSpanHook was not configured');
+    }
+
+    const attributes = startOutgoingSpanHook({
+      protocol: 'http:',
+      hostname: '::1',
+      port: 8080,
+      path: '/custom-action?api_key=LC_ACTION_QUERY_SECRET_67890',
+    });
+
+    expect(attributes).toEqual({
+      'http.target': '/custom-action?api_key=[REDACTED]',
+      'http.url': 'http://[::1]:8080/custom-action?api_key=[REDACTED]',
+      'url.full': 'http://[::1]:8080/custom-action?api_key=[REDACTED]',
+      'url.path': '/custom-action',
+      'url.query': 'api_key=[REDACTED]',
+    });
+    expect(JSON.stringify(attributes)).not.toContain('LC_ACTION_QUERY_SECRET_67890');
+  });
+
+  it('redacts outgoing Undici URL query attributes before fetch spans are exported', () => {
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
+    const instrumentationOptions = mockUndiciInstrumentation.mock.calls[0]?.[0];
+    const startSpanHook = instrumentationOptions?.startSpanHook;
+
+    if (!startSpanHook) {
+      throw new Error('Undici instrumentation startSpanHook was not configured');
+    }
+
+    const attributes = startSpanHook({
+      origin: 'https://api.openweathermap.org',
+      path: '/data/3.0/onecall?appid=OPENWEATHER_SECRET_123&lat=40.71&lon=-74.01',
+    });
+
+    expect(attributes).toEqual({
+      'http.target': '/data/3.0/onecall?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
+      'http.url':
+        'https://api.openweathermap.org/data/3.0/onecall?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
+      'url.full':
+        'https://api.openweathermap.org/data/3.0/onecall?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
+      'url.path': '/data/3.0/onecall',
+      'url.query': 'appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
+    });
+    expect(JSON.stringify(attributes)).not.toContain('OPENWEATHER_SECRET_123');
+    expect(JSON.stringify(attributes)).not.toContain('40.71');
+    expect(JSON.stringify(attributes)).not.toContain('-74.01');
   });
 
   it('reflects lifecycle status from the controller getter', async () => {
@@ -302,56 +572,29 @@ describe('telemetry SDK lifecycle', () => {
     expect(controller.status).toBe('stopped');
   });
 
-  it.each<NodeJS.Signals>(['SIGTERM', 'SIGINT'])(
-    'does not force process exit when another %s handler is registered',
-    async (signal) => {
-      const otherHandler = jest.fn();
-      const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
-      initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
-      process.once(signal, otherHandler);
-
-      process.emit(signal, signal);
-      await flushSignalShutdown();
-
-      expect(mockShutdown).toHaveBeenCalledTimes(1);
-      expect(otherHandler).toHaveBeenCalledTimes(1);
-      expect(killSpy).not.toHaveBeenCalled();
-
-      killSpy.mockRestore();
-    },
-  );
-
-  it.each<NodeJS.Signals>(['SIGTERM', 'SIGINT'])(
-    'reraises the shutdown %s signal when telemetry is the only signal handler',
-    async (signal) => {
-      const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
-      initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
-
-      process.emit(signal, signal);
-      await flushSignalShutdown();
-
-      expect(mockShutdown).toHaveBeenCalledTimes(1);
-      expect(killSpy).toHaveBeenCalledWith(process.pid, signal);
-
-      killSpy.mockRestore();
-    },
-  );
-
-  it('warns and reraises the signal when shutdown rejects', async () => {
-    mockShutdown.mockRejectedValueOnce(new Error('signal shutdown failed'));
-    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+  it('registers a shutdown task with the coordinator when initialized', async () => {
+    const { registerShutdownTask } = await import('../app/shutdown');
     initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
 
-    process.emit('SIGTERM', 'SIGTERM');
-    await flushSignalShutdown();
+    expect(registerShutdownTask).toHaveBeenCalledWith('telemetry', expect.any(Function), {
+      priority: -100,
+    });
+  });
 
-    expect(mockShutdown).toHaveBeenCalledTimes(1);
-    expect(emitWarningSpy).toHaveBeenCalledWith(
-      'OpenTelemetry shutdown failed: signal shutdown failed',
-      { code: 'LIBRECHAT_OTEL' },
-    );
-    expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGTERM');
+  it('the registered shutdown task warns when telemetry shutdown rejects', async () => {
+    const { registerShutdownTask } = await import('../app/shutdown');
+    mockShutdown.mockRejectedValueOnce(new Error('flush failed'));
+    initializeTelemetry({ OTEL_TRACING_ENABLED: 'true' });
 
-    killSpy.mockRestore();
+    const shutdownTaskCalls = (registerShutdownTask as jest.Mock).mock.calls;
+    const taskFn = shutdownTaskCalls[shutdownTaskCalls.length - 1]?.[1] as
+      | (() => Promise<void>)
+      | undefined;
+    expect(taskFn).toBeDefined();
+    await taskFn?.();
+
+    expect(emitWarningSpy).toHaveBeenCalledWith('OpenTelemetry shutdown failed: flush failed', {
+      code: 'LIBRECHAT_OTEL',
+    });
   });
 });

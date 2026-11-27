@@ -36,7 +36,7 @@ export const ClearChats = () => {
         <OGDialogTrigger asChild>
           <Button
             aria-labelledby="clear-all-chats-label"
-            variant="destructive"
+            variant="destructive-soft"
             onClick={() => setOpen(true)}
           >
             {localize('com_ui_delete')}
@@ -45,7 +45,7 @@ export const ClearChats = () => {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_nav_confirm_clear')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <Label className="break-words">
               {localize('com_nav_clear_conversation_confirm_message')}
@@ -54,7 +54,7 @@ export const ClearChats = () => {
           selection={{
             selectHandler: clearConvos,
             selectClasses:
-              'bg-destructive text-white transition-all duration-200 hover:bg-destructive/80',
+              'bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover',
             selectText: clearConvosMutation.isLoading ? <Spinner /> : localize('com_ui_delete'),
           }}
         />

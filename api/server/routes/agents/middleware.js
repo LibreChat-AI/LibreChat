@@ -4,6 +4,8 @@ const {
   preAuthTenantMiddleware,
   createRequireApiKeyAuth,
   createRemoteAgentAuth,
+  createAgentManagementAuth,
+  createCheckAgentTriggerAccess,
   createCheckRemoteAgentAccess,
 } = require('@librechat/api');
 const { getEffectivePermissions } = require('~/server/services/PermissionService');
@@ -11,15 +13,32 @@ const { getAppConfig } = require('~/server/services/Config');
 const db = require('~/models');
 
 const apiKeyMiddleware = createRequireApiKeyAuth({
+  authorizeBinding: (...args) =>
+    require('~/server/services/ChannelAuthority').authorizeChannelResponseKeyRequest(...args),
   validateAgentApiKey: db.validateAgentApiKey,
+  validateBoundAgentApiKey: db.validateBoundAgentApiKey,
   findUser: db.findUser,
+  isPrincipalActive: db.isAgentTriggerPrincipalActive,
 });
 
 const requireRemoteAgentAuth = createRemoteAgentAuth({
   apiKeyMiddleware,
   findUser: db.findUser,
+  getRolesByNames: db.findRolesByNames,
   updateUser: db.updateUser,
+  isPrincipalActive: db.isAgentTriggerPrincipalActive,
   getAppConfig,
+  recordAuditEntry: db.recordAuditEntry,
+});
+
+const managementAuthDeps = {
+  findUser: db.findUser,
+  isPrincipalActive: db.isAgentTriggerPrincipalActive,
+  getAppConfig,
+};
+const requireAgentManagementAuth = createAgentManagementAuth(managementAuthDeps);
+const requireConversationReadAuth = createAgentManagementAuth(managementAuthDeps, {
+  requireConversationRead: true,
 });
 
 const checkRemoteAgentsFeature = generateCheckAccess({
@@ -28,14 +47,20 @@ const checkRemoteAgentsFeature = generateCheckAccess({
   getRoleByName: db.getRoleByName,
 });
 
-const checkAgentPermission = createCheckRemoteAgentAccess({
+const agentAccessDependencies = {
   getAgent: db.getAgent,
   getEffectivePermissions,
-});
+};
+
+const checkAgentPermission = createCheckRemoteAgentAccess(agentAccessDependencies);
+const checkAgentTriggerPermission = createCheckAgentTriggerAccess(agentAccessDependencies);
 
 module.exports = {
   checkAgentPermission,
+  checkAgentTriggerPermission,
   preAuthTenantMiddleware,
   requireRemoteAgentAuth,
+  requireAgentManagementAuth,
+  requireConversationReadAuth,
   checkRemoteAgentsFeature,
 };

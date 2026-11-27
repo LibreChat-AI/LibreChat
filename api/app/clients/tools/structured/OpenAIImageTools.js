@@ -2,12 +2,16 @@ const axios = require('axios');
 const { v4 } = require('uuid');
 const OpenAI = require('openai');
 const FormData = require('form-data');
-const { ProxyAgent } = require('undici');
 const { logger } = require('@librechat/data-schemas');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 const { tool } = require('@librechat/agents/langchain/tools');
 const { ContentTypes, EImageOutputType } = require('librechat-data-provider');
-const { logAxiosError, oaiToolkit, extractBaseURL } = require('@librechat/api');
+const {
+  formatToolError,
+  oaiToolkit,
+  extractBaseURL,
+  getProxyDispatcher,
+  applyAxiosProxyConfig,
+} = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getFiles } = require('~/models');
 
@@ -78,7 +82,7 @@ function createOpenAIImageTools(fields = {}) {
   let apiKey = fields.IMAGE_GEN_OAI_API_KEY ?? getApiKey();
   const closureConfig = { apiKey };
 
-  const imageModel = process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-1';
+  const imageModel = process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-2.5-flare';
 
   let baseURL = 'https://api.openai.com/v1/';
   if (!override && process.env.IMAGE_GEN_OAI_BASEURL) {
@@ -123,10 +127,10 @@ function createOpenAIImageTools(fields = {}) {
         throw new Error('Missing required field: prompt');
       }
       const clientConfig = { ...closureConfig };
-      if (process.env.PROXY) {
-        const proxyAgent = new ProxyAgent(process.env.PROXY);
+      const proxyDispatcher = getProxyDispatcher();
+      if (proxyDispatcher) {
         clientConfig.fetchOptions = {
-          dispatcher: proxyAgent,
+          dispatcher: proxyDispatcher,
         };
       }
 
@@ -176,10 +180,7 @@ function createOpenAIImageTools(fields = {}) {
           },
         );
       } catch (error) {
-        const message = '[image_gen_oai] Problem generating the image:';
-        logAxiosError({ error, message });
-        return returnValue(`Something went wrong when trying to generate the image. The OpenAI API may be unavailable:
-Error Message: ${error.message}`);
+        return returnValue(formatToolError(error, 'OpenAI image generation'));
       } finally {
         if (abortHandler && derivedSignal) {
           derivedSignal.removeEventListener('abort', abortHandler);
@@ -233,10 +234,10 @@ Error Message: ${error.message}`);
       }
 
       const clientConfig = { ...closureConfig };
-      if (process.env.PROXY) {
-        const proxyAgent = new ProxyAgent(process.env.PROXY);
+      const proxyDispatcher = getProxyDispatcher();
+      if (proxyDispatcher) {
         clientConfig.fetchOptions = {
-          dispatcher: proxyAgent,
+          dispatcher: proxyDispatcher,
         };
       }
 
@@ -349,9 +350,7 @@ Error Message: ${error.message}`);
           baseURL,
         };
 
-        if (process.env.PROXY) {
-          axiosConfig.httpsAgent = new HttpsProxyAgent(process.env.PROXY);
-        }
+        applyAxiosProxyConfig(axiosConfig, baseURL);
 
         if (process.env.IMAGE_GEN_OAI_AZURE_API_VERSION && process.env.IMAGE_GEN_OAI_BASEURL) {
           axiosConfig.params = {
@@ -394,10 +393,7 @@ Error Message: ${error.message}`);
         ];
         return [textResponse, { content, file_ids }];
       } catch (error) {
-        const message = '[image_edit_oai] Problem editing the image:';
-        logAxiosError({ error, message });
-        return returnValue(`Something went wrong when trying to edit the image. The OpenAI API may be unavailable:
-Error Message: ${error.message || 'Unknown error'}`);
+        return returnValue(formatToolError(error, 'OpenAI image editing'));
       } finally {
         if (abortHandler && derivedSignal) {
           derivedSignal.removeEventListener('abort', abortHandler);

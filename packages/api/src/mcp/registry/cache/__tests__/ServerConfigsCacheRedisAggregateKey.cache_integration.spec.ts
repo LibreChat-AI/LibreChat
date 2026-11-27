@@ -1,5 +1,8 @@
 import { expect } from '@playwright/test';
 import type { ParsedServerConfig } from '~/mcp/types';
+import { closeRedisClients } from '~/cache/__tests__/redisClients.helper';
+
+type StdioServerConfig = Extract<ParsedServerConfig, { type: 'stdio' }>;
 
 describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
   let ServerConfigsCacheRedisAggregateKey: typeof import('../ServerConfigsCacheRedisAggregateKey').ServerConfigsCacheRedisAggregateKey;
@@ -9,19 +12,19 @@ describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
     typeof import('../ServerConfigsCacheRedisAggregateKey').ServerConfigsCacheRedisAggregateKey
   >;
 
-  const mockConfig1 = {
+  const mockConfig1: StdioServerConfig = {
     type: 'stdio',
     command: 'node',
     args: ['server1.js'],
     env: { TEST: 'value1' },
-  } as ParsedServerConfig;
+  };
 
-  const mockConfig2 = {
+  const mockConfig2: StdioServerConfig = {
     type: 'stdio',
     command: 'python',
     args: ['server2.py'],
     env: { TEST: 'value2' },
-  } as ParsedServerConfig;
+  };
 
   const mockConfig3 = {
     type: 'sse',
@@ -56,7 +59,7 @@ describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
   });
 
   afterAll(async () => {
-    if (keyvRedisClient?.isOpen) await keyvRedisClient.disconnect();
+    await closeRedisClients();
   });
 
   describe('add and get operations', () => {
@@ -228,6 +231,164 @@ describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
         expect(result.server3).toMatchObject(mockConfig3);
       }
     });
+
+    it('atomically preserves concurrent instruction backfills from separate replicas', async () => {
+      const replicaA = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const replicaB = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      await cache.add('server1', mockConfig1);
+      await cache.add('server2', mockConfig2);
+
+      await expect(
+        Promise.all([
+          replicaA.patch('server1', { resolvedInstructions: 'server one instructions' }),
+          replicaB.patch('server2', { resolvedInstructions: 'server two instructions' }),
+        ]),
+      ).resolves.toEqual([true, true]);
+
+      const result = await cache.getAll();
+      expect(result.server1.resolvedInstructions).toBe('server one instructions');
+      expect(result.server2.resolvedInstructions).toBe('server two instructions');
+    });
+
+    it('routes every aggregate mutation through Redis-side atomic updates', async () => {
+      const replica = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const cacheSetSpy = jest.spyOn(replica['cache'], 'set');
+
+      await replica.add('atomic-server', mockConfig1);
+      await replica.update('atomic-server', mockConfig2);
+      await replica.upsert('atomic-server', { ...mockConfig3, inspectionFailed: true });
+      const stub = await replica.get('atomic-server');
+      await expect(
+        replica.replaceStub('atomic-server', mockConfig1, stub?.updatedAt),
+      ).resolves.toBeDefined();
+      await replica.remove('atomic-server');
+
+      expect(cacheSetSpy.mock.calls).toHaveLength(0);
+      cacheSetSpy.mockRestore();
+    });
+
+    it('preserves patches concurrent with whole-entry mutations on other replicas', async () => {
+      const patchReplica = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const writerReplica = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+
+      for (let i = 0; i < 20; i++) {
+        const patchedName = `patched-${i}`;
+        const updatedName = `updated-${i}`;
+        await cache.add(patchedName, mockConfig1);
+        await cache.add(updatedName, mockConfig2);
+
+        await expect(
+          Promise.all([
+            patchReplica.patch(patchedName, { resolvedInstructions: `instructions-${i}` }),
+            writerReplica.update(updatedName, { ...mockConfig3, description: `updated-${i}` }),
+          ]),
+        ).resolves.toEqual([true, undefined]);
+
+        const result = await cache.getAll();
+        expect(result[patchedName].resolvedInstructions).toBe(`instructions-${i}`);
+        expect(result[updatedName].description).toBe(`updated-${i}`);
+      }
+    });
+
+    it('preserves empty arrays through every Redis-side mutation path', async () => {
+      const emptyArgsConfig: StdioServerConfig = { ...mockConfig1, args: [] };
+
+      await cache.add('empty-arrays', emptyArgsConfig);
+      expect(await cache.get('empty-arrays')).toMatchObject({ args: [] });
+
+      await cache.patch('empty-arrays', { resolvedInstructions: 'patched' });
+      expect(await cache.get('empty-arrays')).toMatchObject({ args: [] });
+
+      await cache.update('empty-arrays', { ...mockConfig2, args: [] });
+      expect(await cache.get('empty-arrays')).toMatchObject({ args: [] });
+
+      await cache.upsert('empty-arrays', { ...mockConfig1, command: 'updated', args: [] });
+      expect(await cache.get('empty-arrays')).toMatchObject({ args: [] });
+    });
+
+    it('preserves empty arrays in an untouched entry when another entry is patched', async () => {
+      const emptyArgsConfig: StdioServerConfig = { ...mockConfig1, args: [] };
+      await cache.add('untouched-empty-arrays', emptyArgsConfig);
+      await cache.add('patched-entry', mockConfig2);
+
+      await cache.patch('patched-entry', { resolvedInstructions: 'patched' });
+
+      expect(await cache.get('untouched-empty-arrays')).toMatchObject({ args: [] });
+      expect((await cache.get('patched-entry'))?.resolvedInstructions).toBe('patched');
+    });
+  });
+
+  describe('getCurrent operation', () => {
+    it('reads a write from another replica that its local snapshot predates', async () => {
+      const replicaA = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const replicaB = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      await replicaA.add('server1', mockConfig1);
+      await replicaA.getAll();
+      await replicaB.update('server1', mockConfig2);
+
+      expect(await replicaA.get('server1')).toMatchObject(mockConfig1);
+      expect(await replicaA.getCurrent('server1')).toMatchObject(mockConfig2);
+      expect(await replicaA.get('server1')).toMatchObject(mockConfig2);
+    });
+  });
+
+  describe('replaceStub operation', () => {
+    const stub = { ...mockConfig1, inspectionFailed: true } as ParsedServerConfig;
+
+    it('replaces the failed stub it was inspected from exactly once', async () => {
+      const { config: stored } = await cache.add('server1', stub);
+
+      const replaced = await cache.replaceStub('server1', mockConfig2, stored.updatedAt);
+
+      expect(replaced).toMatchObject(mockConfig2);
+      expect(await cache.get('server1')).toEqual(replaced);
+      await expect(
+        cache.replaceStub('server1', mockConfig3, stored.updatedAt),
+      ).resolves.toBeUndefined();
+      expect(await cache.get('server1')).toEqual(replaced);
+    });
+
+    it('leaves entries that are not the inspected stub', async () => {
+      const { config: olderStub } = await cache.add('newer-stub', stub);
+      const { config: recovered } = await cache.add('recovered', mockConfig2);
+
+      await expect(
+        cache.replaceStub('newer-stub', mockConfig3, olderStub.updatedAt! - 1),
+      ).resolves.toBeUndefined();
+      await expect(
+        cache.replaceStub('recovered', mockConfig3, recovered.updatedAt),
+      ).resolves.toBeUndefined();
+      await expect(
+        cache.replaceStub('missing', mockConfig3, olderStub.updatedAt),
+      ).resolves.toBeUndefined();
+
+      expect(await cache.get('newer-stub')).toEqual(olderStub);
+      expect(await cache.get('recovered')).toEqual(recovered);
+      expect(await cache.get('missing')).toBeUndefined();
+    });
+
+    it('lands exactly one of two replicas replacing the same stub', async () => {
+      const replicaA = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const replicaB = new ServerConfigsCacheRedisAggregateKey('agg-test', false);
+      const { config: stored } = await cache.add('server1', stub);
+
+      const results = await Promise.all([
+        replicaA.replaceStub('server1', mockConfig2, stored.updatedAt),
+        replicaB.replaceStub('server1', mockConfig3, stored.updatedAt),
+      ]);
+
+      const landed = results.filter((result) => result != null);
+      expect(landed).toHaveLength(1);
+      expect(await cache.get('server1')).toEqual(landed[0]);
+    });
+
+    it('preserves empty arrays in the replacement', async () => {
+      const { config: stored } = await cache.add('empty-arrays', stub);
+
+      await cache.replaceStub('empty-arrays', { ...mockConfig2, args: [] }, stored.updatedAt);
+
+      expect(await cache.get('empty-arrays')).toMatchObject({ args: [] });
+    });
   });
 
   describe('reset operation', () => {
@@ -253,8 +414,7 @@ describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
       await cache.getAll();
 
       // Spy on the underlying Keyv cache to count Redis calls
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cacheGetSpy = jest.spyOn((cache as any).cache, 'get');
+      const cacheGetSpy = jest.spyOn(cache['cache'], 'get');
 
       await cache.getAll();
       await cache.getAll();
@@ -324,11 +484,9 @@ describe('ServerConfigsCacheRedisAggregateKey Integration Tests', () => {
       await cache.getAll(); // prime snapshot
 
       // Force-expire the snapshot without sleeping
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (cache as any).localSnapshotExpiry = Date.now() - 1;
+      cache['localSnapshotExpiry'] = Date.now() - 1;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cacheGetSpy = jest.spyOn((cache as any).cache, 'get');
+      const cacheGetSpy = jest.spyOn(cache['cache'], 'get');
       const result = await cache.getAll();
       expect(cacheGetSpy.mock.calls).toHaveLength(1);
       expect(Object.keys(result).length).toBe(1);

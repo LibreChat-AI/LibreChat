@@ -24,6 +24,26 @@ const DialogManager = ({
           endpointType={getEndpointField(endpointsConfig, keyDialogEndpoint, 'type')}
           onOpenChange={onOpenChange}
           userProvideURL={getEndpointField(endpointsConfig, keyDialogEndpoint, 'userProvideURL')}
+          userProvideAccessKeyId={getEndpointField(
+            endpointsConfig,
+            keyDialogEndpoint,
+            'userProvideAccessKeyId',
+          )}
+          userProvideSecretAccessKey={getEndpointField(
+            endpointsConfig,
+            keyDialogEndpoint,
+            'userProvideSecretAccessKey',
+          )}
+          userProvideSessionToken={getEndpointField(
+            endpointsConfig,
+            keyDialogEndpoint,
+            'userProvideSessionToken',
+          )}
+          userProvideBearerToken={getEndpointField(
+            endpointsConfig,
+            keyDialogEndpoint,
+            'userProvideBearerToken',
+          )}
         />
       )}
     </>

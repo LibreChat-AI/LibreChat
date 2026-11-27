@@ -62,8 +62,14 @@ describe('MessageIcon arePropsEqual', () => {
   it('returns false when agent avatar filepath changes', () => {
     expect(
       arePropsEqual(
-        { iconData: baseIconData, agent: makeAgent({ avatar: { filepath: '/a.png' } }) },
-        { iconData: baseIconData, agent: makeAgent({ avatar: { filepath: '/b.png' } }) },
+        {
+          iconData: baseIconData,
+          agent: makeAgent({ avatar: { filepath: '/a.png', source: 'local' } }),
+        },
+        {
+          iconData: baseIconData,
+          agent: makeAgent({ avatar: { filepath: '/b.png', source: 'local' } }),
+        },
       ),
     ).toBe(false);
   });

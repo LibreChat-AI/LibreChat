@@ -1,0 +1,266 @@
+import React from 'react';
+import '@testing-library/jest-dom';
+import DOMPurify from 'dompurify';
+import * as Ariakit from '@ariakit/react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { TooltipAnchor } from './Tooltip';
+
+/** Counts the sanitizers built: the default export is both an instance and their factory. */
+jest.mock('dompurify', () => {
+  const actual = jest.requireActual('dompurify');
+  const factory = jest.fn((...args: unknown[]) => actual(...args));
+  return { __esModule: true, default: Object.assign(factory, actual) };
+});
+
+describe('TooltipAnchor', () => {
+  /** Message rows mount hundreds of anchors in one commit; an anchor that renders its provider
+   *  tree again once its own element attaches doubles the cost of that whole commit. */
+  describe('render cost', () => {
+    test.each(['top', 'right'] as const)(
+      'renders a %s anchor once on mount in a left-to-right layout',
+      (side) => {
+        const provider = jest.spyOn(Ariakit, 'TooltipProvider');
+        render(
+          <TooltipAnchor description="Once" aria-label="Once" side={side}>
+            <span>icon</span>
+          </TooltipAnchor>,
+        );
+
+        expect(screen.getByLabelText('Once')).toBeInTheDocument();
+        expect(provider).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    test('builds no sanitizer for plain descriptions, and one for every tooltip with markup', async () => {
+      const built = DOMPurify as unknown as jest.Mock;
+      built.mockClear();
+      const plain = render(
+        <>
+          <TooltipAnchor description="Copy" aria-label="Copy" />
+          <TooltipAnchor description="Edit" aria-label="Edit" />
+        </>,
+      );
+      expect(built).not.toHaveBeenCalled();
+      plain.unmount();
+
+      render(
+        <>
+          <TooltipAnchor description='<a href="/docs">Docs</a>' aria-label="Docs" enableHTML />
+          <TooltipAnchor description="<b>Bold</b><script>x</script>" aria-label="Bold" enableHTML />
+        </>,
+      );
+      /** The sanitizer is the module's, so this holds for the first markup this file renders. */
+      expect(built).toHaveBeenCalledTimes(1);
+
+      const anchor = screen.getByLabelText('Docs');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+      const tooltip = await screen.findByRole('tooltip', undefined, { timeout: 3000 });
+      const link = tooltip.querySelector('a');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+
+    test('opens its tooltip without rendering the anchor again', async () => {
+      const provider = jest.spyOn(Ariakit, 'TooltipProvider');
+      render(
+        <TooltipAnchor description="Opens" aria-label="Opens">
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      const anchor = screen.getByLabelText('Opens');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+
+      expect(await screen.findByRole('tooltip', undefined, { timeout: 3000 })).toHaveTextContent(
+        'Opens',
+      );
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('zIndex', () => {
+    /** Lets a tooltip clear a host layer above the stylesheet's default (150). */
+    test('applies the zIndex prop to the tooltip popup', async () => {
+      render(
+        <TooltipAnchor description="Layered" zIndex={250} aria-label="Layered" tabIndex={0}>
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      const anchor = screen.getByLabelText('Layered');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+
+      const tooltip = await screen.findByRole('tooltip', undefined, { timeout: 3000 });
+      expect(tooltip).toHaveStyle({ zIndex: '250' });
+    });
+  });
+
+  describe('role="button" keyboard activation', () => {
+    /** Renders a non-native element, so Enter and Space must both be handled (WCAG 2.1.1). */
+    const renderButtonAnchor = (onClick: jest.Mock) => {
+      render(
+        <TooltipAnchor
+          role="button"
+          tabIndex={0}
+          description="Do the thing"
+          aria-label="Do the thing"
+          onClick={onClick}
+        >
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+      return screen.getByLabelText('Do the thing');
+    };
+
+    test('activates on Enter', () => {
+      const onClick = jest.fn();
+      const anchor = renderButtonAnchor(onClick);
+
+      fireEvent.keyDown(anchor, { key: 'Enter' });
+
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    test('activates on Space', () => {
+      const onClick = jest.fn();
+      const anchor = renderButtonAnchor(onClick);
+
+      fireEvent.keyDown(anchor, { key: ' ' });
+
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    test('ignores repeated Space keydowns from a held key', () => {
+      const onClick = jest.fn();
+      const anchor = renderButtonAnchor(onClick);
+
+      fireEvent.keyDown(anchor, { key: ' ' });
+      fireEvent.keyDown(anchor, { key: ' ', repeat: true });
+      fireEvent.keyDown(anchor, { key: ' ', repeat: true });
+
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    test('ignores repeated Enter keydowns from a held key', () => {
+      const onClick = jest.fn();
+      const anchor = renderButtonAnchor(onClick);
+
+      fireEvent.keyDown(anchor, { key: 'Enter' });
+      fireEvent.keyDown(anchor, { key: 'Enter', repeat: true });
+
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    test('prevents default on Space so the page does not scroll', () => {
+      const onClick = jest.fn();
+      const anchor = renderButtonAnchor(onClick);
+
+      const notCancelled = fireEvent.keyDown(anchor, { key: ' ', cancelable: true });
+
+      expect(notCancelled).toBe(false);
+    });
+
+    test('still prevents default on repeated Space keydowns', () => {
+      const onClick = jest.fn();
+      const anchor = renderButtonAnchor(onClick);
+
+      fireEvent.keyDown(anchor, { key: ' ' });
+      const notCancelled = fireEvent.keyDown(anchor, {
+        key: ' ',
+        repeat: true,
+        cancelable: true,
+      });
+
+      expect(notCancelled).toBe(false);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    test('ignores unrelated keys', () => {
+      const onClick = jest.fn();
+      const anchor = renderButtonAnchor(onClick);
+
+      fireEvent.keyDown(anchor, { key: 'a' });
+      fireEvent.keyDown(anchor, { key: 'Escape' });
+
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    test('does not synthesize activation without role="button"', () => {
+      const onClick = jest.fn();
+      render(
+        <TooltipAnchor description="Plain" aria-label="Plain" onClick={onClick}>
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      fireEvent.keyDown(screen.getByLabelText('Plain'), { key: 'Enter' });
+      fireEvent.keyDown(screen.getByLabelText('Plain'), { key: ' ' });
+
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    test('defaults tabIndex to 0 when role is button', () => {
+      render(
+        <TooltipAnchor role="button" description="Focusable" aria-label="Focusable">
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      expect(screen.getByLabelText('Focusable')).toHaveAttribute('tabindex', '0');
+    });
+
+    test('preserves an explicit tabIndex for role-button anchors', () => {
+      render(
+        <TooltipAnchor role="button" tabIndex={-1} description="Deferred" aria-label="Deferred">
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      expect(screen.getByLabelText('Deferred')).toHaveAttribute('tabindex', '-1');
+    });
+  });
+
+  describe('consumer onKeyDown', () => {
+    test('is invoked rather than silently overridden', () => {
+      const onKeyDown = jest.fn();
+      render(
+        <TooltipAnchor
+          role="button"
+          tabIndex={0}
+          description="Chained"
+          aria-label="Chained"
+          onKeyDown={onKeyDown}
+        >
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      fireEvent.keyDown(screen.getByLabelText('Chained'), { key: 'Enter' });
+
+      expect(onKeyDown).toHaveBeenCalledTimes(1);
+    });
+
+    test('can suppress the built-in activation via preventDefault', () => {
+      const onClick = jest.fn();
+      render(
+        <TooltipAnchor
+          role="button"
+          tabIndex={0}
+          description="Suppressed"
+          aria-label="Suppressed"
+          onClick={onClick}
+          onKeyDown={(event) => event.preventDefault()}
+        >
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      fireEvent.keyDown(screen.getByLabelText('Suppressed'), { key: 'Enter' });
+
+      expect(onClick).not.toHaveBeenCalled();
+    });
+  });
+});

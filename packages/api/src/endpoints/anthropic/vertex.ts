@@ -125,44 +125,7 @@ function filterVertexHeaders(headers?: Record<string, string>): Record<string, s
   return Object.keys(filteredHeaders).length > 0 ? filteredHeaders : undefined;
 }
 
-/**
- * Gets the deployment name for a given model name from the Vertex AI configuration.
- * Maps visible model names to actual deployment names (model IDs).
- * @param modelName - The visible model name (e.g., "Claude Opus 4.5")
- * @param vertexConfig - The Vertex AI configuration with model mappings
- * @returns The deployment name to use with the API (e.g., "claude-opus-4-5@20251101")
- */
-export function getVertexDeploymentName(
-  modelName: string,
-  vertexConfig?: VertexAIConfigInput,
-): string {
-  if (!vertexConfig?.models) {
-    // No models configuration, return model name as-is
-    return modelName;
-  }
-
-  // If models is an array, check if modelName is in the array
-  if (Array.isArray(vertexConfig.models)) {
-    // Legacy format - no deployment mapping
-    return modelName;
-  }
-
-  // If models is an object, look up the deployment name
-  const modelConfig = vertexConfig.models[modelName];
-
-  if (!modelConfig) {
-    // Model not found in config, return as-is
-    return modelName;
-  }
-
-  if (typeof modelConfig === 'boolean') {
-    // Model is true/false - use default deployment name or model name
-    return vertexConfig.deploymentName || modelName;
-  }
-
-  // Model has its own deployment name
-  return modelConfig.deploymentName || vertexConfig.deploymentName || modelName;
-}
+export { getVertexDeploymentName } from 'librechat-data-provider';
 
 /**
  * Creates and configures a Vertex AI client for Anthropic.
@@ -183,7 +146,15 @@ export function createAnthropicVertexClient(
     throw new Error('Google service account key is required for Vertex AI');
   }
 
-  // Priority: vertexOptions > env vars > service key project_id
+  /**
+   * Priority: vertexOptions > env vars > service key project_id.
+   *
+   * The `us-east5` fallback only serves Sonnet 4.6 and earlier — specific
+   * regional endpoints 404 on newer models (Opus 4.7+, Opus 5, Sonnet 5,
+   * Fable 5), which need `global` or a multi-region (`us`/`eu`) location.
+   * Kept for backwards compatibility; deployments using modern models must
+   * set the region explicitly.
+   */
   const region = vertexOptions?.region || process.env.ANTHROPIC_VERTEX_REGION || 'us-east5';
   const projectId =
     vertexOptions?.projectId || process.env.VERTEX_PROJECT_ID || serviceKey.project_id;

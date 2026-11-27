@@ -32,6 +32,7 @@ jest.mock('~/app/clients/tools/util', () => ({
 }));
 
 const { Tools, AuthType } = require('librechat-data-provider');
+const { loadWebSearchAuth } = require('@librechat/api');
 const { verifyToolAuth } = require('../tools');
 
 /**
@@ -98,5 +99,51 @@ describe('verifyToolAuth — execute_code system-auth contract', () => {
 
     const payload = res.json.mock.calls[0][0];
     expect(payload.message).not.toBe(AuthType.USER_PROVIDED);
+  });
+});
+
+describe('verifyToolAuth — web search selection contract', () => {
+  const makeRes = () => {
+    const res = {};
+    res.status = jest.fn().mockReturnValue(res);
+    res.json = jest.fn().mockReturnValue(res);
+    return res;
+  };
+
+  it('returns the resolved provider selections with the auth state', async () => {
+    loadWebSearchAuth.mockResolvedValue({
+      authenticated: true,
+      authTypes: {
+        providers: AuthType.USER_PROVIDED,
+        scrapers: AuthType.USER_PROVIDED,
+        rerankers: AuthType.SYSTEM_DEFINED,
+      },
+      authResult: {
+        searchProvider: 'keenable',
+        scraperProvider: 'keenable',
+        rerankerType: 'none',
+      },
+    });
+    const req = {
+      params: { toolId: Tools.web_search },
+      user: { id: 'user-1' },
+      config: { webSearch: {} },
+    };
+    const res = makeRes();
+
+    await verifyToolAuth(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      authenticated: true,
+      authTypes: {
+        providers: AuthType.USER_PROVIDED,
+        scrapers: AuthType.USER_PROVIDED,
+        rerankers: AuthType.SYSTEM_DEFINED,
+      },
+      searchProvider: 'keenable',
+      scraperProvider: 'keenable',
+      rerankerType: 'none',
+    });
   });
 });

@@ -14,7 +14,7 @@ const DEFAULT_PROMPT_TEMPLATE = `Based on the following conversation and analysi
  */
 export async function createSequentialChainEdges(
   agentIds: string[],
-  promptTemplate = DEFAULT_PROMPT_TEMPLATE,
+  promptTemplate: string = DEFAULT_PROMPT_TEMPLATE,
 ): Promise<GraphEdge[]> {
   const edges: GraphEdge[] = [];
 

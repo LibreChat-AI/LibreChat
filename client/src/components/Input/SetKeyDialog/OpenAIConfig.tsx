@@ -24,6 +24,7 @@ const OpenAIConfig = ({
               label={`${isAzure ? 'Azure q' : ''}OpenAI API Key`}
               labelClassName="mb-1"
               inputClassName="mb-2"
+              secret
             />
           )}
         />
@@ -39,6 +40,7 @@ const OpenAIConfig = ({
                 {...field}
                 label={'Azure OpenAI API Key'}
                 labelClassName="mb-1"
+                secret
               />
             )}
           />

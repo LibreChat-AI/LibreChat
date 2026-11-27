@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { SetStateAction, Dispatch, useMemo, useState } from 'react';
 import { matchSorter } from 'match-sorter';
 import type { OptionWithIcon, MentionOption } from '~/common';
 
@@ -8,7 +8,13 @@ export default function useCombobox({
 }: {
   value: string;
   options: Array<OptionWithIcon | MentionOption>;
-}) {
+}): {
+  open: boolean;
+  setOpen: Dispatch<SetStateAction<boolean>>;
+  searchValue: string;
+  setSearchValue: Dispatch<SetStateAction<string>>;
+  matches: (OptionWithIcon | MentionOption)[];
+} {
   const [open, setOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
 

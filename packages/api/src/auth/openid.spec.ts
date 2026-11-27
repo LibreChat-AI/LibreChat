@@ -1,8 +1,18 @@
-import { Types } from 'mongoose';
-import { logger } from '@librechat/data-schemas';
-import { ErrorTypes } from 'librechat-data-provider';
-import type { IUser, UserMethods } from '@librechat/data-schemas';
-import { findOpenIDUser, getOpenIdEmail, getOpenIdIssuer, normalizeOpenIdIssuer } from './openid';
+import mongoose, { Types } from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import { ErrorTypes, SystemRoles } from 'librechat-data-provider';
+import { logger, tenantStorage, createMethods, createModels } from '@librechat/data-schemas';
+import type { IUser, AppConfig, UserMethods } from '@librechat/data-schemas';
+import type { CommandStartedEvent } from 'mongodb';
+import type { FilterQuery } from 'mongoose';
+import {
+  findOpenIDUser,
+  getOpenIdEmail,
+  getOpenIdIssuer,
+  createOpenIDUser,
+  normalizeOpenIdIssuer,
+} from './openid';
+import { recordOpenIDUserLookup } from '~/app/metrics';
 
 function newId() {
   return new Types.ObjectId();
@@ -13,7 +23,13 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: {
     warn: jest.fn(),
     info: jest.fn(),
+    error: jest.fn(),
   },
+}));
+
+jest.mock('~/app/metrics', () => ({
+  isMetricsConfigured: jest.fn(() => true),
+  recordOpenIDUserLookup: jest.fn(),
 }));
 
 describe('normalizeOpenIdIssuer', () => {
@@ -100,13 +116,15 @@ describe('findOpenIDUser', () => {
       });
 
       expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [{ openidId: 'openid_123', openidIssuer: issuer }],
+        openidId: 'openid_123',
+        openidIssuer: issuer,
       });
       expect(result).toEqual({
         user: mockUser,
         error: null,
         migration: false,
       });
+      expect(recordOpenIDUserLookup).toHaveBeenCalledWith('found', expect.any(Number));
     });
 
     it('should find user by idOnTheSource', async () => {
@@ -118,7 +136,7 @@ describe('findOpenIDUser', () => {
         username: 'testuser',
       } as IUser;
 
-      mockFindUser.mockResolvedValueOnce(mockUser);
+      mockFindUser.mockResolvedValueOnce(null).mockResolvedValueOnce(mockUser);
 
       const result = await findOpenIDUser({
         openidId: 'openid_123',
@@ -127,11 +145,13 @@ describe('findOpenIDUser', () => {
         idOnTheSource: 'source_123',
       });
 
-      expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [
-          { openidId: 'openid_123', openidIssuer: issuer },
-          { idOnTheSource: 'source_123', openidIssuer: issuer },
-        ],
+      expect(mockFindUser).toHaveBeenNthCalledWith(1, {
+        openidId: 'openid_123',
+        openidIssuer: issuer,
+      });
+      expect(mockFindUser).toHaveBeenNthCalledWith(2, {
+        idOnTheSource: 'source_123',
+        openidIssuer: issuer,
       });
       expect(result).toEqual({
         user: mockUser,
@@ -161,11 +181,10 @@ describe('findOpenIDUser', () => {
         email: 'user@example.com',
       });
 
+      expect(mockFindUser).toHaveBeenCalledTimes(1);
       expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [
-          { openidId: 'openid_123', openidIssuer: issuer },
-          { idOnTheSource: 'source_123', openidIssuer: issuer },
-        ],
+        openidId: 'openid_123',
+        openidIssuer: issuer,
       });
       expect(result).toEqual({
         user: mockUser,
@@ -194,7 +213,8 @@ describe('findOpenIDUser', () => {
       });
 
       expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [{ openidId: 'openid_123', openidIssuer: 'https://issuer.example.com' }],
+        openidId: 'openid_123',
+        openidIssuer: 'https://issuer.example.com',
       });
       expect(result).toEqual({
         user: mockUser,
@@ -213,7 +233,7 @@ describe('findOpenIDUser', () => {
         username: 'testuser',
       } as IUser;
 
-      mockFindUser.mockResolvedValueOnce(mockUser);
+      mockFindUser.mockResolvedValueOnce(null).mockResolvedValueOnce(mockUser);
 
       const result = await findOpenIDUser({
         openidId: 'openid_123',
@@ -221,18 +241,13 @@ describe('findOpenIDUser', () => {
         findUser: mockFindUser,
       });
 
-      expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [
-          { openidId: 'openid_123', openidIssuer: 'https://issuer.example.com' },
-          {
-            openidId: 'openid_123',
-            $or: [
-              { openidIssuer: { $exists: false } },
-              { openidIssuer: null },
-              { openidIssuer: '' },
-            ],
-          },
-        ],
+      expect(mockFindUser).toHaveBeenNthCalledWith(1, {
+        openidId: 'openid_123',
+        openidIssuer: 'https://issuer.example.com',
+      });
+      expect(mockFindUser).toHaveBeenNthCalledWith(2, {
+        openidId: 'openid_123',
+        openidIssuer: { $exists: false },
       });
       expect(result).toEqual({
         user: { ...mockUser, openidIssuer: 'https://issuer.example.com' },
@@ -251,7 +266,7 @@ describe('findOpenIDUser', () => {
         username: 'testuser',
       } as IUser;
 
-      mockFindUser.mockResolvedValueOnce(mockUser);
+      mockFindUser.mockResolvedValueOnce(null).mockResolvedValueOnce(mockUser);
 
       const result = await findOpenIDUser({
         openidId: 'openid_123',
@@ -259,18 +274,13 @@ describe('findOpenIDUser', () => {
         findUser: mockFindUser,
       });
 
-      expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [
-          { openidId: 'openid_123', openidIssuer: 'https://issuer.example.com' },
-          {
-            openidId: 'openid_123',
-            $or: [
-              { openidIssuer: { $exists: false } },
-              { openidIssuer: null },
-              { openidIssuer: '' },
-            ],
-          },
-        ],
+      expect(mockFindUser).toHaveBeenNthCalledWith(1, {
+        openidId: 'openid_123',
+        openidIssuer: 'https://issuer.example.com',
+      });
+      expect(mockFindUser).toHaveBeenNthCalledWith(2, {
+        openidId: 'openid_123',
+        openidIssuer: { $exists: false },
       });
       expect(result).toEqual({
         user: { ...mockUser, openidIssuer: 'https://issuer.example.com' },
@@ -320,9 +330,12 @@ describe('findOpenIDUser', () => {
       });
 
       expect(mockFindUser).toHaveBeenNthCalledWith(1, {
-        $or: [{ openidId: 'openid_123', openidIssuer: issuer }],
+        openidId: 'openid_123',
+        openidIssuer: issuer,
       });
-      expect(mockFindUser).toHaveBeenNthCalledWith(2, { email: 'user@example.com' });
+      expect(mockFindUser).toHaveBeenNthCalledWith(2, {
+        email: 'user@example.com',
+      });
       expect(result).toEqual({
         user: mockUser,
         error: null,
@@ -361,7 +374,8 @@ describe('findOpenIDUser', () => {
 
       expect(mockFindUser).toHaveBeenCalledTimes(1);
       expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [{ openidId: 'openid_123', openidIssuer: issuer }],
+        openidId: 'openid_123',
+        openidIssuer: issuer,
       });
       expect(result).toEqual({
         user: null,
@@ -674,7 +688,8 @@ describe('findOpenIDUser', () => {
       });
 
       expect(mockFindUser).toHaveBeenCalledWith({
-        $or: [{ openidId: 'openid_123', openidIssuer: issuer }],
+        openidId: 'openid_123',
+        openidIssuer: issuer,
       });
       expect(result).toEqual({
         user: null,
@@ -733,6 +748,7 @@ describe('findOpenIDUser', () => {
           findUser: mockFindUser,
         }),
       ).rejects.toThrow('Database error');
+      expect(recordOpenIDUserLookup).toHaveBeenCalledWith('error', expect.any(Number));
     });
 
     it('should reject email fallback when openidId is empty and user has a stored openidId', async () => {
@@ -760,6 +776,158 @@ describe('findOpenIDUser', () => {
         migration: false,
       });
     });
+  });
+});
+
+type CapturedFindCommand = {
+  find?: unknown;
+  filter?: unknown;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function planContainsStage(value: unknown, stage: string): boolean {
+  if (!isRecord(value)) return false;
+  if (value.stage === stage) return true;
+
+  return Object.values(value).some((entry) => {
+    if (Array.isArray(entry)) return entry.some((item) => planContainsStage(item, stage));
+    return planContainsStage(entry, stage);
+  });
+}
+
+function getTotalDocsExamined(explain: unknown): number | undefined {
+  if (!isRecord(explain)) return undefined;
+  const executionStats = explain.executionStats;
+  if (!isRecord(executionStats)) return undefined;
+  const totalDocsExamined = executionStats.totalDocsExamined;
+  return typeof totalDocsExamined === 'number' ? totalDocsExamined : undefined;
+}
+
+describe('findOpenIDUser Mongo compatibility', () => {
+  let mongoServer: MongoMemoryServer;
+  let User: mongoose.Model<IUser>;
+  let methods: ReturnType<typeof createMethods>;
+
+  const issuer = 'https://issuer.example.com';
+  const originalOpenIdIssuer = process.env.OPENID_ISSUER;
+
+  async function seedUsers(count: number) {
+    await User.insertMany(
+      Array.from({ length: count }, (_, index) => ({
+        email: `filler-${index}@example.com`,
+        provider: 'openid',
+        openidId: `filler-sub-${index}`,
+        openidIssuer: issuer,
+        idOnTheSource: `filler-oid-${index}`,
+      })),
+    );
+  }
+
+  async function captureFindFilters<T>(run: () => Promise<T>): Promise<{
+    result: T;
+    filters: unknown[];
+  }> {
+    const filters: unknown[] = [];
+    const client = mongoose.connection.getClient();
+    const listener = (event: CommandStartedEvent) => {
+      const command = event.command as CapturedFindCommand;
+      if (event.commandName === 'find' && command.find === User.collection.name) {
+        filters.push(command.filter);
+      }
+    };
+
+    client.on('commandStarted', listener);
+    try {
+      const result = await run();
+      return { result, filters };
+    } finally {
+      client.off('commandStarted', listener);
+    }
+  }
+
+  beforeAll(async () => {
+    mongoServer = await MongoMemoryServer.create();
+    /** Each test rebuilds the User indexes explicitly after resetting the database. */
+    await mongoose.connect(mongoServer.getUri(), {
+      monitorCommands: true,
+      autoCreate: false,
+      autoIndex: false,
+    });
+    createModels(mongoose);
+    User = mongoose.models.User as mongoose.Model<IUser>;
+    methods = createMethods(mongoose);
+  });
+
+  afterAll(async () => {
+    if (originalOpenIdIssuer == null) {
+      delete process.env.OPENID_ISSUER;
+    } else {
+      process.env.OPENID_ISSUER = originalOpenIdIssuer;
+    }
+    await mongoose.disconnect();
+    await mongoServer?.stop();
+  });
+
+  beforeEach(async () => {
+    process.env.OPENID_ISSUER = issuer;
+    await mongoose.connection.dropDatabase();
+    await User.syncIndexes();
+  });
+
+  it('keeps exact issuer lookup indexable on a seeded user collection', async () => {
+    await seedUsers(1500);
+    await User.create({
+      email: 'target@example.com',
+      provider: 'openid',
+      openidId: 'target-sub',
+      openidIssuer: issuer,
+      idOnTheSource: 'target-oid',
+    });
+
+    const { result, filters } = await captureFindFilters(() =>
+      findOpenIDUser({
+        openidId: 'target-sub',
+        idOnTheSource: 'target-oid',
+        openidIssuer: issuer,
+        findUser: methods.findUser,
+      }),
+    );
+
+    expect(result.user?.email).toBe('target@example.com');
+    expect(filters).toEqual([{ openidId: 'target-sub', openidIssuer: issuer }]);
+
+    const explain = await User.findOne(filters[0] as FilterQuery<IUser>).explain('executionStats');
+    expect(planContainsStage(explain, 'IXSCAN')).toBe(true);
+    expect(getTotalDocsExamined(explain)).toBeLessThanOrEqual(1);
+  });
+
+  it('resolves legacy issuer-less users without nested or disjunctive filters', async () => {
+    await User.create({
+      email: 'legacy@example.com',
+      provider: 'openid',
+      openidId: 'legacy-sub',
+      idOnTheSource: 'legacy-oid',
+    });
+
+    const { result, filters } = await captureFindFilters(() =>
+      findOpenIDUser({
+        openidId: 'legacy-sub',
+        idOnTheSource: 'legacy-oid',
+        openidIssuer: issuer,
+        findUser: methods.findUser,
+      }),
+    );
+
+    expect(result.user?.email).toBe('legacy@example.com');
+    expect(result.migration).toBe(true);
+    expect(filters).toEqual([
+      { openidId: 'legacy-sub', openidIssuer: issuer },
+      { idOnTheSource: 'legacy-oid', openidIssuer: issuer },
+      { openidId: 'legacy-sub', openidIssuer: { $exists: false } },
+    ]);
   });
 });
 
@@ -834,5 +1002,265 @@ describe('getOpenIdEmail', () => {
         'OPENID_EMAIL_CLAIM="groups" resolved to a non-string value (type: object)',
       ),
     );
+  });
+});
+
+describe('createOpenIDUser', () => {
+  let mongoServer: MongoMemoryServer;
+  let User: mongoose.Model<IUser>;
+  let methods: ReturnType<typeof createMethods>;
+
+  const issuer = 'https://issuer.example.com';
+  const email = 'first-login@example.com';
+  const openidId = 'first-login-sub';
+  const tenantId = 'tenant-a';
+  const profile = {
+    openidId,
+    openidIssuer: issuer,
+    email,
+    username: 'first-login',
+    name: 'First Login',
+    emailVerified: true,
+  };
+  const getAppConfig = jest.fn(async (): Promise<AppConfig> => appConfigWith());
+
+  function appConfigWith(
+    balance?: { enabled: boolean; startBalance: number },
+    allowedDomains?: string[],
+  ): AppConfig {
+    return { balance, registration: { allowedDomains } } as Partial<AppConfig> as AppConfig;
+  }
+
+  function getLookup() {
+    return { findUser: methods.findUser, email, openidId, openidIssuer: issuer };
+  }
+
+  /** Answers the new account's config read, then the read of the account a lookup recovers. */
+  function configsFor(newAccount: AppConfig, recovered: AppConfig): void {
+    getAppConfig.mockResolvedValueOnce(newAccount).mockResolvedValueOnce(recovered);
+  }
+
+  function firstLogin(overrides: Partial<Parameters<typeof createOpenIDUser>[0]> = {}) {
+    return createOpenIDUser({
+      lookup: getLookup(),
+      profile,
+      getAppConfig,
+      getBalanceConfig: (config: AppConfig) => config.balance ?? null,
+      createUserIfAbsent: methods.createUserIfAbsent,
+      findBalanceByUser: (userId) => methods.findBalanceByUser(userId),
+      ...overrides,
+    });
+  }
+
+  beforeAll(async () => {
+    mongoServer = await MongoMemoryServer.create();
+    await mongoose.connect(mongoServer.getUri(), { autoIndex: false });
+    createModels(mongoose);
+    User = mongoose.models.User as mongoose.Model<IUser>;
+    methods = createMethods(mongoose);
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mongoServer?.stop();
+  });
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    getAppConfig.mockReset().mockResolvedValue(appConfigWith());
+    await mongoose.connection.dropDatabase();
+    await User.syncIndexes();
+  });
+
+  it('resolves concurrent first logins to the one user that was created', async () => {
+    const lookups = await Promise.all([findOpenIDUser(getLookup()), findOpenIDUser(getLookup())]);
+    expect(lookups.map((lookup) => lookup.user)).toEqual([null, null]);
+
+    const logins = await Promise.all([firstLogin(), firstLogin()]);
+
+    expect(await User.countDocuments({ email })).toBe(1);
+    expect(logins[0].user._id.toString()).toBe(logins[1].user._id.toString());
+    expect(logins[1].user).toEqual(
+      expect.objectContaining({ openidId, email, provider: 'openid' }),
+    );
+  });
+
+  it("refreshes the recovered user with the losing request's claims", async () => {
+    await firstLogin();
+    const renamed = {
+      ...profile,
+      email: 'renamed@example.com',
+      name: 'Renamed',
+      emailVerified: false,
+    };
+
+    const { user } = await firstLogin({
+      lookup: { ...getLookup(), email: renamed.email },
+      profile: renamed,
+    });
+
+    expect(await User.countDocuments()).toBe(1);
+    expect(user).toEqual(
+      expect.objectContaining({
+        openidId,
+        email: 'renamed@example.com',
+        name: 'Renamed',
+        emailVerified: false,
+      }),
+    );
+  });
+
+  it('credits the start balance once across concurrent first logins', async () => {
+    getAppConfig.mockResolvedValue(appConfigWith({ enabled: true, startBalance: 500 }));
+
+    const [{ user }] = await Promise.all([firstLogin(), firstLogin()]);
+
+    const balances = await mongoose.models.Balance.find({ user: user._id }).lean<
+      Array<{ tokenCredits: number }>
+    >();
+    expect(balances.map((record) => record.tokenCredits)).toEqual([500]);
+  });
+
+  it('fails the recovered login while the winner has not credited its start balance yet', async () => {
+    await User.create({ email, provider: 'openid', openidId, openidIssuer: issuer });
+    getAppConfig.mockResolvedValue(appConfigWith({ enabled: true, startBalance: 500 }));
+
+    const login = firstLogin();
+
+    await expect(login).rejects.toThrow(ErrorTypes.AUTH_FAILED);
+    expect(await mongoose.models.Balance.countDocuments()).toBe(0);
+  });
+
+  it('recovers an account created without a balance when no start balance is configured', async () => {
+    await User.create({ email, provider: 'openid', openidId, openidIssuer: issuer });
+    getAppConfig.mockResolvedValue(appConfigWith({ enabled: true, startBalance: 0 }));
+
+    const { user } = await firstLogin();
+
+    expect(user).toEqual(expect.objectContaining({ openidId, email }));
+  });
+
+  it("applies the recovered tenant account's email-domain policy", async () => {
+    await tenantStorage.run({ tenantId }, () =>
+      User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
+    );
+    configsFor(appConfigWith(), appConfigWith(undefined, ['other.example']));
+
+    const login = tenantStorage.run({ tenantId }, () => firstLogin());
+
+    await expect(login).rejects.toThrow('Email domain not allowed');
+    expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ tenantId }));
+  });
+
+  it("continues when only the recovered tenant account's config sets a start balance", async () => {
+    await tenantStorage.run({ tenantId }, () =>
+      User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
+    );
+    configsFor(appConfigWith(), appConfigWith({ enabled: true, startBalance: 500 }));
+
+    const login = await tenantStorage.run({ tenantId }, () => firstLogin());
+
+    expect(login.user).toEqual(expect.objectContaining({ openidId, tenantId }));
+  });
+
+  it('holds the recovered login on the start balance new users are created with', async () => {
+    await tenantStorage.run({ tenantId }, () =>
+      User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
+    );
+    configsFor(
+      appConfigWith({ enabled: true, startBalance: 500 }),
+      appConfigWith({ enabled: false, startBalance: 0 }),
+    );
+
+    const login = tenantStorage.run({ tenantId }, () => firstLogin());
+
+    await expect(login).rejects.toThrow(ErrorTypes.AUTH_FAILED);
+  });
+
+  it("continues under the recovered tenant account's config when its policy admits the email", async () => {
+    await tenantStorage.run({ tenantId }, () =>
+      User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
+    );
+    const tenantConfig = appConfigWith(undefined, ['example.com']);
+    configsFor(appConfigWith(), tenantConfig);
+
+    const login = await tenantStorage.run({ tenantId }, () => firstLogin());
+
+    expect(login.appConfig).toBe(tenantConfig);
+    expect(login.user).toEqual(expect.objectContaining({ openidId, tenantId }));
+  });
+
+  it("refuses a first login the USER role's domain list excludes, creating nothing", async () => {
+    getAppConfig.mockResolvedValueOnce(appConfigWith(undefined, ['other.example']));
+
+    await expect(firstLogin()).rejects.toThrow('Email domain not allowed');
+    expect(getAppConfig).toHaveBeenCalledWith({
+      role: SystemRoles.USER,
+      skipRuntimeAugmentation: true,
+      failClosed: true,
+    });
+    expect(await User.countDocuments()).toBe(0);
+  });
+
+  it('creates the account in the USER role and reports that this call created it', async () => {
+    const login = await firstLogin({ claimedRole: SystemRoles.ADMIN });
+
+    expect(login.created).toBe(true);
+    expect(login.user).toEqual(expect.objectContaining({ role: SystemRoles.USER }));
+    expect(getAppConfig).toHaveBeenCalledWith({
+      role: SystemRoles.ADMIN,
+      skipRuntimeAugmentation: true,
+      failClosed: true,
+    });
+  });
+
+  it('refuses a first login the role its claims assign excludes, creating nothing', async () => {
+    getAppConfig
+      .mockResolvedValueOnce(appConfigWith({ enabled: true, startBalance: 500 }))
+      .mockResolvedValueOnce(appConfigWith(undefined, ['other.example']));
+
+    await expect(firstLogin({ claimedRole: SystemRoles.ADMIN })).rejects.toThrow(
+      'Email domain not allowed',
+    );
+    expect(await User.countDocuments()).toBe(0);
+    expect(await mongoose.models.Balance.countDocuments()).toBe(0);
+  });
+
+  it('reports a recovered account as not created by this call', async () => {
+    await firstLogin();
+
+    const login = await firstLogin();
+
+    expect(login.created).toBe(false);
+  });
+
+  it('fails the login when the email was taken by another provider in the meantime', async () => {
+    await User.create({ email, provider: 'local', username: 'local-user' });
+
+    await expect(firstLogin()).rejects.toThrow(ErrorTypes.AUTH_FAILED);
+    expect(await User.countDocuments({ email })).toBe(1);
+  });
+
+  it('throws when the lookup cannot account for the existing account', async () => {
+    await User.create({ email: 'taken@example.com', provider: 'openid', openidId: 'other-sub' });
+
+    const login = firstLogin({
+      lookup: { findUser: methods.findUser, openidId, openidIssuer: issuer },
+      profile: { ...profile, email: 'taken@example.com' },
+    });
+
+    await expect(login).rejects.toThrow('conflicts with an account the lookup cannot resolve');
+  });
+
+  it('rethrows other create failures without a second lookup', async () => {
+    const findUser = jest.fn(methods.findUser);
+
+    const login = firstLogin({
+      lookup: { ...getLookup(), findUser },
+      profile: { ...profile, email: 'not-an-email' },
+    });
+
+    await expect(login).rejects.toMatchObject({ name: 'ValidationError' });
+    expect(findUser).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,6 @@
 import { Globe } from 'lucide-react';
-import { Spinner } from '@librechat/client';
 import { useWatch, useFormContext } from 'react-hook-form';
+import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import {
   SystemRoles,
   Permissions,
@@ -60,76 +60,98 @@ export default function AgentFooter({
   const canEditThisAgent = hasPermission(PermissionBits.EDIT);
   const canDeleteThisAgent = hasPermission(PermissionBits.DELETE);
   const canShareRemoteAgent = hasRemoteAgentPermission(PermissionBits.SHARE);
+  const isAdmin = user?.role === SystemRoles.ADMIN;
   const isSaving = createMutation.isLoading || updateMutation.isLoading || isAvatarUploading;
-  const renderSaveButton = () => {
-    if (isSaving) {
-      return <Spinner className="icon-md" aria-hidden="true" />;
-    }
-
-    if (agent_id) {
-      return localize('com_ui_save');
-    }
-
-    return localize('com_ui_create');
-  };
+  const saveLabel = agent_id ? localize('com_ui_save') : localize('com_ui_create');
+  const renderSaveButton = () => (
+    <span className="t-icon-swap" data-state={isSaving ? 'b' : 'a'} aria-hidden={false}>
+      <span className="t-icon" data-icon="a">
+        {saveLabel}
+      </span>
+      <span className="t-icon" data-icon="b">
+        <Spinner className="icon-md" aria-hidden="true" />
+      </span>
+    </span>
+  );
 
   const showButtons = activePanel === Panel.builder;
 
   return (
     <div className="mb-1 flex w-full flex-col gap-2">
-      {showButtons && <AdvancedButton setActivePanel={setActivePanel} />}
-      {showButtons && agent_id && <VersionButton setActivePanel={setActivePanel} />}
+      {showButtons && (
+        <div className={`grid gap-2 ${agent_id ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          <AdvancedButton setActivePanel={setActivePanel} />
+          {!!agent_id && <VersionButton setActivePanel={setActivePanel} />}
+        </div>
+      )}
       {user?.role === SystemRoles.ADMIN && showButtons && <AdminSettings />}
-      {/* Context Button */}
-      <div className="flex items-center justify-end gap-2">
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canDeleteThisAgent) &&
-          !permissionsLoading && (
-            <DeleteButton
-              agent_id={agent_id}
-              setCurrentAgentId={setCurrentAgentId}
-              createMutation={createMutation}
-            />
-          )}
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canShareThisAgent) &&
-          hasAccessToShareAgents &&
-          !permissionsLoading && (
-            <GenericGrantAccessDialog
-              resourceDbId={agent?._id}
-              resourceId={agent_id}
-              resourceName={agent?.name ?? ''}
-              resourceType={ResourceType.AGENT}
-            />
-          )}
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canShareRemoteAgent) &&
-          hasAccessToShareRemoteAgents &&
-          !remotePermissionsLoading &&
-          agent?._id && (
-            <GenericGrantAccessDialog
-              resourceDbId={agent?._id}
-              resourceId={agent_id}
-              resourceName={agent?.name ?? ''}
-              resourceType={ResourceType.REMOTE_AGENT}
-            >
-              <button
-                type="button"
-                className="btn btn-neutral border-token-border-light h-9 px-3"
-                title={localize('com_ui_remote_access')}
+      <div className="flex items-center gap-2">
+        {/* Secondary actions share one group so they read as a set beside the primary Save. */}
+        <div
+          role="group"
+          aria-label={localize('com_ui_agent_actions')}
+          className="flex shrink-0 items-center gap-1.5"
+        >
+          {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canDeleteThisAgent) &&
+            !permissionsLoading && (
+              <DeleteButton
+                agent_id={agent_id}
+                setCurrentAgentId={setCurrentAgentId}
+                createMutation={createMutation}
+              />
+            )}
+          {(agent?.author === user?.id || isAdmin || canShareThisAgent) &&
+            (hasAccessToShareAgents || isAdmin) &&
+            !permissionsLoading && (
+              <GenericGrantAccessDialog
+                resourceDbId={agent?._id}
+                resourceId={agent_id}
+                resourceName={agent?.name ?? ''}
+                resourceType={ResourceType.AGENT}
+              />
+            )}
+          {(agent?.author === user?.id ||
+            user?.role === SystemRoles.ADMIN ||
+            canShareRemoteAgent) &&
+            hasAccessToShareRemoteAgents &&
+            !remotePermissionsLoading &&
+            agent?._id && (
+              <GenericGrantAccessDialog
+                resourceDbId={agent?._id}
+                resourceId={agent_id}
+                resourceName={agent?.name ?? ''}
+                resourceType={ResourceType.REMOTE_AGENT}
               >
-                <Globe className="h-4 w-4" aria-hidden="true" />
-              </button>
-            </GenericGrantAccessDialog>
-          )}
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canEditThisAgent) &&
-          !permissionsLoading && <DuplicateAgent agent_id={agent_id} />}
+                <TooltipAnchor
+                  description={localize('com_ui_remote_access')}
+                  render={
+                    <Button
+                      variant="outline"
+                      size="dense"
+                      type="button"
+                      aria-label={localize('com_ui_remote_access')}
+                      className="h-9 w-auto"
+                    >
+                      <Globe className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  }
+                />
+              </GenericGrantAccessDialog>
+            )}
+          {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canEditThisAgent) &&
+            !permissionsLoading && <DuplicateAgent agent_id={agent_id} />}
+        </div>
         {/* Submit Button */}
-        <button
-          className="btn btn-primary focus:shadow-outline flex h-9 w-full items-center justify-center px-4 py-2 font-semibold text-white hover:bg-green-600 focus:border-green-500"
+        <Button
+          variant="submit"
+          className="h-9 min-w-0 flex-1 font-semibold"
           type="submit"
           disabled={isSaving}
           aria-busy={isSaving}
+          aria-label={saveLabel}
         >
           {renderSaveButton()}
-        </button>
+        </Button>
       </div>
     </div>
   );

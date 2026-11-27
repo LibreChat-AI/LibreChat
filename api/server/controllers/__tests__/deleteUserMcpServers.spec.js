@@ -1,10 +1,18 @@
 const mockGetMCPManager = jest.fn();
 const mockInvalidateCachedTools = jest.fn();
+const mockGetServerConfig = jest.fn();
 
 jest.mock('~/config', () => ({
   getMCPManager: (...args) => mockGetMCPManager(...args),
   getFlowStateManager: jest.fn(),
-  getMCPServersRegistry: jest.fn(),
+  getMCPServersRegistry: () => ({
+    getServerConfig: (...args) => mockGetServerConfig(...args),
+    resolveAllowlists: jest.fn().mockResolvedValue({}),
+  }),
+}));
+
+jest.mock('~/server/services/MCP/oauthCleanup', () => ({
+  maybeUninstallOAuthMCP: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('~/server/services/Config/getCachedTools', () => ({
@@ -58,13 +66,14 @@ describe('deleteUserMcpServers', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {
     await MCPServer.deleteMany({});
     await AclEntry.deleteMany({});
     jest.clearAllMocks();
+    mockGetServerConfig.mockResolvedValue(undefined);
   });
 
   test('should delete solely-owned MCP servers and their ACL entries', async () => {
@@ -98,6 +107,14 @@ describe('deleteUserMcpServers', () => {
       resourceId: server._id,
     });
     expect(aclEntries).toHaveLength(0);
+    /** Credential cleanup must reach a server even when a profile hides it from the account. */
+    expect(mockGetServerConfig).toHaveBeenCalledWith(
+      'sole-owned-server',
+      userId.toString(),
+      undefined,
+      undefined,
+      { includeHidden: true },
+    );
   });
 
   test('should disconnect MCP sessions and invalidate tool cache before deletion', async () => {
@@ -128,6 +145,42 @@ describe('deleteUserMcpServers', () => {
       userId: userId.toString(),
       serverName: 'session-server',
     });
+  });
+
+  test('should delete owned servers when cache invalidation fails', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const server = await MCPServer.create({
+      serverName: 'cache-failure-server',
+      config: { title: 'Cache Failure Server' },
+      author: userId,
+    });
+
+    await permissionService.grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: userId,
+      resourceType: ResourceType.MCPSERVER,
+      resourceId: server._id,
+      accessRoleId: AccessRoleIds.MCPSERVER_OWNER,
+      grantedBy: userId,
+    });
+
+    const disconnectUserConnection = jest.fn().mockResolvedValue(undefined);
+    mockGetMCPManager.mockReturnValue({ disconnectUserConnection });
+    mockInvalidateCachedTools.mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    await deleteUserMcpServers(userId.toString());
+
+    expect(disconnectUserConnection).toHaveBeenCalledWith(
+      userId.toString(),
+      'cache-failure-server',
+    );
+    expect(await MCPServer.findById(server._id)).toBeNull();
+    await expect(
+      AclEntry.countDocuments({
+        resourceType: ResourceType.MCPSERVER,
+        resourceId: server._id,
+      }),
+    ).resolves.toBe(0);
   });
 
   test('should preserve multi-owned MCP servers', async () => {
@@ -263,6 +316,10 @@ describe('deleteUserMcpServers', () => {
     await deleteUserMcpServers(userId.toString());
 
     expect(await MCPServer.findById(server._id)).toBeNull();
+    expect(mockInvalidateCachedTools).toHaveBeenCalledWith({
+      userId: userId.toString(),
+      serverName: 'no-manager-server',
+    });
   });
 
   test('should delete legacy MCP servers that have author but no ACL entries', async () => {

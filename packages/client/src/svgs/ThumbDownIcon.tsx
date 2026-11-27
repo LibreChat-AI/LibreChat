@@ -1,4 +1,14 @@
-export default function ThumbDownIcon({ className = '', size = '1em', bold = false }) {
+import { JSX } from 'react/jsx-runtime';
+
+export default function ThumbDownIcon({
+  className = '',
+  size = '1em',
+  bold = false,
+}: {
+  className?: string | undefined;
+  size?: string | undefined;
+  bold?: boolean | undefined;
+}): JSX.Element {
   return bold ? (
     <svg
       xmlns="http://www.w3.org/2000/svg"

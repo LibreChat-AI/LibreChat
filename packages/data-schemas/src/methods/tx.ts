@@ -16,6 +16,8 @@
  *    the last-defined key wins.
  */
 
+import { getGeminiHydrogenRates } from 'librechat-data-provider';
+
 export interface TxDeps {
   /** From @librechat/api — matches a model name to a canonical key. */
   matchModelName: (model: string, endpoint?: string) => string | undefined;
@@ -74,6 +76,14 @@ const bedrockValues: Record<string, { prompt: number; completion: number }> = {
   'llama-3.2-90b': { prompt: 0.72, completion: 0.72 },
   'llama-3.3': { prompt: 2.65, completion: 3.5 },
   'llama-3.3-70b': { prompt: 2.65, completion: 3.5 },
+  /* Llama 4. Per-host rates vary widely (0.08 to 0.22 prompt); these follow the
+     published Bedrock/OpenRouter figures. */
+  llama4: { prompt: 0.1, completion: 0.3 },
+  'llama-4': { prompt: 0.1, completion: 0.3 },
+  'llama4-scout': { prompt: 0.1, completion: 0.3 },
+  'llama-4-scout': { prompt: 0.1, completion: 0.3 },
+  'llama4-maverick': { prompt: 0.2, completion: 0.7 },
+  'llama-4-maverick': { prompt: 0.2, completion: 0.7 },
   'mistral-7b': { prompt: 0.15, completion: 0.2 },
   'mistral-small': { prompt: 0.15, completion: 0.2 },
   'mixtral-8x7b': { prompt: 0.45, completion: 0.7 },
@@ -91,11 +101,33 @@ const bedrockValues: Record<string, { prompt: number; completion: number }> = {
   'nova-lite': { prompt: 0.06, completion: 0.24 },
   'nova-pro': { prompt: 0.8, completion: 3.2 },
   'nova-premier': { prompt: 2.5, completion: 12.5 },
+  'nova-2-lite': { prompt: 0.3, completion: 2.5 },
   'deepseek.r1': { prompt: 1.35, completion: 5.4 },
   'moonshot.kimi': { prompt: 0.6, completion: 2.5 },
   'moonshot.kimi-k2': { prompt: 0.6, completion: 2.5 },
   'moonshot.kimi-k2.5': { prompt: 0.6, completion: 3.0 },
   'moonshot.kimi-k2-thinking': { prompt: 0.6, completion: 2.5 },
+  /* Both dot-prefixed forms need their own row: longest-substring matching
+     otherwise reaches `moonshot.kimi` or `moonshot` before `kimi-k3`. */
+  'moonshot.kimi-k3': { prompt: 3.0, completion: 15.0 },
+  'moonshotai.kimi-k3': { prompt: 3.0, completion: 15.0 },
+  /* AWS lists the v2 models by NVIDIA's names, Nemotron Nano 2 and Nemotron Nano 2 VL. */
+  'nvidia.nemotron-nano-9b-v2': { prompt: 0.06, completion: 0.23 },
+  'nvidia.nemotron-nano-12b-v2': { prompt: 0.2, completion: 0.6 },
+  'nvidia.nemotron-nano-3-30b': { prompt: 0.06, completion: 0.24 },
+  'nvidia.nemotron-super-3-120b': { prompt: 0.15, completion: 0.65 },
+  'ai21.jamba-1-5-large': { prompt: 2.0, completion: 8.0 },
+  'ai21.jamba-1-5-mini': { prompt: 0.2, completion: 0.4 },
+  'mistral.magistral-small-2509': { prompt: 0.5, completion: 1.5 },
+  'mistral.ministral-3-3b-instruct': { prompt: 0.1, completion: 0.1 },
+  'mistral.ministral-3-8b-instruct': { prompt: 0.15, completion: 0.15 },
+  'mistral.ministral-3-14b-instruct': { prompt: 0.2, completion: 0.2 },
+  /* Regional inference profiles (`us.`, `eu.`) bill 10% over the global profile. */
+  'openai.gpt-6.1-terra': { prompt: 1.1, completion: 5.5 },
+  'global.openai.gpt-6.1-terra': { prompt: 1.0, completion: 5.0 },
+  'writer.palmyra-vision-7b': { prompt: 0.15, completion: 0.6 },
+  'writer.palmyra-x4': { prompt: 2.5, completion: 10.0 },
+  'writer.palmyra-x5': { prompt: 0.6, completion: 6.0 },
 };
 
 /**
@@ -129,8 +161,25 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'gpt-5.2': { prompt: 1.75, completion: 14 },
     'gpt-5.3': { prompt: 1.75, completion: 14 },
     'gpt-5.4': { prompt: 2.5, completion: 15 },
-    // TODO: gpt-5.4-pro pricing not yet officially published — verify before release
-    'gpt-5.4-pro': { prompt: 5, completion: 30 },
+    'gpt-5.4-pro': { prompt: 30, completion: 180 },
+    'gpt-5.4-mini': { prompt: 0.75, completion: 4.5 },
+    'gpt-5.4-nano': { prompt: 0.2, completion: 1.25 },
+    'gpt-5.5': { prompt: 5, completion: 30 },
+    'gpt-5.5-pro': { prompt: 30, completion: 180 },
+    'gpt-5.6': { prompt: 4, completion: 20 },
+    'gpt-5.6-terra': { prompt: 2, completion: 12 },
+    'gpt-5.6-luna': { prompt: 0.2, completion: 1.2 },
+    'gpt-6-cyber': { prompt: 20, completion: 100 },
+    'gpt-6-astra': { prompt: 10, completion: 50 },
+    'gpt-6-sol': { prompt: 2, completion: 10 },
+    'gpt-6.2-sol': { prompt: 2, completion: 10 },
+    'gpt-6.1-terra': { prompt: 1, completion: 5 },
+    'gpt-6-luna': { prompt: 0.1, completion: 0.5 },
+    'chat-latest': { prompt: 5, completion: 30 },
+    'gpt-5-chat-latest': { prompt: 1.25, completion: 10 },
+    'gpt-5.1-chat-latest': { prompt: 1.25, completion: 10 },
+    'gpt-5.2-chat-latest': { prompt: 1.75, completion: 14 },
+    'gpt-5.3-chat-latest': { prompt: 1.75, completion: 14 },
     'gpt-5-nano': { prompt: 0.05, completion: 0.4 },
     'gpt-5-mini': { prompt: 0.25, completion: 2 },
     'gpt-5-pro': { prompt: 15, completion: 120 },
@@ -154,20 +203,39 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'claude-3-7-sonnet': { prompt: 3, completion: 15 },
     'claude-3.7-sonnet': { prompt: 3, completion: 15 },
     'claude-haiku-4-5': { prompt: 1, completion: 5 },
+    /* Rates up to a 100K prompt; the higher tier lives in `premiumTokenValues`. */
+    'claude-haiku-5-5': { prompt: 0.1, completion: 0.5 },
+    'claude-haiku-5.5': { prompt: 0.1, completion: 0.5 },
     'claude-opus-4': { prompt: 15, completion: 75 },
     'claude-opus-4-5': { prompt: 5, completion: 25 },
     'claude-opus-4-6': { prompt: 5, completion: 25 },
     'claude-opus-4-7': { prompt: 5, completion: 25 },
+    'claude-opus-4-8': { prompt: 5, completion: 25 },
+    'claude-opus-5': { prompt: 5, completion: 25 },
+    'claude-opus-5-5': { prompt: 4, completion: 20 },
+    'claude-opus-5.5': { prompt: 4, completion: 20 },
+    'claude-fable-5': { prompt: 10, completion: 50 },
+    'claude-mythos-5': { prompt: 10, completion: 50 },
+    'claude-fable-5-1': { prompt: 10, completion: 50 },
+    'claude-fable-5-2': { prompt: 8, completion: 40 },
+    'claude-mythos-5-1': { prompt: 10, completion: 50 },
+    'claude-mythos-5-2': { prompt: 8, completion: 40 },
     'claude-sonnet-4': { prompt: 3, completion: 15 },
     'claude-sonnet-4-5': { prompt: 3, completion: 15 },
     'claude-sonnet-4-6': { prompt: 3, completion: 15 },
+    'claude-sonnet-5': { prompt: 2, completion: 10 },
+    'claude-sonnet-5-5': { prompt: 2, completion: 10 },
+    'claude-sonnet-5.5': { prompt: 2, completion: 10 },
     'command-r': { prompt: 0.5, completion: 1.5 },
     'command-r-plus': { prompt: 3, completion: 15 },
     'command-text': { prompt: 1.5, completion: 2.0 },
+    'command-a': { prompt: 2.5, completion: 10.0 },
     'deepseek-chat': { prompt: 0.28, completion: 0.42 },
     'deepseek-reasoner': { prompt: 0.28, completion: 0.42 },
     'deepseek-r1': { prompt: 0.4, completion: 2.0 },
     'deepseek-v3': { prompt: 0.2, completion: 0.8 },
+    'deepseek-v4-flash': { prompt: 0.14, completion: 0.28 },
+    'deepseek-v4-pro': { prompt: 0.435, completion: 0.87 },
     'gemma-2': { prompt: 0.01, completion: 0.03 },
     'gemma-3': { prompt: 0.02, completion: 0.04 },
     'gemma-3-27b': { prompt: 0.09, completion: 0.16 },
@@ -186,6 +254,15 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'gemini-3-pro-image': { prompt: 2, completion: 120 },
     'gemini-3.1': { prompt: 2, completion: 12 },
     'gemini-3.1-flash-lite': { prompt: 0.25, completion: 1.5 },
+    'gemini-3.5-flash': { prompt: 1.5, completion: 9 },
+    'gemini-3.5-flash-lite': { prompt: 0.3, completion: 2.5 },
+    // Gemini 3.6/3.7/3.8 Flash introductory pricing through 2026-12-31; revert to { prompt: 1.5, completion: 7.5 } after.
+    'gemini-3.6-flash': { prompt: 0.75, completion: 3.75 },
+    'gemini-3.7-flash': { prompt: 0.75, completion: 3.75 },
+    'gemini-3.8-flash': { prompt: 0.75, completion: 3.75 },
+    // Gemini 4 Argon introductory pricing through 2026-11-30; revert to { prompt: 4, completion: 20 } on 2026-12-01.
+    'gemini-4-argon': { prompt: 2, completion: 10 },
+    'gemini-4-hydrogen': getGeminiHydrogenRates(),
     'gemini-pro-vision': { prompt: 0.5, completion: 1.5 },
     grok: { prompt: 2.0, completion: 10.0 },
     'grok-beta': { prompt: 5.0, completion: 15.0 },
@@ -203,14 +280,32 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'grok-4': { prompt: 3.0, completion: 15.0 },
     'grok-4-fast': { prompt: 0.2, completion: 0.5 },
     'grok-4-1-fast': { prompt: 0.2, completion: 0.5 },
+    /* Standard tier. The doubled rate above a 200K prompt lives in
+       `premiumTokenValues`, since the 500K window makes it reachable. */
+    'grok-4.5': { prompt: 2.0, completion: 6.0 },
+    'grok-4-5': { prompt: 2.0, completion: 6.0 },
+    'grok-4.6': { prompt: 2.0, completion: 6.0 },
+    'grok-4-6': { prompt: 2.0, completion: 6.0 },
+    'grok-4.7': { prompt: 2.0, completion: 6.0 },
+    'grok-4-7': { prompt: 2.0, completion: 6.0 },
     'grok-code-fast': { prompt: 0.2, completion: 1.5 },
     codestral: { prompt: 0.3, completion: 0.9 },
+    devstral: { prompt: 0.4, completion: 2.0 },
+    'mistral-medium': { prompt: 1.5, completion: 7.5 },
+    voxtral: { prompt: 0.1, completion: 0.4 },
+    holo2: { prompt: 0.3, completion: 0.7 },
     'ministral-3b': { prompt: 0.04, completion: 0.04 },
     'ministral-8b': { prompt: 0.1, completion: 0.1 },
+    'ministral-8b-2512': { prompt: 0.15, completion: 0.15 },
+    'ministral-14b-2512': { prompt: 0.2, completion: 0.2 },
     'mistral-nemo': { prompt: 0.15, completion: 0.15 },
     'mistral-saba': { prompt: 0.2, completion: 0.6 },
     'pixtral-large': { prompt: 2.0, completion: 6.0 },
-    'mistral-large': { prompt: 2.0, completion: 6.0 },
+    'mistral-large': { prompt: 0.5, completion: 1.5 },
+    'mistral-large-2411': { prompt: 2.0, completion: 6.0 },
+    'mistral-large-2512': { prompt: 0.5, completion: 1.5 },
+    'mistral-large-3': { prompt: 0.5, completion: 1.5 },
+    'mistral-large-4': { prompt: 1.36, completion: 4.18 },
     'mixtral-8x22b': { prompt: 0.65, completion: 0.65 },
     kimi: { prompt: 0.6, completion: 2.5 },
     moonshot: { prompt: 2.0, completion: 5.0 },
@@ -225,6 +320,7 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'kimi-k2-0711-preview': { prompt: 0.6, completion: 2.5 },
     'kimi-k2-thinking': { prompt: 0.6, completion: 2.5 },
     'kimi-k2-thinking-turbo': { prompt: 1.15, completion: 8.0 },
+    'kimi-k3': { prompt: 3.0, completion: 15.0 },
     'moonshot-v1': { prompt: 2.0, completion: 5.0 },
     'moonshot-v1-auto': { prompt: 2.0, completion: 5.0 },
     'moonshot-v1-8k': { prompt: 0.2, completion: 2.0 },
@@ -247,6 +343,16 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'glm-4.5-air': { prompt: 0.14, completion: 0.86 },
     'glm-4.5v': { prompt: 0.6, completion: 1.8 },
     'glm-4.6': { prompt: 0.5, completion: 1.75 },
+    'glm-4.7': { prompt: 0.6, completion: 2.2 },
+    'glm-4.7-flash': { prompt: 0.06, completion: 0.4 },
+    'glm-5': { prompt: 1.4, completion: 4.4 },
+    'glm-5.1': { prompt: 1.4, completion: 4.4 },
+    'glm-5.2': { prompt: 1.4, completion: 4.4 },
+    'glm-5.3': { prompt: 1.4, completion: 4.4 },
+    'minimax-m1': { prompt: 0.55, completion: 2.2 },
+    'minimax-m2': { prompt: 0.3, completion: 1.2 },
+    'minimax-m2.7': { prompt: 0.3, completion: 1.2 },
+    'minimax-m3': { prompt: 0.3, completion: 1.2 },
     qwen: { prompt: 0.08, completion: 0.33 },
     'qwen2.5': { prompt: 0.08, completion: 0.33 },
     'qwen-turbo': { prompt: 0.05, completion: 0.2 },
@@ -269,6 +375,13 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'qwen3-coder-plus': { prompt: 1, completion: 5 },
     'qwen3-coder-flash': { prompt: 0.3, completion: 1.5 },
     'qwen3-next-80b-a3b': { prompt: 0.1, completion: 0.8 },
+    'qwen3-coder-next': { prompt: 0.12, completion: 0.8 },
+    musespark: { prompt: 1.25, completion: 4.25 },
+    'muse-spark': { prompt: 1.25, completion: 4.25 },
+    'muse-spark-1.1': { prompt: 1.25, completion: 4.25 },
+    'muse-spark-1.2': { prompt: 1.25, completion: 4.25 },
+    'muse-glimmer': { prompt: 0.3, completion: 1.2 },
+    'muse-glimmer-30b': { prompt: 0.3, completion: 1.2 },
   },
   bedrockValues,
 );
@@ -277,7 +390,9 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
  * Mapping of model token sizes to their respective multipliers for cached input, read and write.
  * The rates are 1 USD per 1M tokens.
  */
-export const cacheTokenValues: Record<string, { write: number; read: number }> = {
+type CacheRates = { write: number; read: number; write12h?: number };
+
+export const cacheTokenValues: Record<string, CacheRates> = {
   'claude-3.7-sonnet': { write: 3.75, read: 0.3 },
   'claude-3-7-sonnet': { write: 3.75, read: 0.3 },
   'claude-3.5-sonnet': { write: 3.75, read: 0.3 },
@@ -286,13 +401,29 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'claude-3-5-haiku': { write: 1, read: 0.08 },
   'claude-3-haiku': { write: 0.3, read: 0.03 },
   'claude-haiku-4-5': { write: 1.25, read: 0.1 },
+  'claude-haiku-5-5': { write: 0.125, read: 0.01 },
+  'claude-haiku-5.5': { write: 0.125, read: 0.01 },
   'claude-sonnet-4': { write: 3.75, read: 0.3 },
   'claude-sonnet-4-5': { write: 3.75, read: 0.3 },
   'claude-sonnet-4-6': { write: 3.75, read: 0.3 },
+  'claude-sonnet-5': { write: 2.5, read: 0.2 },
+  'claude-sonnet-5-5': { write: 2.5, read: 0.2 },
+  'claude-sonnet-5.5': { write: 2.5, read: 0.2 },
   'claude-opus-4': { write: 18.75, read: 1.5 },
   'claude-opus-4-5': { write: 6.25, read: 0.5 },
   'claude-opus-4-6': { write: 6.25, read: 0.5 },
   'claude-opus-4-7': { write: 6.25, read: 0.5 },
+  'claude-opus-4-8': { write: 6.25, read: 0.5 },
+  'claude-opus-5': { write: 6.25, read: 0.5 },
+  'claude-opus-5-5': { write: 5, read: 0.2 },
+  'claude-opus-5.5': { write: 5, read: 0.2 },
+  'claude-fable-5': { write: 12.5, read: 1 },
+  'claude-mythos-5': { write: 12.5, read: 1 },
+  // Fable/Mythos 5.1 cache reads are 0.025x base input, not the usual 0.1x.
+  'claude-fable-5-1': { write: 12.5, read: 0.25 },
+  'claude-fable-5-2': { write: 10, read: 0.2 },
+  'claude-mythos-5-1': { write: 12.5, read: 0.25 },
+  'claude-mythos-5-2': { write: 10, read: 0.2 },
   'gpt-4o': { write: 2.5, read: 1.25 },
   'gpt-4o-mini': { write: 0.15, read: 0.075 },
   'gpt-4.1': { write: 2, read: 0.5 },
@@ -303,6 +434,23 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'gpt-5.2': { write: 1.75, read: 0.175 },
   'gpt-5.3': { write: 1.75, read: 0.175 },
   'gpt-5.4': { write: 2.5, read: 0.25 },
+  'gpt-5.4-mini': { write: 0.75, read: 0.075 },
+  'gpt-5.4-nano': { write: 0.2, read: 0.02 },
+  'gpt-5.5': { write: 5, read: 0.5 },
+  'gpt-5.6': { write: 5, read: 0.4 },
+  'gpt-5.6-terra': { write: 2.5, read: 0.2 },
+  'gpt-5.6-luna': { write: 0.25, read: 0.02 },
+  'gpt-6-cyber': { write: 25, write12h: 50, read: 2 },
+  'gpt-6-astra': { write: 12.5, read: 1 },
+  'gpt-6-sol': { write: 2.5, read: 0.2 },
+  'gpt-6.2-sol': { write: 2.5, read: 0.1 },
+  'gpt-6.1-terra': { write: 1.25, read: 0.05 },
+  'gpt-6-luna': { write: 0.125, read: 0.01 },
+  'chat-latest': { write: 5, read: 0.5 },
+  'gpt-5-chat-latest': { write: 1.25, read: 0.125 },
+  'gpt-5.1-chat-latest': { write: 1.25, read: 0.125 },
+  'gpt-5.2-chat-latest': { write: 1.75, read: 0.175 },
+  'gpt-5.3-chat-latest': { write: 1.75, read: 0.175 },
   'gpt-5-mini': { write: 0.25, read: 0.025 },
   'gpt-5-nano': { write: 0.05, read: 0.005 },
   o1: { write: 15, read: 7.5 },
@@ -311,6 +459,8 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   o3: { write: 2, read: 0.5 },
   'o3-mini': { write: 1.1, read: 0.275 },
   'o4-mini': { write: 1.1, read: 0.275 },
+  'grok-4.7': { write: 2, read: 0.5 },
+  'grok-4-7': { write: 2, read: 0.5 },
   deepseek: { write: 0.28, read: 0.028 },
   'deepseek-chat': { write: 0.28, read: 0.028 },
   'deepseek-reasoner': { write: 0.28, read: 0.028 },
@@ -329,6 +479,17 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'gemini-3.1': { write: 2, read: 0.2 },
   // Gemini 3.1 Flash-Lite - cache write: $0.25/1M, cache read: $0.025/1M
   'gemini-3.1-flash-lite': { write: 0.25, read: 0.025 },
+  // Gemini 3.5 Flash - cache write: $1.50/1M, cache read: $0.15/1M
+  'gemini-3.5-flash': { write: 1.5, read: 0.15 },
+  // Gemini 3.5 Flash-Lite - cache write: $0.30/1M, cache read: $0.03/1M
+  'gemini-3.5-flash-lite': { write: 0.3, read: 0.03 },
+  // Gemini 3.6/3.7/3.8 Flash introductory pricing through 2026-12-31; revert to { write: 1.5, read: 0.15 } after.
+  'gemini-3.6-flash': { write: 0.75, read: 0.075 },
+  'gemini-3.7-flash': { write: 0.75, read: 0.075 },
+  'gemini-3.8-flash': { write: 0.75, read: 0.075 },
+  // Gemini 4 Argon (implicit caching only) introductory pricing through 2026-11-30; revert to { write: 4, read: 0.2 } on 2026-12-01.
+  'gemini-4-argon': { write: 2, read: 0.1 },
+  'gemini-4-hydrogen': { write: 1.5, read: getGeminiHydrogenRates().read },
 };
 
 /**
@@ -338,10 +499,129 @@ export const premiumTokenValues: Record<
   string,
   { threshold: number; prompt: number; completion: number }
 > = {
+  'claude-haiku-5-5': { threshold: 100000, prompt: 0.5, completion: 2.5 },
+  'claude-haiku-5.5': { threshold: 100000, prompt: 0.5, completion: 2.5 },
   'gemini-3.1': { threshold: 200000, prompt: 4, completion: 18 },
+  'gpt-5.4': { threshold: 272000, prompt: 5, completion: 22.5 },
+  'gpt-5.4-pro': { threshold: 272000, prompt: 60, completion: 270 },
+  'gpt-5.5': { threshold: 272000, prompt: 10, completion: 45 },
+  'gpt-5.5-pro': { threshold: 272000, prompt: 60, completion: 270 },
+  'gpt-5.6': { threshold: 272000, prompt: 8, completion: 30 },
+  'gpt-5.6-terra': { threshold: 272000, prompt: 4, completion: 18 },
+  'gpt-5.6-luna': { threshold: 272000, prompt: 0.4, completion: 1.8 },
+  'gpt-6-cyber': { threshold: 272000, prompt: 40, completion: 150 },
+  'gpt-6-astra': { threshold: 272000, prompt: 20, completion: 75 },
+  'gpt-6-sol': { threshold: 272000, prompt: 4, completion: 15 },
+  'gpt-6.2-sol': { threshold: 272000, prompt: 4, completion: 15 },
+  'gpt-6.1-terra': { threshold: 272000, prompt: 2, completion: 7.5 },
+  'gpt-6-luna': { threshold: 272000, prompt: 0.2, completion: 0.75 },
+  'grok-4.5': { threshold: 200000, prompt: 4, completion: 12 },
+  'grok-4-5': { threshold: 200000, prompt: 4, completion: 12 },
+  'grok-4.6': { threshold: 200000, prompt: 4, completion: 12 },
+  'grok-4-6': { threshold: 200000, prompt: 4, completion: 12 },
+  /** xAI bills >=200K at the long-context rate; this table uses exclusive thresholds. */
+  'grok-4.7': { threshold: 199999, prompt: 4, completion: 12 },
+  'grok-4-7': { threshold: 199999, prompt: 4, completion: 12 },
 };
 
-export function createTxMethods(_mongoose: typeof import('mongoose'), txDeps: TxDeps) {
+/**
+ * Premium (tiered) cache pricing for models whose cache rates change once the
+ * prompt crosses the long-context threshold. Cache write/read scale by the same
+ * multiplier the long-context tier applies to input (e.g. 2x for the gpt-5.x
+ * family), so these mirror `premiumTokenValues` on the cache dimension.
+ */
+export const premiumCacheTokenValues: Record<
+  string,
+  { threshold: number; write?: number; read: number }
+> = {
+  'claude-haiku-5-5': { threshold: 100000, write: 0.625, read: 0.05 },
+  'claude-haiku-5.5': { threshold: 100000, write: 0.625, read: 0.05 },
+  'gpt-5.4': { threshold: 272000, write: 5, read: 0.5 },
+  'gpt-5.5': { threshold: 272000, write: 10, read: 1 },
+  'gpt-5.6': { threshold: 272000, write: 10, read: 0.8 },
+  'gpt-5.6-terra': { threshold: 272000, write: 5, read: 0.4 },
+  'gpt-5.6-luna': { threshold: 272000, write: 0.5, read: 0.04 },
+  // OpenAI publishes no long-context cache-write rate for Cyber.
+  'gpt-6-cyber': { threshold: 272000, read: 4 },
+  'gpt-6-astra': { threshold: 272000, write: 25, read: 2 },
+  'gpt-6-sol': { threshold: 272000, write: 5, read: 0.4 },
+  'gpt-6.2-sol': { threshold: 272000, write: 5, read: 0.2 },
+  'gpt-6.1-terra': { threshold: 272000, write: 2.5, read: 0.1 },
+  'gpt-6-luna': { threshold: 272000, write: 0.25, read: 0.02 },
+  'grok-4.7': { threshold: 199999, write: 4, read: 1 },
+  'grok-4-7': { threshold: 199999, write: 4, read: 1 },
+};
+
+/** `write1h` prices Anthropic's 1-hour prompt cache writes; `write` is the 5-minute rate */
+type CacheType = 'write' | 'read' | 'write1h' | 'write12h';
+
+/** Anthropic bills 1-hour cache writes at 2x the input rate on every model and tier */
+export const ONE_HOUR_CACHE_WRITE_FACTOR = 2;
+
+export function createTxMethods(
+  _mongoose: typeof import('mongoose'),
+  txDeps: TxDeps,
+): {
+  tokenValues: Record<
+    string,
+    {
+      prompt: number;
+      completion: number;
+    }
+  >;
+  premiumTokenValues: Record<
+    string,
+    {
+      threshold: number;
+      prompt: number;
+      completion: number;
+    }
+  >;
+  getValueKey: (model: string, endpoint?: string) => string | undefined;
+  getMultiplier: ({
+    model,
+    valueKey,
+    endpoint,
+    tokenType,
+    inputTokenCount,
+    endpointTokenConfig,
+  }: {
+    model?: string;
+    valueKey?: string;
+    endpoint?: string;
+    tokenType?: 'prompt' | 'completion';
+    inputTokenCount?: number;
+    endpointTokenConfig?: Record<string, Record<string, number>>;
+  }) => number;
+  getPremiumRate: (
+    valueKey: string,
+    tokenType: string,
+    inputTokenCount?: number | null,
+  ) => number | null;
+  getCacheMultiplier: ({
+    valueKey,
+    cacheType,
+    model,
+    endpoint,
+    endpointTokenConfig,
+    inputTokenCount,
+  }: {
+    valueKey?: string;
+    cacheType?: CacheType;
+    model?: string;
+    endpoint?: string;
+    endpointTokenConfig?: Record<string, Record<string, number>>;
+    inputTokenCount?: number | null;
+  }) => number | null;
+  defaultRate: number;
+  cacheTokenValues: Record<
+    string,
+    {
+      write: number;
+      read: number;
+    }
+  >;
+} {
   const { matchModelName, findMatchingPattern } = txDeps;
 
   /**
@@ -420,7 +700,13 @@ export function createTxMethods(_mongoose: typeof import('mongoose'), txDeps: Tx
     endpointTokenConfig?: Record<string, Record<string, number>>;
   }): number {
     if (endpointTokenConfig && model) {
-      return endpointTokenConfig?.[model]?.[tokenType as string] ?? defaultRate;
+      const modelConfig = endpointTokenConfig[model];
+      /** A partial override only prices the models it lists; others fall
+       *  through to the standard tables so billing matches the advertised
+       *  token config instead of charging defaultRate */
+      if (modelConfig) {
+        return modelConfig[tokenType as string] ?? defaultRate;
+      }
     }
 
     if (valueKey && tokenType) {
@@ -449,7 +735,29 @@ export function createTxMethods(_mongoose: typeof import('mongoose'), txDeps: Tx
   }
 
   /**
+   * Checks if premium (tiered) cache pricing applies and returns the premium rate.
+   */
+  function getPremiumCacheRate(
+    valueKey: string,
+    cacheType: 'write' | 'read',
+    inputTokenCount?: number | null,
+  ): number | null | undefined {
+    if (inputTokenCount == null) {
+      return undefined;
+    }
+    const premiumEntry = premiumCacheTokenValues[valueKey];
+    if (!premiumEntry || inputTokenCount <= premiumEntry.threshold) {
+      return undefined;
+    }
+    return premiumEntry[cacheType] ?? null;
+  }
+
+  /**
    * Retrieves the cache multiplier for a given value key and token type.
+   * When `inputTokenCount` crosses a model's long-context threshold, the
+   * premium cache rate applies instead of the standard one. A `write1h`
+   * rate comes from an explicit endpoint override, otherwise it is the
+   * prompt rate of the same tier times {@link ONE_HOUR_CACHE_WRITE_FACTOR}.
    */
   function getCacheMultiplier({
     valueKey,
@@ -457,19 +765,59 @@ export function createTxMethods(_mongoose: typeof import('mongoose'), txDeps: Tx
     model,
     endpoint,
     endpointTokenConfig,
+    inputTokenCount,
   }: {
     valueKey?: string;
-    cacheType?: 'write' | 'read';
+    cacheType?: CacheType;
     model?: string;
     endpoint?: string;
     endpointTokenConfig?: Record<string, Record<string, number>>;
+    inputTokenCount?: number | null;
   }): number | null {
+    if (cacheType === 'write12h') {
+      const override = model ? endpointTokenConfig?.[model] : undefined;
+      if (override != null) return override.write12h ?? null;
+      const key = valueKey ?? (model ? getValueKey(model, endpoint) : undefined);
+      if (
+        !key ||
+        (inputTokenCount != null &&
+          inputTokenCount > (premiumCacheTokenValues[key]?.threshold ?? Infinity))
+      )
+        return null;
+      return cacheTokenValues[key]?.write12h ?? null;
+    }
+
+    if (cacheType === 'write1h') {
+      const override = model ? endpointTokenConfig?.[model]?.write1h : undefined;
+      if (override != null) {
+        return override;
+      }
+      if ((valueKey ?? (model ? getValueKey(model, endpoint) : undefined)) === 'gpt-6-cyber') {
+        return null;
+      }
+      const promptRate = getMultiplier({
+        model,
+        valueKey,
+        endpoint,
+        tokenType: 'prompt',
+        inputTokenCount: inputTokenCount ?? undefined,
+        endpointTokenConfig,
+      });
+      return promptRate * ONE_HOUR_CACHE_WRITE_FACTOR;
+    }
+
     if (endpointTokenConfig && model) {
-      return endpointTokenConfig?.[model]?.[cacheType as string] ?? null;
+      const modelConfig = endpointTokenConfig[model];
+      /** Models absent from a partial override fall through to standard
+       *  cache rates rather than reporting no cache pricing */
+      if (modelConfig) {
+        return modelConfig[cacheType as string] ?? null;
+      }
     }
 
     if (valueKey && cacheType) {
-      return cacheTokenValues[valueKey]?.[cacheType] ?? null;
+      const premium = getPremiumCacheRate(valueKey, cacheType, inputTokenCount);
+      return premium !== undefined ? premium : (cacheTokenValues[valueKey]?.[cacheType] ?? null);
     }
 
     if (!cacheType || !model) {
@@ -481,7 +829,8 @@ export function createTxMethods(_mongoose: typeof import('mongoose'), txDeps: Tx
       return null;
     }
 
-    return cacheTokenValues[valueKey]?.[cacheType] ?? null;
+    const premium = getPremiumCacheRate(valueKey, cacheType, inputTokenCount);
+    return premium !== undefined ? premium : (cacheTokenValues[valueKey]?.[cacheType] ?? null);
   }
 
   return {

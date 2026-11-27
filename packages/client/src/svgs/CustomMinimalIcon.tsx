@@ -1,3 +1,4 @@
+import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils';
 export default function CustomMinimalIcon({
   size = 25,
@@ -5,7 +6,7 @@ export default function CustomMinimalIcon({
 }: {
   size?: number;
   className?: string;
-}) {
+}): JSX.Element {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"

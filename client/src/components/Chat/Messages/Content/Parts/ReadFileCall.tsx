@@ -1,12 +1,14 @@
 import { useMemo } from 'react';
 import { FileText } from 'lucide-react';
-import type { TAttachment } from 'librechat-data-provider';
+import { parseJsonField } from '@librechat/chat';
+import { TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
+import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
+import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
-import parseJsonField from './parseJsonField';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -62,61 +64,99 @@ export function langFromPath(filePath: string): string {
 }
 
 export default function ReadFileCall({
+  toolCallId,
+  stepId,
   isSubmitting,
+  runStepStatus,
   initialProgress = 0.1,
   args,
   output = '',
   attachments,
   hideAttachments = false,
+  onExpand,
 }: {
+  toolCallId?: string;
+  stepId?: string;
   initialProgress: number;
   isSubmitting: boolean;
+  runStepStatus?: PartMetadata['runStepStatus'];
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
   hideAttachments?: boolean;
+  onExpand?: () => void;
 }) {
   const localize = useLocalize();
-  const filePath = useMemo(() => parseJsonField(args, 'file_path'), [args]);
+  const filePath = useMemo(
+    () => parseJsonField(args, 'path') || parseJsonField(args, 'file_path'),
+    [args],
+  );
+  const intent = useToolCallIntent(args);
   const fileName = filePath.split('/').pop() || filePath;
   const lang = useMemo(() => langFromPath(filePath), [filePath]);
 
-  const { showCode, toggleCode, expandStyle, expandRef, progress, cancelled, hasError, hasOutput } =
-    useToolCallState(initialProgress, isSubmitting, output, !!filePath);
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!filePath,
+      panelReady: output.length > 0,
+      keepLabelRow: intent != null,
+      onExpand,
+      runStepStatus,
+    });
 
-  const highlighted = useLazyHighlight(hasOutput ? output : undefined, lang);
+  const highlighted = useLazyHighlight(showCode && hasOutput ? output : undefined, lang);
+
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize('com_ui_read_file', { 0: fileName }));
 
   return (
     <>
-      <div className="relative my-1.5 flex size-5 shrink-0 items-center gap-2.5">
-        <ProgressText
-          progress={progress}
-          onClick={toggleCode}
-          inProgressText={localize('com_ui_reading_file', { 0: fileName })}
-          finishedText={
-            cancelled ? localize('com_ui_cancelled') : localize('com_ui_read_file', { 0: fileName })
-          }
-          errorSuffix={hasError && !cancelled ? localize('com_ui_tool_failed') : undefined}
-          icon={
-            <FileText
-              className={cn(
-                'size-4 shrink-0 text-text-secondary',
-                progress < 1 && !cancelled && !hasError && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!filePath || hasOutput}
-          isExpanded={showCode}
-          error={cancelled}
-        />
-      </div>
+      <BareStatus phase={phase} active={bare} text={finishedText} />
+      {!bare && (
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={intent ?? localize('com_ui_reading_file', { 0: fileName })}
+            finishedText={finishedText}
+            icon={
+              <FileText
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!filePath || hasOutput}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasOutput && (
-            <div className="my-2 overflow-hidden rounded-lg border border-border-light bg-surface-secondary">
-              <CodeWindowHeader language={fileName} code={output} />
-              <pre className="max-h-[300px] overflow-auto bg-surface-chat p-4 font-mono text-xs dark:bg-surface-primary-alt">
+            <div
+              className={cn(
+                toolPanelSpacingClassName,
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
+              )}
+            >
+              <CodeWindowHeader language={fileName} label={filePath || undefined} code={output} />
+              <pre
+                dir="ltr"
+                className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
+              >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? output}
                 </code>

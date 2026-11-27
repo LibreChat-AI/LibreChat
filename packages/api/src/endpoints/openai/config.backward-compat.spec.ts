@@ -10,7 +10,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
   describe('OpenAI endpoint', () => {
     it('should handle GPT-5 model with reasoning and web search', () => {
       const apiKey = 'sk-proj-somekey';
-      const endpoint = undefined;
+      const endpoint = EModelEndpoint.openAI;
       const options = {
         modelOptions: {
           model: 'gpt-5-nano',
@@ -33,6 +33,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
           streaming: true,
           model: 'gpt-5-nano',
           useResponsesApi: true,
+          firstPartyEndpoint: true,
           user: 'some-user',
           apiKey: 'sk-proj-somekey',
           reasoning: {
@@ -89,7 +90,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
             'HTTP-Referer': 'https://librechat.ai',
             'X-Title': 'LibreChat',
             'X-OpenRouter-Title': 'LibreChat',
-            'X-OpenRouter-Categories': 'general-chat,personal-agent',
+            'X-OpenRouter-Categories': 'general-chat,personal-agent,programming-app',
             'x-librechat-thread-id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
             'x-test-key': '{{TESTING_USER_VAR}}',
           },
@@ -138,7 +139,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
 
     it('should handle Azure OpenAI with Responses API and reasoning', () => {
       const apiKey = 'some_azure_key';
-      const endpoint = undefined;
+      const endpoint = EModelEndpoint.azureOpenAI;
       const options = {
         modelOptions: {
           model: 'gpt-5',
@@ -164,6 +165,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
           streaming: true,
           model: 'gpt-5',
           useResponsesApi: true,
+          firstPartyEndpoint: true,
           user: 'some_user_id',
           apiKey: 'some_azure_key',
           reasoning: {
@@ -339,6 +341,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
           model: 'DeepSeek-R1',
           user: 'some_user_id',
           apiKey: 'some_azure_key',
+          includeReasoningContent: true,
         },
         configOptions: {
           baseURL: 'https://some_endpoint_name.models.ai.azure.com/v1/',
@@ -394,6 +397,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
         modelOptions: {
           model: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b',
           user: 'some-user',
+          reasoning_effort: ReasoningEffort.high,
         },
         reverseProxyUrl:
           'https://gateway.ai.cloudflare.com/v1/${CF_ACCOUNT_ID}/${CF_GATEWAY_ID}/workers-ai/v1',
@@ -418,6 +422,9 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
           user: 'some-user',
           disableStreaming: true,
           apiKey: 'someKey',
+          modelKwargs: {
+            reasoning_effort: ReasoningEffort.high,
+          },
         },
         configOptions: {
           baseURL:

@@ -2,7 +2,7 @@ import { Schema } from 'mongoose';
 import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
 import type { IConfig } from '~/types';
 
-const configSchema = new Schema<IConfig>(
+const configSchema: Schema<IConfig> = new Schema<IConfig>(
   {
     principalType: {
       type: String,
@@ -30,6 +30,10 @@ const configSchema = new Schema<IConfig>(
       type: Schema.Types.Mixed,
       default: {},
     },
+    tombstones: {
+      type: [String],
+      default: [],
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -38,6 +42,10 @@ const configSchema = new Schema<IConfig>(
     configVersion: {
       type: Number,
       default: 0,
+    },
+    /** Set once `overrides` keys are stored encoded; documents without it are read verbatim. */
+    keyEncoding: {
+      type: Number,
     },
     tenantId: {
       type: String,

@@ -3,6 +3,8 @@ import {
   EModelEndpoint,
   ReasoningEffort,
   ReasoningSummary,
+  ReasoningResponseKey,
+  ReasoningParameterFormat,
 } from 'librechat-data-provider';
 import type { RequestInit } from 'undici';
 import type { OpenAIParameters, AzureOptions } from '~/types';
@@ -22,6 +24,14 @@ describe('getOpenAIConfig', () => {
     });
     expect(result.configOptions).toEqual({});
     expect(result.tools).toEqual([]);
+  });
+
+  it('applies an explicit model transport timeout policy', () => {
+    const result = getOpenAIConfig(mockApiKey, {
+      transportTimeouts: { bodyTimeout: 900_000, headersTimeout: 300_000 },
+    });
+
+    expect(result.configOptions?.fetchOptions?.dispatcher).toBeDefined();
   });
 
   it('should apply model options', () => {
@@ -79,7 +89,7 @@ describe('getOpenAIConfig', () => {
     expect(result.llmConfig.modelKwargs).toBeUndefined();
   });
 
-  it('should handle reasoning params for `useResponsesApi`', () => {
+  it('should pass custom endpoint reasoning object through modelKwargs for `useResponsesApi`', () => {
     const modelOptions = {
       reasoning_effort: ReasoningEffort.high,
       reasoning_summary: ReasoningSummary.detailed,
@@ -89,27 +99,29 @@ describe('getOpenAIConfig', () => {
       modelOptions: { ...modelOptions, useResponsesApi: true },
     });
 
-    expect(result.llmConfig.reasoning).toEqual({
-      effort: ReasoningEffort.high,
-      summary: ReasoningSummary.detailed,
+    expect(result.llmConfig.reasoning).toBeUndefined();
+    expect(result.llmConfig.modelKwargs).toEqual({
+      reasoning: {
+        effort: ReasoningEffort.high,
+        summary: ReasoningSummary.detailed,
+      },
     });
     expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
     expect((result.llmConfig as Record<string, unknown>).reasoning_summary).toBeUndefined();
   });
 
-  it('should handle reasoning params without `useResponsesApi`', () => {
+  it('should pass custom endpoint reasoning through modelKwargs without `useResponsesApi`', () => {
     const modelOptions = {
       reasoning_effort: ReasoningEffort.high,
       reasoning_summary: ReasoningSummary.detailed,
     };
 
-    const result = getOpenAIConfig(mockApiKey, { modelOptions });
+    const result = getOpenAIConfig(mockApiKey, { modelOptions }, 'custom-endpoint');
 
-    /** When no endpoint is specified, it's treated as non-openAI/azureOpenAI, so uses reasoning object */
-    expect(result.llmConfig.reasoning).toEqual({
-      effort: ReasoningEffort.high,
-      summary: ReasoningSummary.detailed,
+    expect(result.llmConfig.modelKwargs).toEqual({
+      reasoning_effort: ReasoningEffort.high,
     });
+    expect(result.llmConfig.reasoning).toBeUndefined();
     expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
   });
 
@@ -173,7 +185,7 @@ describe('getOpenAIConfig', () => {
     expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
   });
 
-  it('should use reasoning object for non-openAI/azureOpenAI endpoints', () => {
+  it('should pass reasoning_effort through modelKwargs for non-openAI/azureOpenAI endpoints', () => {
     const modelOptions = {
       reasoning_effort: ReasoningEffort.high,
       reasoning_summary: ReasoningSummary.detailed,
@@ -181,11 +193,178 @@ describe('getOpenAIConfig', () => {
 
     const result = getOpenAIConfig(mockApiKey, { modelOptions }, 'custom-endpoint');
 
-    expect(result.llmConfig.reasoning).toEqual({
-      effort: ReasoningEffort.high,
-      summary: ReasoningSummary.detailed,
+    expect(result.llmConfig.modelKwargs).toEqual({
+      reasoning_effort: ReasoningEffort.high,
+    });
+    expect(result.llmConfig.reasoning).toBeUndefined();
+    expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
+  });
+
+  it('should support custom endpoint reasoning object format', () => {
+    const result = getOpenAIConfig(
+      mockApiKey,
+      {
+        customParams: {
+          reasoningFormat: ReasoningParameterFormat.reasoningObject,
+        },
+        modelOptions: {
+          reasoning_effort: ReasoningEffort.high,
+          reasoning_summary: ReasoningSummary.detailed,
+        },
+      },
+      'custom-endpoint',
+    );
+
+    expect(result.llmConfig.modelKwargs).toEqual({
+      reasoning: {
+        effort: ReasoningEffort.high,
+        summary: ReasoningSummary.detailed,
+      },
+    });
+    expect(result.llmConfig.reasoning).toBeUndefined();
+    expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
+  });
+
+  it('should replay reasoning content when custom endpoint enables includeReasoningContent', () => {
+    const result = getOpenAIConfig(
+      mockApiKey,
+      {
+        customParams: {
+          reasoningKey: ReasoningResponseKey.reasoningContent,
+          includeReasoningContent: true,
+        },
+        modelOptions: {
+          model: 'MiMo-VL-7B-RL',
+        },
+      },
+      'custom-endpoint',
+    );
+
+    expect(result.llmConfig).toHaveProperty('includeReasoningContent', true);
+  });
+
+  it('should enable within-run replay when custom endpoint enables includeReasoningHistory', () => {
+    const result = getOpenAIConfig(
+      mockApiKey,
+      {
+        customParams: {
+          reasoningKey: ReasoningResponseKey.reasoningContent,
+          includeReasoningHistory: true,
+        },
+        modelOptions: {
+          model: 'MiMo-VL-7B-RL',
+        },
+      },
+      'custom-endpoint',
+    );
+
+    expect(result.llmConfig).toHaveProperty('includeReasoningContent', true);
+  });
+
+  it('should enable within-run replay for non-OpenAI param-format gateways (anthropic/google)', () => {
+    const anthropic = getOpenAIConfig(
+      mockApiKey,
+      {
+        customParams: {
+          defaultParamsEndpoint: EModelEndpoint.anthropic,
+          includeReasoningContent: true,
+        },
+        modelOptions: { model: 'claude-3-7-sonnet' },
+      },
+      'custom-endpoint',
+    );
+    expect(anthropic.llmConfig).toHaveProperty('includeReasoningContent', true);
+
+    const google = getOpenAIConfig(
+      mockApiKey,
+      {
+        customParams: {
+          defaultParamsEndpoint: EModelEndpoint.google,
+          includeReasoningHistory: true,
+        },
+        modelOptions: { model: 'gemini-2.5-pro' },
+      },
+      'custom-endpoint',
+    );
+    expect(google.llmConfig).toHaveProperty('includeReasoningContent', true);
+  });
+
+  it('should not replay reasoning content for custom endpoints by default', () => {
+    const result = getOpenAIConfig(
+      mockApiKey,
+      {
+        modelOptions: {
+          model: 'MiMo-VL-7B-RL',
+        },
+      },
+      'custom-endpoint',
+    );
+
+    expect(result.llmConfig).not.toHaveProperty('includeReasoningContent');
+  });
+
+  it('should default Vercel custom endpoints to reasoning object format', () => {
+    const result = getOpenAIConfig(
+      mockApiKey,
+      {
+        reverseProxyUrl: 'https://ai-gateway.vercel.sh/v1',
+        modelOptions: {
+          reasoning_effort: ReasoningEffort.high,
+        },
+      },
+      'Vercel',
+    );
+
+    expect(result.llmConfig.modelKwargs).toEqual({
+      reasoning: {
+        effort: ReasoningEffort.high,
+      },
+    });
+    expect(result.llmConfig.reasoning).toBeUndefined();
+    expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
+  });
+
+  it('should apply Vercel reasoning format to custom default params', () => {
+    const result = getOpenAIConfig(
+      mockApiKey,
+      {
+        reverseProxyUrl: 'https://ai-gateway.vercel.sh/v1',
+        customParams: {
+          paramDefinitions: [{ key: 'reasoning_effort', default: ReasoningEffort.low }],
+        },
+        modelOptions: {
+          model: 'openai/gpt-5-mini',
+        },
+      },
+      'Vercel',
+    );
+
+    expect(result.llmConfig.modelKwargs).toEqual({
+      reasoning: {
+        effort: ReasoningEffort.low,
+      },
     });
     expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
+  });
+
+  it('should allow Vercel reasoning format override', () => {
+    const result = getOpenAIConfig(
+      mockApiKey,
+      {
+        reverseProxyUrl: 'https://ai-gateway.vercel.sh/v1',
+        customParams: {
+          reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+        },
+        modelOptions: {
+          reasoning_effort: ReasoningEffort.high,
+        },
+      },
+      'Vercel',
+    );
+
+    expect(result.llmConfig.modelKwargs).toEqual({
+      reasoning_effort: ReasoningEffort.high,
+    });
   });
 
   it('should handle OpenRouter configuration', () => {
@@ -198,7 +377,7 @@ describe('getOpenAIConfig', () => {
       'HTTP-Referer': 'https://librechat.ai',
       'X-Title': 'LibreChat',
       'X-OpenRouter-Title': 'LibreChat',
-      'X-OpenRouter-Categories': 'general-chat,personal-agent',
+      'X-OpenRouter-Categories': 'general-chat,personal-agent,programming-app',
     });
     expect(result.llmConfig.include_reasoning).toBe(true);
     expect(result.llmConfig.promptCache).toBe(true);
@@ -380,6 +559,43 @@ describe('getOpenAIConfig', () => {
 
     expect(result.configOptions?.fetchOptions).toBeDefined();
     expect((result.configOptions?.fetchOptions as RequestInit).dispatcher).toBeDefined();
+  });
+
+  it('should harden user-provided base URLs with a connect-time dispatcher and disabled redirects', () => {
+    const result = getOpenAIConfig(mockApiKey, {
+      reverseProxyUrl: 'https://user-provider.example.com/v1',
+      baseURLIsUserProvided: true,
+      allowedAddresses: ['10.0.0.5:443'],
+    });
+
+    expect(result.configOptions?.baseURL).toBe('https://user-provider.example.com/v1');
+    expect(result.configOptions?.fetchOptions).toEqual(
+      expect.objectContaining({
+        dispatcher: expect.any(Object),
+        redirect: 'error',
+      }),
+    );
+  });
+
+  it('should keep the SSRF-safe dispatcher when a proxy is configured for a user-provided URL', () => {
+    const result = getOpenAIConfig(mockApiKey, {
+      reverseProxyUrl: 'https://user-provider.example.com/v1',
+      baseURLIsUserProvided: true,
+      proxy: 'http://proxy.example.com:8080',
+    });
+
+    const unproxiedResult = getOpenAIConfig(mockApiKey, {
+      reverseProxyUrl: 'https://user-provider.example.com/v1',
+      baseURLIsUserProvided: true,
+    });
+
+    expect(result.configOptions?.fetchOptions?.dispatcher).toBeDefined();
+    expect(result.configOptions?.fetchOptions?.dispatcher?.constructor.name).toBe(
+      unproxiedResult.configOptions?.fetchOptions?.dispatcher?.constructor.name,
+    );
+    expect(result.configOptions?.fetchOptions).toEqual(
+      expect.objectContaining({ redirect: 'error' }),
+    );
   });
 
   it('should handle headers and defaultQuery', () => {
@@ -701,9 +917,9 @@ describe('getOpenAIConfig', () => {
         reverseProxyUrl: 'https://${INSTANCE_NAME}.openai.azure.com/openai/v1',
       });
 
-      // The constructAzureURL should replace placeholders with actual values
+      // AzureChatOpenAI appends the deployment to its base path, including for a v1 resource URL.
       expect((result.llmConfig as Record<string, unknown>).azureOpenAIBasePath).toBe(
-        'https://test-instance.openai.azure.com/openai/v1',
+        'https://test-instance.openai.azure.com/openai/deployments',
       );
     });
 
@@ -828,6 +1044,46 @@ describe('getOpenAIConfig', () => {
       expect(result.provider).toBe('openrouter');
     });
 
+    it('should honor a TTL-only selection for OpenRouter (promptCache defaulted on)', () => {
+      /**
+       * Reproduces selecting only the promptCacheTtl dropdown without toggling
+       * the promptCache switch: modelOptions carries the TTL but not promptCache.
+       * OPENROUTER_DEFAULT_PARAMS still resolves caching on, so the TTL survives.
+       */
+      const result = getOpenAIConfig(
+        mockApiKey,
+        {
+          modelOptions: {
+            model: 'anthropic/claude-sonnet-4.6',
+            promptCacheTtl: '1h',
+          } as Record<string, unknown>,
+        },
+        'openrouter',
+      );
+
+      expect(result.llmConfig.promptCache).toBe(true);
+      expect((result.llmConfig as Record<string, unknown>).promptCacheTtl).toBe('1h');
+      expect(result.provider).toBe('openrouter');
+    });
+
+    it('should drop the OpenRouter TTL when promptCache is explicitly disabled', () => {
+      const result = getOpenAIConfig(
+        mockApiKey,
+        {
+          modelOptions: {
+            model: 'anthropic/claude-sonnet-4.6',
+            promptCache: false,
+            promptCacheTtl: '1h',
+          } as Record<string, unknown>,
+        },
+        'openrouter',
+      );
+
+      expect(result.llmConfig.promptCache).toBeUndefined();
+      expect((result.llmConfig as Record<string, unknown>).promptCacheTtl).toBeUndefined();
+      expect(result.provider).toBe('openrouter');
+    });
+
     it('should handle web_search with OpenRouter using plugins format', () => {
       const modelOptions = {
         model: 'gpt-4',
@@ -937,9 +1193,22 @@ describe('getOpenAIConfig', () => {
         'HTTP-Referer': 'https://librechat.ai',
         'X-Title': 'LibreChat',
         'X-OpenRouter-Title': 'LibreChat',
-        'X-OpenRouter-Categories': 'general-chat,personal-agent',
+        'X-OpenRouter-Categories': 'general-chat,personal-agent,programming-app',
         'X-Custom-Header': 'custom-value',
         Authorization: 'Bearer custom-token',
+      });
+    });
+
+    it('should allow custom OpenRouter categories to override attribution defaults', () => {
+      const result = getOpenAIConfig(mockApiKey, {
+        reverseProxyUrl: 'https://openrouter.ai/api/v1',
+        headers: {
+          'X-OpenRouter-Categories': 'general-chat',
+        },
+      });
+
+      expect(result.configOptions?.defaultHeaders).toMatchObject({
+        'X-OpenRouter-Categories': 'general-chat',
       });
     });
   });
@@ -1006,11 +1275,12 @@ describe('getOpenAIConfig', () => {
         const result = getOpenAIConfig(mockApiKey, {
           modelOptions: { ...modelOptions, useResponsesApi: true } as Partial<OpenAIParameters>,
         });
+        const reasoning = result.llmConfig?.reasoning ?? result.llmConfig?.modelKwargs?.reasoning;
 
         if (shouldHaveReasoning) {
-          expect(result.llmConfig?.reasoning).toBeDefined();
+          expect(reasoning).toBeDefined();
         } else {
-          expect(result.llmConfig?.reasoning).toBeUndefined();
+          expect(reasoning).toBeUndefined();
         }
       });
     });
@@ -1088,6 +1358,7 @@ describe('getOpenAIConfig', () => {
           frequency_penalty: 0.5,
           presence_penalty: 0.6,
           max_tokens: 1000,
+          reasoning_effort: ReasoningEffort.high,
           custom_param: 'should-remain',
         };
 
@@ -1102,6 +1373,7 @@ describe('getOpenAIConfig', () => {
         /** `presence_penalty` is converted to `presencePenalty` */
         expect(result.llmConfig.maxTokens).toBe(1000); // max_tokens is allowed
         expect((result.llmConfig as Record<string, unknown>).custom_param).toBe('should-remain');
+        expect(result.llmConfig.modelKwargs).toBeUndefined();
       });
     });
 
@@ -1209,9 +1481,11 @@ describe('getOpenAIConfig', () => {
         streaming: false,
         useResponsesApi: true, // From web_search
       });
+      expect(result.llmConfig.reasoning).toBeUndefined();
       expect(result.llmConfig.maxTokens).toBe(2000);
       expect(result.llmConfig.modelKwargs).toEqual({
         text: { verbosity: Verbosity.medium },
+        reasoning: { effort: ReasoningEffort.high },
         customParam: 'custom-value',
       });
       expect(result.tools).toEqual([{ type: 'web_search' }]);
@@ -1944,5 +2218,32 @@ describe('getOpenAIConfig', () => {
         expect(result.llmConfig.maxTokens).toBe(500);
       });
     });
+  });
+});
+
+describe('Grok 4.7 xAI configuration', () => {
+  it.each([
+    ReasoningEffort.low,
+    ReasoningEffort.medium,
+    ReasoningEffort.high,
+    ReasoningEffort.xhigh,
+  ])('forwards %s effort through the existing Chat Completions path', (effort) => {
+    const result = getOpenAIConfig(
+      'test-xai-key',
+      {
+        reverseProxyUrl: 'https://api.x.ai/v1',
+        modelOptions: { model: 'grok-4.7', reasoning_effort: effort },
+      },
+      'xai',
+    );
+    expect(result.configOptions?.baseURL).toBe('https://api.x.ai/v1');
+    expect(result.llmConfig.model).toBe('grok-4.7');
+    expect(result.llmConfig.modelKwargs).toMatchObject({ reasoning_effort: effort });
+    expect(result.llmConfig.useResponsesApi).not.toBe(true);
+  });
+
+  it('leaves reasoning effort unset so xAI applies its default', () => {
+    const result = getOpenAIConfig('test-xai-key', { modelOptions: { model: 'grok-4.7' } }, 'xai');
+    expect(result.llmConfig.modelKwargs?.reasoning_effort).toBeUndefined();
   });
 });

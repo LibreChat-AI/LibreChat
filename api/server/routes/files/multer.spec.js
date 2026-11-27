@@ -4,7 +4,18 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { createMulterInstance, storage, importFileFilter } = require('./multer');
+const multer = require('multer');
+const express = require('express');
+const request = require('supertest');
+const { ErrorController } = require('@librechat/api');
+const { logger } = require('@librechat/data-schemas');
+const {
+  createMulterInstance,
+  createStorage,
+  storage,
+  importFileFilter,
+  createFileFilter,
+} = require('./multer');
 
 // Mock only the config service that requires external dependencies
 jest.mock('~/server/services/Config', () => ({
@@ -77,6 +88,16 @@ describe('Multer Configuration', () => {
     });
 
     describe('filename function', () => {
+      it('uses the request file ID to make management staging paths unique', (done) => {
+        const uniqueStorage = createStorage({ uniqueTempPath: true });
+
+        uniqueStorage.getFilename(mockReq, mockFile, (err, filename) => {
+          expect(err).toBeNull();
+          expect(filename).toBe(`${mockReq.file_id}-test-file.jpg`);
+          done();
+        });
+      });
+
       it('should generate a UUID for req.file_id', (done) => {
         const cb = jest.fn((err, filename) => {
           expect(err).toBeNull();
@@ -103,6 +124,19 @@ describe('Multer Configuration', () => {
         });
 
         storage.getFilename(mockReq, encodedFile, cb);
+      });
+
+      it('returns a controlled error for malformed URI encoding', (done) => {
+        const malformedFile = { ...mockFile, originalname: '%.json' };
+
+        storage.getFilename(mockReq, malformedFile, (err, filename) => {
+          expect(err).toMatchObject({
+            statusCode: 400,
+            body: { message: 'Invalid filename encoding' },
+          });
+          expect(filename).toBeUndefined();
+          done();
+        });
       });
 
       it('should call real sanitizeFilename with properly encoded filename', (done) => {
@@ -215,6 +249,8 @@ describe('Multer Configuration', () => {
       const cb = jest.fn((err, result) => {
         expect(err).toBeInstanceOf(Error);
         expect(err.message).toBe('Only JSON files are allowed');
+        expect(err.statusCode).toBe(415);
+        expect(err.body).toEqual({ message: 'Only JSON files are allowed' });
         expect(result).toBe(false);
         done();
       });
@@ -279,6 +315,115 @@ describe('Multer Configuration', () => {
         // Restore original function
         require('librechat-data-provider').fileConfig.checkType = originalCheckType;
       }
+    });
+
+    it('should infer ZIP MIME type when multipart upload omits it', (done) => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      const fileFilter = createFileFilter(mergeFileConfig());
+      const zipFile = {
+        ...mockFile,
+        originalname: 'archive.zip',
+        mimetype: '',
+      };
+
+      const cb = jest.fn((err, result) => {
+        expect(err).toBeNull();
+        expect(result).toBe(true);
+        expect(zipFile.mimetype).toBe('application/zip');
+        done();
+      });
+
+      fileFilter(mockReq, zipFile, cb);
+    });
+
+    it('uses a server-selected endpoint before multipart fields are parsed', (done) => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      const fileFilter = createFileFilter(
+        mergeFileConfig({
+          endpoints: {
+            agents: { supportedMimeTypes: ['text/plain'] },
+            default: { supportedMimeTypes: ['application/pdf'] },
+          },
+        }),
+        () => ({ endpoint: 'agents' }),
+      );
+      const textFile = {
+        ...mockFile,
+        originalname: 'notes.txt',
+        mimetype: 'text/plain',
+      };
+
+      fileFilter({ ...mockReq, body: {} }, textFile, (err, result) => {
+        expect(err).toBeNull();
+        expect(result).toBe(true);
+        done();
+      });
+    });
+
+    it.each(['application/x-shellscript', 'text/x-shellscript'])(
+      'should normalize %s to application/x-sh and accept the upload',
+      (reportedType) => {
+        const { mergeFileConfig } = require('librechat-data-provider');
+        const fileFilter = createFileFilter(mergeFileConfig());
+        const shellFile = {
+          ...mockFile,
+          originalname: 'script.sh',
+          mimetype: reportedType,
+        };
+
+        const cb = jest.fn();
+        fileFilter(mockReq, shellFile, cb);
+
+        expect(cb).toHaveBeenCalledWith(null, true);
+        expect(shellFile.mimetype).toBe('application/x-sh');
+      },
+    );
+
+    /** Normalization runs before the allowlist check, so an admin who applied one of the documented
+     *  `.sh` workarounds must not be broken by it. Both recipes target `application/x-sh`, which is
+     *  exactly what the alias now produces. */
+    it.each([
+      ['the canonical type (#4660, #5689, #6297)', ['application/x-sh']],
+      ['broad patterns (#14804)', ['image/.*', 'text/.*', 'application/.*']],
+    ])(
+      'should keep accepting .sh for an existing workaround config allowing %s',
+      (_label, supportedMimeTypes) => {
+        const { mergeFileConfig } = require('librechat-data-provider');
+        const fileFilter = createFileFilter(
+          mergeFileConfig({ endpoints: { agents: { supportedMimeTypes } } }),
+        );
+        mockReq.body.endpoint = 'agents';
+        const shellFile = {
+          ...mockFile,
+          originalname: 'script.sh',
+          mimetype: 'application/x-shellscript',
+        };
+
+        const cb = jest.fn();
+        fileFilter(mockReq, shellFile, cb);
+
+        expect(cb).toHaveBeenCalledWith(null, true);
+      },
+    );
+
+    it('should reject an unsupported type with a 415 the client can surface', () => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      const fileFilter = createFileFilter(mergeFileConfig());
+      const binaryFile = {
+        ...mockFile,
+        originalname: 'program.exe',
+        mimetype: 'application/x-msdownload',
+      };
+
+      const cb = jest.fn();
+      fileFilter(mockReq, binaryFile, cb);
+
+      expect(cb).toHaveBeenCalledTimes(1);
+      const [error, result] = cb.mock.calls[0];
+      expect(result).toBe(false);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.statusCode).toBe(415);
+      expect(error.body).toEqual({ message: 'Unsupported file type: application/x-msdownload' });
     });
 
     it('should use real mergeFileConfig function', async () => {
@@ -446,15 +591,63 @@ describe('Multer Configuration', () => {
       }).not.toThrow();
     });
 
-    it('should handle file system errors when directory creation fails', () => {
-      // Test with a non-existent parent directory to simulate fs issues
-      const invalidPath = '/nonexistent/path/that/should/not/exist';
-      mockReq.config.paths.uploads = invalidPath;
+    it('should report file system errors through the storage callback', (done) => {
+      const loggerError = jest.spyOn(logger, 'error').mockImplementation();
+      const filesystemError = new Error('permission denied');
+      const mkdir = jest.spyOn(fs, 'mkdirSync').mockImplementationOnce(() => {
+        throw filesystemError;
+      });
 
-      // The current implementation doesn't catch errors, so they're thrown synchronously
-      expect(() => {
-        storage.getDestination(mockReq, mockFile, jest.fn());
-      }).toThrow();
+      storage.getDestination(mockReq, mockFile, (err, destination) => {
+        expect(err).toMatchObject({
+          statusCode: 500,
+          body: { message: 'Failed to prepare upload directory' },
+          cause: filesystemError,
+        });
+        expect(destination).toBeUndefined();
+        expect(loggerError).toHaveBeenCalledWith(
+          'Failed to prepare upload directory: permission denied',
+        );
+        mkdir.mockRestore();
+        loggerError.mockRestore();
+        done();
+      });
+    });
+
+    it('keeps the upload server alive after rejecting a malformed filename', async () => {
+      const app = express();
+      const upload = multer({ storage });
+      app.use((req, res, next) => {
+        req.user = mockReq.user;
+        req.config = mockReq.config;
+        next();
+      });
+      app.post('/upload', upload.single('file'), (req, res) => {
+        res.status(201).json({
+          originalname: req.file.originalname,
+          filename: req.file.filename,
+        });
+      });
+      app.use(ErrorController);
+
+      const malformed = await request(app).post('/upload').attach('file', Buffer.from('{}'), {
+        filename: '%.json',
+        contentType: 'application/json',
+      });
+
+      expect(malformed.status).toBe(400);
+      expect(malformed.body).toEqual({ message: 'Invalid filename encoding' });
+      const outputPath = path.join(tempDir, 'temp', 'test-user-123');
+      expect(fs.readdirSync(outputPath)).toEqual([]);
+
+      const healthy = await request(app).post('/upload').attach('file', Buffer.from('{}'), {
+        filename: 'healthy%20upload.json',
+        contentType: 'application/json',
+      });
+
+      expect(healthy.status).toBe(201);
+      expect(healthy.body.originalname).toBe('healthy upload.json');
+      expect(fs.existsSync(path.join(outputPath, healthy.body.filename))).toBe(true);
     });
 
     it('should handle malformed filenames with real sanitization', (done) => {
@@ -544,6 +737,66 @@ describe('Multer Configuration', () => {
 
       // Verify that getAppConfig was called
       expect(getAppConfig).toHaveBeenCalled();
+    });
+  });
+
+  describe('agent uploads and provider allowlists', () => {
+    const configWithWiderProvider = () => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      return mergeFileConfig({
+        endpoints: {
+          agents: { supportedMimeTypes: ['^application/pdf$'] },
+          'Custom Provider': { supportedMimeTypes: ['^application/pdf$', '^video/mp4$'] },
+        },
+      });
+    };
+
+    it('accepts a type only the agent provider allows', (done) => {
+      /* This filter is synchronous and runs before the agent read, so narrowing to the
+       * agents entry would make the later provider check able to reject but never
+       * permit. The route validates again under the resolved provider. */
+      const fileFilter = createFileFilter(configWithWiderProvider());
+      mockReq.body = { endpoint: 'agents' };
+
+      fileFilter(
+        mockReq,
+        { ...mockFile, originalname: 'clip.mp4', mimetype: 'video/mp4' },
+        (err, accepted) => {
+          expect(err).toBeNull();
+          expect(accepted).toBe(true);
+          done();
+        },
+      );
+    });
+
+    it('still refuses a type no configured endpoint allows', (done) => {
+      const fileFilter = createFileFilter(configWithWiderProvider());
+      mockReq.body = { endpoint: 'agents' };
+
+      fileFilter(
+        mockReq,
+        { ...mockFile, originalname: 'installer.exe', mimetype: 'application/x-msdownload' },
+        (err, accepted) => {
+          expect(err).toBeTruthy();
+          expect(accepted).toBe(false);
+          done();
+        },
+      );
+    });
+
+    it('keeps a non-agent endpoint judged by its own allowlist alone', (done) => {
+      const fileFilter = createFileFilter(configWithWiderProvider());
+      mockReq.body = { endpoint: 'agents-lookalike' };
+
+      fileFilter(
+        mockReq,
+        { ...mockFile, originalname: 'clip.mp4', mimetype: 'video/mp4' },
+        (err, accepted) => {
+          expect(err).toBeTruthy();
+          expect(accepted).toBe(false);
+          done();
+        },
+      );
     });
   });
 });

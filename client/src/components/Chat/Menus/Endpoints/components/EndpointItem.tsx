@@ -1,16 +1,18 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { VisuallyHidden } from '@ariakit/react';
 import { Spinner, TooltipAnchor } from '@librechat/client';
 import { CheckCircle2, MousePointerClick, SettingsIcon } from 'lucide-react';
 import { EModelEndpoint, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TModelSpec } from 'librechat-data-provider';
 import type { Endpoint } from '~/common';
-import { CustomMenu as Menu, CustomMenuItem as MenuItem } from '../CustomMenu';
+import { CustomMenu as Menu, CustomMenuItem as MenuItem, CustomMenuSeparator } from '../CustomMenu';
+import { renderEndpointModels, VIRTUALIZE_THRESHOLD } from './EndpointModelItem';
+import MarketplaceItem, { marketplaceSearchMatches } from './Marketplace';
+import { filterModels, shouldRenderEndpointOption } from '../utils';
 import { useModelSelectorContext } from '../ModelSelectorContext';
-import { renderEndpointModels } from './EndpointModelItem';
+import VirtualizedModelList from './VirtualizedModelList';
+import { useFavorites, useLocalize } from '~/hooks';
 import { ModelSpecItem } from './ModelSpecItem';
-import { filterModels } from '../utils';
-import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface EndpointItemProps {
@@ -55,11 +57,13 @@ const SettingsButton = ({
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       className={cn(
-        'group/button flex items-center gap-1.5 rounded-md px-1.5',
+        'group/button -my-0.5 flex min-h-6 items-center justify-center gap-1.5 rounded-md px-1.5',
+        /* Both targets (24px, 32px on touch) spill into the row's padding instead of growing it. */
+        'any-pointer-coarse:-my-1.5 any-pointer-coarse:min-h-8 any-pointer-coarse:min-w-8',
         'text-text-secondary transition-colors duration-150',
         'hover:bg-surface-tertiary hover:text-text-primary',
         'focus-visible:bg-surface-tertiary focus-visible:text-text-primary',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1',
+        'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden',
         className,
       )}
       aria-label={`${text} ${endpoint.label}`}
@@ -68,13 +72,13 @@ const SettingsButton = ({
       <span
         aria-hidden="true"
         className={cn(
-          'grid overflow-hidden transition-[grid-template-columns,opacity] duration-150 ease-out',
+          'grid overflow-hidden transition-all duration-150 ease-out',
           'grid-cols-[0fr] opacity-0',
           'group-hover/button:grid-cols-[1fr] group-hover/button:opacity-100',
           'group-focus-visible/button:grid-cols-[1fr] group-focus-visible/button:opacity-100',
         )}
       >
-        <span className="min-w-0 truncate pr-0.5">{text}</span>
+        <span className="min-w-0 truncate pe-0.5">{text}</span>
       </span>
     </button>
   );
@@ -106,7 +110,7 @@ function EndpointMenuContent({
     return modelSpecs.filter((spec: TModelSpec) => spec.group === endpoint.value);
   }, [modelSpecs, endpoint.value]);
 
-  if (isAssistantsEndpoint(endpoint.value) && endpoint.models === undefined) {
+  if (endpoint.isLoading && !endpoint.models?.length) {
     return (
       <div
         className="flex items-center justify-center p-2"
@@ -127,18 +131,138 @@ function EndpointMenuContent({
         assistantsMap,
       )
     : null;
+  const renderedModels = filteredModels ?? endpoint.models?.map((model) => model.name) ?? [];
+  const showMarketplace =
+    endpoint.showMarketplace === true && marketplaceSearchMatches(searchValue, localize);
+  const hasSelectableRows = endpointSpecs.length > 0 || renderedModels.length > 0;
+
+  /**
+   * Once the model list is windowed, the DOM no longer holds every option, so a screen
+   * reader would infer position and total from the mounted slice alone. Declare them
+   * explicitly across the whole listbox — mixing declared and inferred values within one
+   * set is worse than either — and leave them off entirely when nothing is virtualized.
+   */
+  const precedingOptionCount = (showMarketplace ? 1 : 0) + endpointSpecs.length;
+  const isVirtualized = renderedModels.length > VIRTUALIZE_THRESHOLD;
+  const listboxSetSize = isVirtualized ? precedingOptionCount + renderedModels.length : undefined;
 
   return (
     <>
-      {endpointSpecs.map((spec: TModelSpec) => (
-        <ModelSpecItem key={spec.name} spec={spec} isSelected={selectedSpec === spec.name} />
+      {showMarketplace && (
+        <MarketplaceItem
+          label={localize('com_agents_marketplace')}
+          posInSet={isVirtualized ? 1 : undefined}
+          setSize={listboxSetSize}
+        />
+      )}
+      {showMarketplace && hasSelectableRows && <CustomMenuSeparator />}
+      {endpointSpecs.map((spec: TModelSpec, specIndex: number) => (
+        <ModelSpecItem
+          key={spec.name}
+          spec={spec}
+          isSelected={selectedSpec === spec.name}
+          posInSet={isVirtualized ? (showMarketplace ? 1 : 0) + specIndex + 1 : undefined}
+          setSize={listboxSetSize}
+        />
       ))}
-      {filteredModels
-        ? renderEndpointModels(endpoint, endpoint.models || [], filteredModels, endpointIndex)
-        : endpoint.models &&
-          renderEndpointModels(endpoint, endpoint.models, undefined, endpointIndex)}
+      {endpoint.isUnavailable && (
+        <MenuItem onClick={endpoint.onRetry}>{localize('com_ui_retry')}</MenuItem>
+      )}
+      {endpoint.isLoading && endpoint.models != null && (
+        <div
+          role="status"
+          aria-label={localize('com_ui_loading')}
+          className="flex justify-center p-2"
+        >
+          <Spinner aria-hidden="true" />
+        </div>
+      )}
+      <EndpointModels
+        endpoint={endpoint}
+        renderedModels={renderedModels}
+        endpointIndex={endpointIndex}
+        searchValue={searchValue}
+        precedingOptionCount={precedingOptionCount}
+      />
     </>
   );
+}
+
+/**
+ * Owns the model rows for one endpoint. `useFavorites` is called once here rather
+ * than inside each row: it opens a jotai subscription, a React Query subscription
+ * and a mutation per call site, which at agent-list scale was thousands of live
+ * subscriptions for one dropdown.
+ */
+function EndpointModels({
+  endpoint,
+  renderedModels,
+  endpointIndex,
+  searchValue,
+  precedingOptionCount,
+}: {
+  endpoint: Endpoint;
+  renderedModels: string[];
+  endpointIndex: number;
+  searchValue: string;
+  precedingOptionCount: number;
+}) {
+  const { isFavoriteModel, toggleFavoriteModel, isFavoriteAgent, toggleFavoriteAgent } =
+    useFavorites();
+  const isAgent = isAgentsEndpoint(endpoint.value);
+
+  const isFavorite = useCallback(
+    (modelId: string) =>
+      isAgent ? isFavoriteAgent(modelId) : isFavoriteModel(modelId, endpoint.value),
+    [isAgent, isFavoriteAgent, isFavoriteModel, endpoint.value],
+  );
+  const onToggleFavorite = useCallback(
+    (modelId: string) => {
+      if (isAgent) {
+        toggleFavoriteAgent(modelId);
+      } else {
+        toggleFavoriteModel({ model: modelId, endpoint: endpoint.value });
+      }
+    },
+    [isAgent, toggleFavoriteAgent, toggleFavoriteModel, endpoint.value],
+  );
+
+  const models = useMemo(() => endpoint.models ?? [], [endpoint.models]);
+  const globalByName = useMemo(
+    () => new Map(models.map((model) => [model.name, model.isGlobal ?? false])),
+    [models],
+  );
+
+  if (!renderedModels.length) {
+    return null;
+  }
+
+  if (renderedModels.length > VIRTUALIZE_THRESHOLD) {
+    return (
+      /**
+       * Keyed on the filter so a new result set starts at the top. `Grid` keeps its
+       * scroll offset across prop changes and, when the row count shrinks, clamps it to
+       * `totalRowsHeight - height` — the END of the shorter list. Without this a user who
+       * scrolled deep and then searched would land on the tail matches, with only those
+       * rows mounted and therefore reachable by keyboard.
+       */
+      <VirtualizedModelList
+        key={searchValue}
+        endpoint={endpoint}
+        modelIds={renderedModels}
+        globalByName={globalByName}
+        isFavorite={isFavorite}
+        onToggleFavorite={onToggleFavorite}
+        endpointIndex={endpointIndex}
+        precedingOptionCount={precedingOptionCount}
+      />
+    );
+  }
+
+  return renderEndpointModels(endpoint, models, renderedModels, endpointIndex, {
+    isFavorite,
+    onToggleFavorite,
+  });
 }
 
 export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
@@ -169,11 +293,15 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
           {endpoint.icon}
         </div>
       )}
-      <span className="truncate text-left">{endpoint.label}</span>
+      <span className="truncate text-start">{endpoint.label}</span>
     </div>
   );
 
   const isEndpointSelected = !selectedSpec && selectedEndpoint === endpoint.value;
+
+  if (!shouldRenderEndpointOption(endpoint)) {
+    return null;
+  }
 
   if (endpoint.hasModels) {
     const placeholder =
@@ -198,7 +326,7 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
               )}
               {isEndpointSelected && (
                 <>
-                  <CheckCircle2 className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+                  <CheckCircle2 className="text-text-primary size-4 shrink-0" aria-hidden="true" />
                   <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>
                 </>
               )}
@@ -229,14 +357,14 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
               side="top"
               render={
                 <span className="flex items-center">
-                  <MousePointerClick className="size-4 text-text-secondary" aria-hidden="true" />
+                  <MousePointerClick className="text-text-secondary size-4" aria-hidden="true" />
                 </span>
               }
             />
           )}
           {isEndpointSelected && !isAssistantsNotLoaded && (
             <>
-              <CheckCircle2 className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+              <CheckCircle2 className="text-text-primary size-4 shrink-0" aria-hidden="true" />
               <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>
             </>
           )}

@@ -1,5 +1,6 @@
-import { standardCache } from '~/cache';
+import Keyv from 'keyv';
 import { BaseRegistryCache } from './BaseRegistryCache';
+import { standardCache } from '~/cache';
 
 // Status keys
 const INITIALIZED = 'INITIALIZED';
@@ -19,7 +20,7 @@ type StatusSetOptions = {
  * This cache is only meant to be used internally by registry management components.
  */
 class RegistryStatusCache extends BaseRegistryCache {
-  protected readonly cache = standardCache(`${this.PREFIX}::Status`);
+  protected readonly cache: Keyv = standardCache(`${this.PREFIX}::Status`);
 
   public async isInitialized(): Promise<boolean> {
     return (await this.get(INITIALIZED)) === true;
@@ -65,4 +66,4 @@ class RegistryStatusCache extends BaseRegistryCache {
   }
 }
 
-export const registryStatusCache = new RegistryStatusCache();
+export const registryStatusCache: RegistryStatusCache = new RegistryStatusCache();

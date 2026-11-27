@@ -4,10 +4,9 @@ import {
   alternateName,
   EModelEndpoint,
   EToolResources,
-  LocalStorageKeys,
   defaultAgentFormValues,
 } from 'librechat-data-provider';
-import type { Agent, TFile } from 'librechat-data-provider';
+import type { Agent, TFile, StatefulCodeEnvironment } from 'librechat-data-provider';
 import type { DropdownValueSetter, TAgentOption, ExtendedFile } from '~/common';
 
 /**
@@ -44,17 +43,18 @@ export const createProviderOption = (provider: string) => ({
   value: provider,
 });
 
-/**
- * Gets default agent form values with localStorage values for model and provider.
- * This is used to initialize agent forms with the last used model and provider.
- **/
-export const getDefaultAgentFormValues = () => ({
+/** Gets default agent form values. */
+export const getDefaultAgentFormValues = (
+  statefulCodeEnvironment: StatefulCodeEnvironment = 'user',
+) => ({
   ...defaultAgentFormValues,
-  model: localStorage.getItem(LocalStorageKeys.LAST_AGENT_MODEL) ?? '',
-  provider: createProviderOption(localStorage.getItem(LocalStorageKeys.LAST_AGENT_PROVIDER) ?? ''),
+  stateful_code_environment: statefulCodeEnvironment,
   avatar_file: null,
   avatar_preview: '',
   avatar_action: null,
+  conversation_starter_draft: '',
+  instructionsSource: 'inline' as const,
+  instructionsPrompt: null,
 });
 
 export const processAgentOption = ({
@@ -76,7 +76,7 @@ export const processAgentOption = ({
     ...(_agent ?? ({} as Agent)),
     label: _agent?.name ?? '',
     value: _agent?.id ?? '',
-    icon: isGlobal ? <EarthIcon className="icon-md text-green-400" /> : null,
+    icon: isGlobal ? <EarthIcon className="icon-md text-status-success" /> : null,
     context_files: context_files.length > 0 ? ([] as Array<[string, ExtendedFile]>) : undefined,
     knowledge_files: _agent?.tool_resources?.file_search?.file_ids
       ? ([] as Array<[string, ExtendedFile]>)

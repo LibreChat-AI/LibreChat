@@ -1,11 +1,16 @@
 import { Schema } from 'mongoose';
+import { normalizeServerName } from 'librechat-data-provider';
 import type { MCPServerDocument } from '~/types';
 
-const mcpServerSchema = new Schema<MCPServerDocument>(
+const mcpServerSchema: Schema<MCPServerDocument> = new Schema<MCPServerDocument>(
   {
     serverName: {
       type: String,
       index: true,
+      required: true,
+    },
+    normalizedServerName: {
+      type: String,
       required: true,
     },
     config: {
@@ -29,7 +34,18 @@ const mcpServerSchema = new Schema<MCPServerDocument>(
   },
 );
 
+mcpServerSchema.pre('validate', function () {
+  this.normalizedServerName = normalizeServerName(this.serverName);
+});
+
 mcpServerSchema.index({ serverName: 1, tenantId: 1 }, { unique: true });
+mcpServerSchema.index(
+  { normalizedServerName: 1, tenantId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { normalizedServerName: { $exists: true } },
+  },
+);
 mcpServerSchema.index({ updatedAt: -1, _id: 1 });
 
 export default mcpServerSchema;

@@ -1,7 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { SelectionCheckbox, SkeletonRows } from './DataTableComponents';
+import type { Row } from '@tanstack/react-table';
 import type { TableColumn } from './DataTable.types';
+import { MemoizedTableRow, SelectionCheckbox, SkeletonRows } from './DataTableComponents';
 
 // Mock the cn utility
 jest.mock('~/utils', () => ({
@@ -121,8 +122,8 @@ describe('DataTableComponents', () => {
       const mockOnChange = jest.fn();
       render(<SelectionCheckbox checked={false} onChange={mockOnChange} ariaLabel="Select row" />);
 
-      const wrapper = screen.getByRole('button');
-      fireEvent.click(wrapper);
+      const checkbox = screen.getByRole('checkbox');
+      fireEvent.click(checkbox);
 
       expect(mockOnChange).toHaveBeenCalledWith(true);
     });
@@ -131,42 +132,17 @@ describe('DataTableComponents', () => {
       const mockOnChange = jest.fn();
       render(<SelectionCheckbox checked={true} onChange={mockOnChange} ariaLabel="Select row" />);
 
-      const wrapper = screen.getByRole('button');
-      fireEvent.click(wrapper);
+      const checkbox = screen.getByRole('checkbox');
+      fireEvent.click(checkbox);
 
       expect(mockOnChange).toHaveBeenCalledWith(false);
     });
 
-    it('should trigger onChange on Enter key', () => {
-      const mockOnChange = jest.fn();
-      render(<SelectionCheckbox checked={false} onChange={mockOnChange} ariaLabel="Select row" />);
+    it('should expose one native checkbox control', () => {
+      render(<SelectionCheckbox checked={false} onChange={jest.fn()} ariaLabel="Select row" />);
 
-      const wrapper = screen.getByRole('button');
-      fireEvent.keyDown(wrapper, { key: 'Enter' });
-
-      expect(mockOnChange).toHaveBeenCalledWith(true);
-    });
-
-    it('should trigger onChange on Space key', () => {
-      const mockOnChange = jest.fn();
-      render(<SelectionCheckbox checked={false} onChange={mockOnChange} ariaLabel="Select row" />);
-
-      const wrapper = screen.getByRole('button');
-      fireEvent.keyDown(wrapper, { key: ' ' });
-
-      expect(mockOnChange).toHaveBeenCalledWith(true);
-    });
-
-    it('should not trigger onChange on other keys', () => {
-      const mockOnChange = jest.fn();
-      render(<SelectionCheckbox checked={false} onChange={mockOnChange} ariaLabel="Select row" />);
-
-      const wrapper = screen.getByRole('button');
-      fireEvent.keyDown(wrapper, { key: 'a' });
-      fireEvent.keyDown(wrapper, { key: 'Tab' });
-      fireEvent.keyDown(wrapper, { key: 'Escape' });
-
-      expect(mockOnChange).not.toHaveBeenCalled();
+      expect(screen.getByRole('checkbox')).toBeInTheDocument();
+      expect(screen.queryByRole('button')).not.toBeInTheDocument();
     });
 
     it('should stop event propagation on click', () => {
@@ -179,8 +155,8 @@ describe('DataTableComponents', () => {
         </div>,
       );
 
-      const wrapper = screen.getByRole('button');
-      fireEvent.click(wrapper);
+      const checkbox = screen.getByRole('checkbox');
+      fireEvent.click(checkbox);
 
       expect(mockOnChange).toHaveBeenCalled();
       expect(mockParentClick).not.toHaveBeenCalled();
@@ -196,18 +172,18 @@ describe('DataTableComponents', () => {
         </div>,
       );
 
-      const wrapper = screen.getByRole('button');
-      fireEvent.keyDown(wrapper, { key: 'Enter' });
+      const checkbox = screen.getByRole('checkbox');
+      fireEvent.keyDown(checkbox, { key: 'Enter' });
 
-      expect(mockOnChange).toHaveBeenCalled();
+      expect(mockOnChange).not.toHaveBeenCalled();
       expect(mockParentKeyDown).not.toHaveBeenCalled();
     });
 
-    it('should have tabIndex 0 for keyboard accessibility', () => {
+    it('should remain keyboard focusable', () => {
       render(<SelectionCheckbox checked={false} onChange={jest.fn()} ariaLabel="Select row" />);
 
-      const wrapper = screen.getByRole('button');
-      expect(wrapper).toHaveAttribute('tabindex', '0');
+      const checkbox = screen.getByRole('checkbox');
+      expect(checkbox).not.toHaveAttribute('tabindex', '-1');
     });
   });
 
@@ -258,26 +234,6 @@ describe('DataTableComponents', () => {
 
       const skeletons = screen.getAllByTestId('skeleton');
       expect(skeletons).toHaveLength(2); // One per column
-    });
-
-    it('should apply desktopOnly class to column cells', () => {
-      const columns = [
-        { accessorKey: 'name', header: 'Name' },
-        { accessorKey: 'status', header: 'Status', meta: { desktopOnly: true } },
-      ] as TableColumn<Record<string, unknown>, unknown>[];
-
-      render(
-        <table>
-          <tbody>
-            <SkeletonRows count={1} columns={columns} />
-          </tbody>
-        </table>,
-      );
-
-      const cells = screen.getAllByTestId('table-cell');
-      // Second cell should have desktopOnly class
-      expect(cells[1]).toHaveClass('hidden');
-      expect(cells[1]).toHaveClass('md:table-cell');
     });
 
     it('should apply custom className from column meta', () => {
@@ -358,5 +314,25 @@ describe('DataTableComponents', () => {
       const cells = screen.queryAllByTestId('table-cell');
       expect(cells).toHaveLength(0);
     });
+  });
+});
+
+describe('MemoizedTableRow', () => {
+  it('takes a new height when the theme changes the row height of a mounted row', () => {
+    const row = { original: {}, getVisibleCells: () => [] } as unknown as Row<
+      Record<string, unknown>
+    >;
+    const renderRow = (height: number) => (
+      <table>
+        <tbody>
+          <MemoizedTableRow row={row} selected={false} style={{ height }} />
+        </tbody>
+      </table>
+    );
+    const { container, rerender } = render(renderRow(40));
+
+    rerender(renderRow(37));
+
+    expect((container.querySelector('tr') as HTMLElement).style.height).toBe('37px');
   });
 });

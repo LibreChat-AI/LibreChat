@@ -1,8 +1,36 @@
-import { extractEnvVariable } from 'librechat-data-provider';
-import type { MCPOptions } from 'librechat-data-provider';
+import { logger } from '@librechat/data-schemas';
+import {
+  extractEnvVariable,
+  isEphemeralAgentId,
+  stripAgentIdSuffix,
+} from 'librechat-data-provider';
+import type { Agent, MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody } from '~/types';
-import { extractOpenIDTokenInfo, processOpenIDPlaceholders, isOpenIDTokenValid } from './oidc';
+import {
+  OPENID_TOKEN_FIELDS,
+  OPENID_CREDENTIAL_PLACEHOLDER_PATTERN,
+  isOpenIDTokenValid,
+  extractOpenIDTokenInfo,
+  processOpenIDPlaceholders,
+  OpenIDReauthRequiredError,
+} from './oidc';
+import { getAdminApiKeyHeader } from '~/mcp/headers';
+
+/**
+ * Provenance marker for MCP servers contributed by an Agent Plugins package.
+ * Applied by the plugin loader, never by a plugin-authored `mcp.json` — that
+ * schema is closed, so a package declaring this field is rejected outright.
+ */
+export const MCP_PLUGIN_SOURCE = 'plugin';
+
+/**
+ * True when a server configuration came from an Agent Plugins package, and so
+ * must reach the transport with every placeholder it declared left literal.
+ */
+export function isPluginSourced(config?: { source?: string } | null): boolean {
+  return config?.source === MCP_PLUGIN_SOURCE;
+}
 
 /**
  * List of allowed user fields that can be used in MCP environment variables.
@@ -26,6 +54,7 @@ const ALLOWED_USER_FIELDS = [
   'emailVerified',
   'twoFactorEnabled',
   'termsAccepted',
+  'termsAcceptedAt',
 ] as const;
 
 type AllowedUserField = (typeof ALLOWED_USER_FIELDS)[number];
@@ -83,7 +112,10 @@ export function encodeHeaderValue(value: string): string {
  * @returns A new object containing only allowed fields plus federatedTokens if present
  */
 export function createSafeUser(
-  user: IUser | null | undefined,
+  user:
+    | (Partial<SafeUser> & Pick<IUser, 'tenantId'> & { federatedTokens?: IUser['federatedTokens'] })
+    | null
+    | undefined,
 ): Partial<SafeUser> & { federatedTokens?: IUser['federatedTokens'] } {
   if (!user) {
     return {};
@@ -103,6 +135,13 @@ export function createSafeUser(
     }
   }
 
+  // Fall back to `_id` when the mongoose virtual `id` is absent (e.g. lean/plain
+  // user objects), so `{{LIBRECHAT_USER_ID}}` placeholders still resolve.
+  if (!safeUser.id && '_id' in user) {
+    const _id = (user as unknown as { _id: { toString?: () => string } | string })._id;
+    safeUser.id = typeof _id === 'string' ? _id : _id?.toString?.();
+  }
+
   if ('federatedTokens' in user) {
     safeUser.federatedTokens = user.federatedTokens;
   }
@@ -114,7 +153,93 @@ export function createSafeUser(
  * List of allowed request body fields that can be used in header placeholders.
  * These are common fields from the request body that are safe to expose in headers.
  */
-const ALLOWED_BODY_FIELDS = ['conversationId', 'parentMessageId', 'messageId'] as const;
+export const ALLOWED_BODY_FIELDS = ['conversationId', 'parentMessageId', 'messageId'] as const;
+
+/**
+ * List of allowed agent fields that can be used in header placeholders. Kept to
+ * identifiers the agent owns rather than user-authored content.
+ */
+const ALLOWED_AGENT_FIELDS = ['id'] as const;
+
+type AllowedAgentField = (typeof ALLOWED_AGENT_FIELDS)[number];
+type SafeAgent = Pick<Agent, AllowedAgentField>;
+
+/**
+ * Any object carrying agent identity fields, so the projection below accepts a
+ * full `Agent`, a run-shaped agent, or the narrower agent objects the auxiliary
+ * generation paths pass around, without those callers coupling to `Agent` itself.
+ */
+type AgentLike = { [K in AllowedAgentField]?: Agent[K] | null };
+
+/**
+ * Creates a safe agent object containing only allowed fields, mirroring
+ * `createSafeUser` — call sites project at the boundary rather than hand-building
+ * a literal, so the allowlist stays the one place that decides what an agent may
+ * contribute to a header.
+ *
+ * @param agent - The agent object to extract safe fields from
+ * @returns A new object containing only allowed fields
+ */
+export function createSafeAgent(agent?: AgentLike | null): Partial<SafeAgent> {
+  if (!agent) {
+    return {};
+  }
+
+  const safeAgent: Partial<SafeAgent> = {};
+  for (const field of ALLOWED_AGENT_FIELDS) {
+    const value = agent[field];
+    if (value != null) {
+      Object.assign(safeAgent, { [field]: value });
+    }
+  }
+
+  return safeAgent;
+}
+
+const OPENID_PLACEHOLDER_NAMES = `LIBRECHAT_OPENID_(?:${OPENID_TOKEN_FIELDS.join('|')}|TOKEN)`;
+
+/**
+ * Matches every placeholder this module knows how to resolve: the enumerated
+ * `{{LIBRECHAT_USER_*}}`, `{{LIBRECHAT_BODY_*}}`, `{{LIBRECHAT_AGENT_*}}`, and
+ * `{{LIBRECHAT_OPENID_*}}` names. Deliberately excludes unknown names (a typo'd
+ * placeholder staying literal is diagnosable) and
+ * `{{LIBRECHAT_GRAPH_ACCESS_TOKEN}}`, which is resolved asynchronously via the
+ * OBO flow outside this pipeline.
+ */
+const RESOLVABLE_PLACEHOLDER_PATTERN = new RegExp(
+  [
+    `LIBRECHAT_USER_(?:${ALLOWED_USER_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
+    `LIBRECHAT_BODY_(?:${ALLOWED_BODY_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
+    `LIBRECHAT_AGENT_(?:${ALLOWED_AGENT_FIELDS.map((field) => field.toUpperCase()).join('|')})`,
+    OPENID_PLACEHOLDER_NAMES,
+  ]
+    .map((names) => `\\{\\{(?:${names})\\}\\}`)
+    .join('|'),
+  'g',
+);
+
+/**
+ * The credential placeholders that specifically need a usable *access* token, which is all
+ * `isOpenIDTokenValid` reports on. `ID_TOKEN` is absent because `processOpenIDPlaceholders`
+ * validates the ID token's own expiry, so an ID-token header still resolves while no access
+ * token is stored. Non-global so `exec` stays stateless.
+ */
+const OPENID_ACCESS_CREDENTIAL_PLACEHOLDER_PATTERN =
+  /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|TOKEN)\}\}/;
+
+/**
+ * Replaces resolvable-but-unresolved placeholders with an empty string so
+ * LibreChat's internal template syntax is never sent upstream as if it were
+ * real user data (e.g. a gateway trusting a literal
+ * `{{LIBRECHAT_USER_OPENIDID}}` as an account identity would pool unrelated
+ * users under that one string). Only for final resolution passes — staged
+ * flows that resolve again later with more context must not strip.
+ */
+export function stripUnresolvedPlaceholders(value: string, preserveAgentId = false): string {
+  return value.replace(RESOLVABLE_PLACEHOLDER_PATTERN, (placeholder) =>
+    preserveAgentId && placeholder === '{{LIBRECHAT_AGENT_ID}}' ? placeholder : '',
+  );
+}
 
 /**
  * Processes a string value to replace user field placeholders.
@@ -201,12 +326,41 @@ function processBodyPlaceholders(value: string, body: RequestBody): string {
 }
 
 /**
+ * Replaces agent field placeholders within a string.
+ * Recognized placeholders: `{{LIBRECHAT_AGENT_<FIELD>}}` where `<FIELD>` ∈ ALLOWED_AGENT_FIELDS.
+ * Only persisted agents resolve; missing or ephemeral identities become an empty value.
+ *
+ * @param value - The string value to process
+ * @param agent - The agent serving the request
+ * @returns The processed string with placeholders replaced
+ */
+export function processAgentPlaceholders(value: string, agent: Partial<Agent>): string {
+  if (!agent.id || isEphemeralAgentId(agent.id) || !/^agent_[A-Za-z0-9_-]+$/.test(agent.id)) {
+    return value.replaceAll('{{LIBRECHAT_AGENT_ID}}', '');
+  }
+
+  for (const field of ALLOWED_AGENT_FIELDS) {
+    const placeholder = `{{LIBRECHAT_AGENT_${field.toUpperCase()}}}`;
+    if (!value.includes(placeholder)) {
+      continue;
+    }
+
+    const fieldValue = agent[field];
+    const replacementValue = fieldValue == null ? '' : stripAgentIdSuffix(fieldValue);
+    value = value.replace(new RegExp(placeholder, 'g'), replacementValue);
+  }
+
+  return value;
+}
+
+/**
  * Processes a single string value by replacing various types of placeholders
  *
  * @param originalValue - The original string value to process
  * @param customUserVars - Optional custom user variables to replace placeholders
  * @param user - Optional user object for replacing user field placeholders
  * @param body - Optional request body object for replacing body field placeholders
+ * @param agent - Optional agent object for replacing agent field placeholders
  * @param isHeader - Whether this value will be used in an HTTP header (enables encoding)
  * @returns The processed string with all placeholders replaced
  */
@@ -215,16 +369,20 @@ function processSingleValue({
   customUserVars,
   user,
   body = undefined,
+  agent = undefined,
   isHeader = false,
   dbSourced = false,
+  beforeCredentialResolution,
 }: {
   originalValue: string;
   customUserVars?: Record<string, string>;
   user?: Partial<IUser>;
   body?: RequestBody;
+  agent?: Partial<Agent>;
   isHeader?: boolean;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders */
   dbSourced?: boolean;
+  beforeCredentialResolution?: (value: string) => string;
 }): string {
   // Type guard: ensure we're working with a string
   if (typeof originalValue !== 'string') {
@@ -242,6 +400,7 @@ function processSingleValue({
    */
   if (!dbSourced) {
     value = extractEnvVariable(value);
+    if (agent) value = processAgentPlaceholders(value, agent);
   }
 
   /** Runs for both dbSourced and non-dbSourced — it is the only resolution DB-stored servers get */
@@ -259,9 +418,26 @@ function processSingleValue({
 
   value = processUserPlaceholders(value, user, isHeader);
 
+  value = beforeCredentialResolution?.(value) ?? value;
   const openidTokenInfo = extractOpenIDTokenInfo(user);
   if (openidTokenInfo && isOpenIDTokenValid(openidTokenInfo)) {
     value = processOpenIDPlaceholders(value, openidTokenInfo);
+  } else if (openidTokenInfo) {
+    const unresolvable = OPENID_ACCESS_CREDENTIAL_PLACEHOLDER_PATTERN.exec(value);
+    if (unresolvable) {
+      logger.warn(
+        `OpenID token is expired or unavailable; cannot resolve ${unresolvable[0]} for the current request`,
+      );
+      throw new OpenIDReauthRequiredError(
+        `OpenID token is expired or unavailable; re-authentication is required to resolve ${unresolvable[0]}`,
+      );
+    }
+    /**
+     * `isOpenIDTokenValid` reports on the access token alone, so an ID token placeholder is not
+     * its to refuse: `processOpenIDPlaceholders` validates the ID token's own expiry and raises
+     * if it is stale. Every other placeholder keeps its literal-then-strip behaviour here.
+     */
+    value = processOpenIDPlaceholders(value, openidTokenInfo, ['ID_TOKEN']);
   }
 
   if (body) {
@@ -269,6 +445,13 @@ function processSingleValue({
   }
 
   return value;
+}
+
+function processAdminValue(originalValue: string, dbSourced: boolean): string {
+  if (typeof originalValue !== 'string') {
+    return String(originalValue);
+  }
+  return dbSourced ? originalValue : extractEnvVariable(originalValue);
 }
 
 /**
@@ -281,63 +464,70 @@ function processSingleValue({
  * @returns - The processed object with environment variables replaced
  */
 export function processMCPEnv(params: {
-  options: Readonly<MCPOptions> & { dbId?: string };
+  options: Readonly<MCPOptions> & { dbId?: string; source?: string };
   user?: Partial<IUser>;
   customUserVars?: Record<string, string>;
   body?: RequestBody;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders (for DB-stored servers) */
   dbSourced?: boolean;
+  /** Trusted projection hook, after substitutions and before credential resolution. */
+  beforeCredentialResolution?: (value: string) => string;
 }): MCPOptions {
-  const { options, user, customUserVars, body } = params;
+  const { options, user, body, beforeCredentialResolution } = params;
+  const agent = createSafeAgent({ id: body?.agentId });
 
   if (options === null || options === undefined) {
     return options;
   }
 
+  /**
+   * SECURITY INVARIANT — Agent Plugins configurations are returned verbatim.
+   * Plugin packages are portable third-party data, and the Agent Plugins
+   * specification (§7.2.1, §9.2) forbids resolving any placeholder a plugin
+   * declares. Without this gate a plugin could declare a header such as
+   * `Authorization: Bearer ${OPENAI_API_KEY}` and receive host credentials at
+   * its own origin. The check reads the config rather than a caller-supplied
+   * flag so no future call site can reintroduce the leak by omitting it.
+   */
+  if (isPluginSourced(options)) {
+    return structuredClone(options) as MCPOptions;
+  }
+
   /** Derive dbSourced from explicit param OR from dbId on the options (failsafe for callers that forget the flag) */
-  const dbSourced = params.dbSourced ?? !!options.dbId;
+  const dbSourced = params.dbSourced === true || !!options.dbId || options.source === 'user';
+
+  /** A shared-server editor can inject old auth-field names into any template. Only
+   *  server-declared variables may resolve, including destination-bound API key fields. */
+  const userManaged = dbSourced || !!options.dbId || options.source === 'user';
+  const customUserVars =
+    userManaged && params.customUserVars
+      ? Object.fromEntries(
+          Object.entries(params.customUserVars).filter(([name]) =>
+            Object.prototype.hasOwnProperty.call(options.customUserVars ?? {}, name),
+          ),
+        )
+      : params.customUserVars;
 
   const newObj: MCPOptions = structuredClone(options);
 
-  // Apply admin-provided API key to headers at runtime
-  // Note: User-provided keys use {{MCP_API_KEY}} placeholder in headers,
-  // which is processed later via customUserVars replacement
-  if ('apiKey' in newObj && newObj.apiKey) {
-    const apiKeyConfig = newObj.apiKey as {
-      key?: string;
-      source: 'admin' | 'user';
-      authorization_type: 'basic' | 'bearer' | 'custom';
-      custom_header?: string;
+  const adminHeader = getAdminApiKeyHeader(newObj.apiKey);
+  if (adminHeader) {
+    const objWithHeaders = newObj as { headers?: Record<string, string> };
+    objWithHeaders.headers = {
+      ...objWithHeaders.headers,
+      [adminHeader.name]: adminHeader.value,
     };
-
-    if (apiKeyConfig.source === 'admin' && apiKeyConfig.key) {
-      const { key, authorization_type, custom_header } = apiKeyConfig;
-      const headerName =
-        authorization_type === 'custom' ? custom_header || 'X-Api-Key' : 'Authorization';
-
-      let headerValue = key;
-      if (authorization_type === 'basic') {
-        headerValue = `Basic ${key}`;
-      } else if (authorization_type === 'bearer') {
-        headerValue = `Bearer ${key}`;
-      }
-
-      // Initialize headers if needed and add the API key header (overwrites if header already exists)
-      const objWithHeaders = newObj as { headers?: Record<string, string> };
-      if (!objWithHeaders.headers) {
-        objWithHeaders.headers = {};
-      }
-      objWithHeaders.headers[headerName] = headerValue;
-    }
   }
 
   if ('env' in newObj && newObj.env) {
     const processedEnv: Record<string, string> = {};
     for (const [key, originalValue] of Object.entries(newObj.env)) {
       processedEnv[key] = processSingleValue({
+        agent,
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
       });
@@ -349,7 +539,15 @@ export function processMCPEnv(params: {
     const processedArgs: string[] = [];
     for (const originalValue of newObj.args) {
       processedArgs.push(
-        processSingleValue({ originalValue, customUserVars, user, body, dbSourced }),
+        processSingleValue({
+          agent,
+          originalValue,
+          customUserVars,
+          user,
+          body,
+          dbSourced,
+          beforeCredentialResolution,
+        }),
       );
     }
     newObj.args = processedArgs;
@@ -361,9 +559,11 @@ export function processMCPEnv(params: {
     const processedHeaders: Record<string, string> = {};
     for (const [key, originalValue] of Object.entries(newObj.headers)) {
       processedHeaders[key] = processSingleValue({
+        agent,
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
         isHeader: true, // Important: Enable header encoding
@@ -372,15 +572,40 @@ export function processMCPEnv(params: {
     newObj.headers = processedHeaders;
   }
 
+  // Process OAuth headers if they exist; sent on OAuth discovery/token requests
+  if ('oauth_headers' in newObj && newObj.oauth_headers) {
+    const processedOAuthHeaders: Record<string, string> = {};
+    for (const [key, originalValue] of Object.entries(newObj.oauth_headers)) {
+      processedOAuthHeaders[key] = processSingleValue({
+        agent,
+        user,
+        body,
+        dbSourced,
+        beforeCredentialResolution,
+        originalValue,
+        customUserVars,
+        isHeader: true,
+      });
+    }
+    newObj.oauth_headers = processedOAuthHeaders;
+  }
+
   // Process URL if it exists (for WebSocket, SSE, StreamableHTTP types)
   if ('url' in newObj && newObj.url) {
     newObj.url = processSingleValue({
+      agent,
       user,
       body,
       dbSourced,
+      beforeCredentialResolution,
       customUserVars,
       originalValue: newObj.url,
     });
+  }
+
+  // Process outbound proxy if it exists (for SSE and StreamableHTTP types)
+  if ('proxy' in newObj && newObj.proxy) {
+    newObj.proxy = processAdminValue(newObj.proxy, dbSourced);
   }
 
   // Process OAuth configuration if it exists (for all transport types)
@@ -391,9 +616,11 @@ export function processMCPEnv(params: {
       // token_exchange_method is an enum and shouldn't be processed
       if (typeof originalValue === 'string') {
         processedOAuth[key] = processSingleValue({
+          agent,
           user,
           body,
           dbSourced,
+          beforeCredentialResolution,
           originalValue,
           customUserVars,
         });
@@ -408,74 +635,6 @@ export function processMCPEnv(params: {
 }
 
 /**
- * Recursively processes a value, replacing placeholders in strings while preserving structure
- * @param value - The value to process (can be string, number, boolean, array, object, etc.)
- * @param options - Processing options
- * @returns The processed value with the same structure
- */
-function processValue(
-  value: unknown,
-  options: {
-    customUserVars?: Record<string, string>;
-    user?: IUser;
-    body?: RequestBody;
-  },
-): unknown {
-  if (typeof value === 'string') {
-    return processSingleValue({
-      originalValue: value,
-      customUserVars: options.customUserVars,
-      user: options.user,
-      body: options.body,
-    });
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => processValue(item, options));
-  }
-
-  if (value !== null && typeof value === 'object') {
-    const processed: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      processed[key] = processValue(val, options);
-    }
-    return processed;
-  }
-
-  return value;
-}
-
-/**
- * Recursively resolves placeholders in a nested object structure while preserving types.
- * Only processes string values - leaves numbers, booleans, arrays, and nested objects intact.
- *
- * @param options - Configuration object
- * @param options.obj - The object to process
- * @param options.user - Optional user object for replacing user field placeholders
- * @param options.body - Optional request body object for replacing body field placeholders
- * @param options.customUserVars - Optional custom user variables to replace placeholders
- * @returns The processed object with placeholders replaced in string values
- */
-export function resolveNestedObject<T = unknown>(options?: {
-  obj: T | undefined;
-  user?: Partial<IUser> | { id: string };
-  body?: RequestBody;
-  customUserVars?: Record<string, string>;
-}): T {
-  const { obj, user, body, customUserVars } = options ?? {};
-
-  if (!obj) {
-    return obj as T;
-  }
-
-  return processValue(obj, {
-    customUserVars,
-    user: user as IUser,
-    body,
-  }) as T;
-}
-
-/**
  * Resolves header values by replacing user placeholders, body variables, custom variables, and environment variables.
  * Automatically encodes non-ASCII characters for header safety.
  *
@@ -483,29 +642,56 @@ export function resolveNestedObject<T = unknown>(options?: {
  * @param options.headers - The headers object to process
  * @param options.user - Optional user object for replacing user field placeholders (can be partial with just id)
  * @param options.body - Optional request body object for replacing body field placeholders
+ * @param options.agent - Optional agent serving the request, for replacing agent field
+ *   placeholders. Only persisted agents resolve; see `processAgentPlaceholders`.
  * @param options.customUserVars - Optional custom user variables to replace placeholders
+ * @param options.stripUnresolved - When true (final resolution passes only), replaces any
+ *   remaining resolvable placeholders with an empty string so internal template syntax is
+ *   never forwarded upstream. Leave unset for staged flows whose values are resolved again
+ *   later with more context.
  * @returns The processed headers with all placeholders replaced
  */
 export function resolveHeaders(options?: {
   headers: Record<string, string> | undefined;
   user?: Partial<IUser> | { id: string };
   body?: RequestBody;
+  agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
-}) {
-  const { headers, user, body, customUserVars } = options ?? {};
+  stripUnresolved?: boolean;
+  /** Google initialization resolves credentials before the agent identity is available. */
+  preserveAgentId?: boolean;
+}): Record<string, string> {
+  const { headers, user, body, agent, customUserVars, stripUnresolved = false } = options ?? {};
   const inputHeaders = headers ?? {};
 
   const resolvedHeaders: Record<string, string> = { ...inputHeaders };
 
   if (inputHeaders && typeof inputHeaders === 'object' && !Array.isArray(inputHeaders)) {
     Object.keys(inputHeaders).forEach((key) => {
-      resolvedHeaders[key] = processSingleValue({
+      const processed = processSingleValue({
         originalValue: inputHeaders[key],
         customUserVars,
         user: user as IUser,
         body,
+        agent,
         isHeader: true, // Important: Enable header encoding
       });
+      if (!stripUnresolved) {
+        resolvedHeaders[key] = processed;
+        return;
+      }
+
+      /** Reached only when the credential guard did not fire, i.e. the user has no OpenID identity at all: blanking the credential would emit `Authorization: Bearer `, which RFC 6750 rejects for a missing b64token */
+      const unresolvedCredential = OPENID_CREDENTIAL_PLACEHOLDER_PATTERN.exec(processed);
+      if (unresolvedCredential) {
+        logger.warn(
+          `Omitting header "${key}": ${unresolvedCredential[0]} could not be resolved for the current request`,
+        );
+        delete resolvedHeaders[key];
+        return;
+      }
+
+      resolvedHeaders[key] = stripUnresolvedPlaceholders(processed, options?.preserveAgentId);
     });
   }
 

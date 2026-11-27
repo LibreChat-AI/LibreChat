@@ -1,8 +1,17 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { SystemRoles, Permissions, roleDefaults, PermissionTypes } from 'librechat-data-provider';
+import {
+  AUTH_USER_DOC_BY_ID_PREFIX,
+  SystemRoles,
+  Permissions,
+  roleDefaults,
+  PermissionTypes,
+  CacheKeys,
+} from 'librechat-data-provider';
 import type { IRole, IUser, RolePermissions } from '..';
-import { createRoleMethods } from './role';
+import { _resetStrictCache } from '../models/plugins/tenantIsolation';
+import { createRoleMethods, RoleDeletionError } from './role';
+import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -15,7 +24,7 @@ jest.mock('~/config/winston', () => ({
 const mockCache = {
   get: jest.fn(),
   set: jest.fn(),
-  del: jest.fn(),
+  delete: jest.fn(),
 };
 
 const mockGetCache = jest.fn().mockReturnValue(mockCache);
@@ -23,16 +32,20 @@ const mockGetCache = jest.fn().mockReturnValue(mockCache);
 let Role: mongoose.Model<IRole>;
 let User: mongoose.Model<IUser>;
 let getRoleByName: ReturnType<typeof createRoleMethods>['getRoleByName'];
+let findRolesByNames: ReturnType<typeof createRoleMethods>['findRolesByNames'];
 let updateAccessPermissions: ReturnType<typeof createRoleMethods>['updateAccessPermissions'];
 let initializeRoles: ReturnType<typeof createRoleMethods>['initializeRoles'];
 let createRoleByName: ReturnType<typeof createRoleMethods>['createRoleByName'];
 let deleteRoleByName: ReturnType<typeof createRoleMethods>['deleteRoleByName'];
 let updateUsersByRole: ReturnType<typeof createRoleMethods>['updateUsersByRole'];
+let updateUsersRoleByIds: ReturnType<typeof createRoleMethods>['updateUsersRoleByIds'];
 let listUsersByRole: ReturnType<typeof createRoleMethods>['listUsersByRole'];
 let countUsersByRole: ReturnType<typeof createRoleMethods>['countUsersByRole'];
 let updateRoleByName: ReturnType<typeof createRoleMethods>['updateRoleByName'];
 let listRoles: ReturnType<typeof createRoleMethods>['listRoles'];
 let countRoles: ReturnType<typeof createRoleMethods>['countRoles'];
+let getPartitionRole: ReturnType<typeof createRoleMethods>['getPartitionRole'];
+let findUserIdsByRole: ReturnType<typeof createRoleMethods>['findUserIdsByRole'];
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
@@ -44,30 +57,120 @@ beforeAll(async () => {
   User = mongoose.models.User as mongoose.Model<IUser>;
   const methods = createRoleMethods(mongoose, { getCache: mockGetCache });
   getRoleByName = methods.getRoleByName;
+  findRolesByNames = methods.findRolesByNames;
   updateAccessPermissions = methods.updateAccessPermissions;
   initializeRoles = methods.initializeRoles;
   createRoleByName = methods.createRoleByName;
   deleteRoleByName = methods.deleteRoleByName;
   updateRoleByName = methods.updateRoleByName;
   updateUsersByRole = methods.updateUsersByRole;
+  updateUsersRoleByIds = methods.updateUsersRoleByIds;
   listUsersByRole = methods.listUsersByRole;
   countUsersByRole = methods.countUsersByRole;
   listRoles = methods.listRoles;
   countRoles = methods.countRoles;
+  getPartitionRole = methods.getPartitionRole;
+  findUserIdsByRole = methods.findUserIdsByRole;
 });
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
   await Role.deleteMany({});
   await User.deleteMany({});
   mockGetCache.mockClear();
-  mockCache.get.mockClear();
-  mockCache.set.mockClear();
-  mockCache.del.mockClear();
+  mockGetCache.mockReturnValue(mockCache);
+  mockCache.get.mockReset();
+  mockCache.set.mockReset();
+  mockCache.delete.mockReset();
+  delete process.env.AUTH_USER_CACHE_MODE;
+});
+
+describe('findRolesByNames', () => {
+  it('queries storage without reading or writing the role cache', async () => {
+    await Role.create([
+      { name: 'STANDARD-USER', permissions: {} },
+      { name: 'BASIC-USER', permissions: {} },
+    ]);
+
+    await expect(findRolesByNames(['STANDARD-USER', 'BASIC-USER'], 'name')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'STANDARD-USER' }),
+        expect.objectContaining({ name: 'BASIC-USER' }),
+      ]),
+    );
+    expect(mockGetCache).not.toHaveBeenCalled();
+    expect(mockCache.get).not.toHaveBeenCalled();
+    expect(mockCache.set).not.toHaveBeenCalled();
+  });
+
+  it('matches role names case-insensitively without using pagination', async () => {
+    const roles = Array.from({ length: 75 }, (_value, index) => ({
+      name: `ROLE-${index}`,
+      permissions: {},
+    }));
+    await Role.create([...roles, { name: 'STANDARD-USER', permissions: {} }]);
+
+    await expect(findRolesByNames(['standard-user'], 'name')).resolves.toEqual([
+      expect.objectContaining({ name: 'STANDARD-USER' }),
+    ]);
+  });
+
+  it('uses the active tenant context for matching role names', async () => {
+    await tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+      await Role.create({ name: 'TENANT-ROLE', permissions: {} });
+    });
+    await tenantStorage.run({ tenantId: 'tenant-b' }, async () => {
+      await Role.create({ name: 'TENANT-ROLE', permissions: {} });
+    });
+
+    const tenantARoles = await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+      findRolesByNames(['TENANT-ROLE'], 'name tenantId'),
+    );
+    const tenantBRoles = await tenantStorage.run({ tenantId: 'tenant-b' }, async () =>
+      findRolesByNames(['TENANT-ROLE'], 'name tenantId'),
+    );
+
+    expect(tenantARoles).toEqual([
+      expect.objectContaining({ name: 'TENANT-ROLE', tenantId: 'tenant-a' }),
+    ]);
+    expect(tenantBRoles).toEqual([
+      expect.objectContaining({ name: 'TENANT-ROLE', tenantId: 'tenant-b' }),
+    ]);
+  });
+
+  it('matches only base roles when no tenant context is active', async () => {
+    await Role.create({ name: 'SCOPED-ROLE', permissions: {} });
+    await tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+      await Role.create({ name: 'TENANT-ONLY-ROLE', permissions: {} });
+    });
+
+    const baseMatches = await findRolesByNames(
+      ['SCOPED-ROLE', 'TENANT-ONLY-ROLE'],
+      'name tenantId',
+    );
+
+    expect(baseMatches).toEqual([expect.objectContaining({ name: 'SCOPED-ROLE' })]);
+    expect(baseMatches).toHaveLength(1);
+  });
+
+  it('matches base roles without a tenant context even under strict isolation', async () => {
+    await Role.create({ name: 'STRICT-BASE-ROLE', permissions: {} });
+    process.env.TENANT_ISOLATION_STRICT = 'true';
+    _resetStrictCache();
+
+    try {
+      await expect(findRolesByNames(['STRICT-BASE-ROLE'], 'name')).resolves.toEqual([
+        expect.objectContaining({ name: 'STRICT-BASE-ROLE' }),
+      ]);
+    } finally {
+      delete process.env.TENANT_ISOLATION_STRICT;
+      _resetStrictCache();
+    }
+  });
 });
 
 describe('updateAccessPermissions', () => {
@@ -422,6 +525,7 @@ describe('initializeRoles', () => {
           [Permissions.USE]: false,
           [Permissions.CREATE]: true,
           [Permissions.SHARE]: true,
+          [Permissions.SHARE_PUBLIC]: false,
         },
         [PermissionTypes.BOOKMARKS]: { [Permissions.USE]: false },
       },
@@ -487,6 +591,7 @@ describe('initializeRoles', () => {
           [Permissions.USE]: false,
           [Permissions.CREATE]: false,
           [Permissions.SHARE]: false,
+          [Permissions.SHARE_PUBLIC]: false,
         },
         [PermissionTypes.BOOKMARKS]:
           roleDefaults[SystemRoles.ADMIN].permissions[PermissionTypes.BOOKMARKS],
@@ -539,6 +644,177 @@ describe('initializeRoles', () => {
     const userRole = await getRoleByName(SystemRoles.USER);
     expect(userRole.permissions[PermissionTypes.MULTI_CONVO]).toBeDefined();
     expect(userRole.permissions[PermissionTypes.MULTI_CONVO]?.USE).toBeDefined();
+  });
+});
+
+describe('initializeRoles - SHARE permission preservation', () => {
+  beforeEach(async () => {
+    await Role.deleteMany({});
+  });
+
+  it('preserves a fully-populated USER AGENTS block (SHARE stays true)', async () => {
+    await new Role({
+      name: SystemRoles.USER,
+      permissions: {
+        [PermissionTypes.AGENTS]: {
+          [Permissions.USE]: true,
+          [Permissions.CREATE]: true,
+          [Permissions.SHARE]: true,
+          [Permissions.SHARE_PUBLIC]: false,
+        },
+      },
+    }).save();
+
+    await initializeRoles();
+
+    const userRole = await getRoleByName(SystemRoles.USER);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.SHARE).toBe(true);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.SHARE_PUBLIC).toBe(false);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.USE).toBe(true);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.CREATE).toBe(true);
+  });
+
+  it('fills missing fields without clobbering a present SHARE:true on USER AGENTS', async () => {
+    await new Role({
+      name: SystemRoles.USER,
+      permissions: {
+        [PermissionTypes.AGENTS]: {
+          [Permissions.SHARE]: true,
+        },
+      },
+    }).save();
+
+    await initializeRoles();
+
+    const userRole = await getRoleByName(SystemRoles.USER);
+    // Present field preserved.
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.SHARE).toBe(true);
+    // Genuinely-missing fields filled from the USER default.
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.USE).toBe(true);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.CREATE).toBe(true);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.SHARE_PUBLIC).toBe(false);
+  });
+
+  it('leaves an all-true ADMIN AGENTS block unchanged', async () => {
+    await new Role({
+      name: SystemRoles.ADMIN,
+      permissions: {
+        [PermissionTypes.AGENTS]: {
+          [Permissions.USE]: true,
+          [Permissions.CREATE]: true,
+          [Permissions.SHARE]: true,
+          [Permissions.SHARE_PUBLIC]: true,
+        },
+      },
+    }).save();
+
+    await initializeRoles();
+
+    const adminRole = await getRoleByName(SystemRoles.ADMIN);
+    expect(adminRole.permissions[PermissionTypes.AGENTS]).toEqual({
+      USE: true,
+      CREATE: true,
+      SHARE: true,
+      SHARE_PUBLIC: true,
+    });
+  });
+
+  it('documents that hardening alone does not rescue a stripped (empty) block', async () => {
+    // An empty block carries no SHARED_GLOBAL to migrate, so the per-field merge fills USER defaults (SHARE:false).
+    await new Role({
+      name: SystemRoles.USER,
+      permissions: {
+        [PermissionTypes.AGENTS]: {},
+      },
+    }).save();
+
+    await initializeRoles();
+
+    const userRole = await getRoleByName(SystemRoles.USER);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.SHARE).toBe(false);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.USE).toBe(true);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.CREATE).toBe(true);
+    expect(userRole.permissions[PermissionTypes.AGENTS]?.SHARE_PUBLIC).toBe(false);
+  });
+
+  it('migrates AGENTS.SHARED_GLOBAL:true to SHARE:true and removes SHARED_GLOBAL', async () => {
+    // Raw insert keeps the off-schema SHARED_GLOBAL field that strict mode would strip.
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      permissions: { AGENTS: { SHARED_GLOBAL: true } },
+    });
+
+    await initializeRoles();
+
+    const doc = await Role.collection.findOne({ name: SystemRoles.USER });
+    expect(doc?.permissions.AGENTS.SHARE).toBe(true);
+    expect(doc?.permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
+    // Migration maps SHARED_GLOBAL to SHARE only, never SHARE_PUBLIC.
+    expect(doc?.permissions.AGENTS.SHARE_PUBLIC).toBe(false);
+  });
+
+  it('migrates AGENTS.SHARED_GLOBAL:false to SHARE:false and removes SHARED_GLOBAL', async () => {
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      permissions: { AGENTS: { SHARED_GLOBAL: false } },
+    });
+
+    await initializeRoles();
+
+    const doc = await Role.collection.findOne({ name: SystemRoles.USER });
+    expect(doc?.permissions.AGENTS.SHARE).toBe(false);
+    expect(doc?.permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
+  });
+
+  it('preserves an existing SHARE:false when SHARED_GLOBAL:true is also present', async () => {
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      permissions: { AGENTS: { SHARE: false, SHARED_GLOBAL: true } },
+    });
+
+    await initializeRoles();
+
+    const doc = await Role.collection.findOne({ name: SystemRoles.USER });
+    expect(doc?.permissions.AGENTS.SHARE).toBe(false);
+    expect(doc?.permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
+  });
+
+  it('migrates PROMPTS.SHARED_GLOBAL:true to PROMPTS.SHARE:true', async () => {
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      permissions: { PROMPTS: { SHARED_GLOBAL: true } },
+    });
+
+    await initializeRoles();
+
+    const doc = await Role.collection.findOne({ name: SystemRoles.USER });
+    expect(doc?.permissions.PROMPTS.SHARE).toBe(true);
+    expect(doc?.permissions.PROMPTS.SHARED_GLOBAL).toBeUndefined();
+  });
+
+  it('is a no-op on a clean DB with no legacy SHARED_GLOBAL', async () => {
+    await initializeRoles();
+
+    const userDoc = await Role.collection.findOne({ name: SystemRoles.USER });
+    const adminDoc = await Role.collection.findOne({ name: SystemRoles.ADMIN });
+    expect('SHARED_GLOBAL' in (userDoc?.permissions.AGENTS ?? {})).toBe(false);
+    expect('SHARED_GLOBAL' in (userDoc?.permissions.PROMPTS ?? {})).toBe(false);
+    expect('SHARED_GLOBAL' in (adminDoc?.permissions.AGENTS ?? {})).toBe(false);
+    expect('SHARED_GLOBAL' in (adminDoc?.permissions.PROMPTS ?? {})).toBe(false);
+  });
+
+  it('keeps the migrated SHARE:true across a second initializeRoles run', async () => {
+    await Role.collection.insertOne({
+      name: SystemRoles.USER,
+      permissions: { AGENTS: { SHARED_GLOBAL: true } },
+    });
+
+    await initializeRoles();
+    await initializeRoles();
+
+    const doc = await Role.collection.findOne({ name: SystemRoles.USER });
+    expect(doc?.permissions.AGENTS.SHARE).toBe(true);
+    expect(doc?.permissions.AGENTS.SHARED_GLOBAL).toBeUndefined();
   });
 });
 
@@ -603,7 +879,7 @@ describe('deleteRoleByName', () => {
     const deleted = await deleteRoleByName('editor');
 
     expect(deleted).toBeTruthy();
-    expect(deleted!.name).toBe('editor');
+    expect(deleted!.role.name).toBe('editor');
 
     const alice = await User.findOne({ email: 'alice@test.com' }).lean();
     const bob = await User.findOne({ email: 'bob@test.com' }).lean();
@@ -611,6 +887,493 @@ describe('deleteRoleByName', () => {
     expect(alice!.role).toBe(SystemRoles.USER);
     expect(bob!.role).toBe(SystemRoles.USER);
     expect(carol!.role).toBe(SystemRoles.USER);
+    expect([...deleted!.reassignedUserIds].sort()).toEqual(
+      [alice!._id.toString(), bob!._id.toString()].sort(),
+    );
+  });
+
+  it('reports exactly the members its write moved when other writes land mid-delete', async () => {
+    /** The app filters strictly; the reassignment tag must still be matched. */
+    const strictQuery = mongoose.get('strictQuery');
+    mongoose.set('strictQuery', true);
+    await createRoleByName({ name: 'editor' });
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
+    ]);
+    let eveId = '';
+    let first = true;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        if (!first) {
+          return realUpdateMany(filter, update, options);
+        }
+        first = false;
+        /** Between the member read and the write: another request moves Bob to USER (not this
+         * deletion's move) and Eve joins (picked up by the next pass). */
+        await User.updateOne({ _id: bob._id }, { $set: { role: SystemRoles.USER } });
+        const eve = await User.create({
+          name: 'Eve',
+          email: 'eve@test.com',
+          role: 'editor',
+          username: 'eve',
+        });
+        eveId = eve._id.toString();
+        const result = await realUpdateMany(filter, update, options);
+        /** After the write and before its read-back: an unrelated update lands on Alice. */
+        await User.updateOne({ _id: alice._id }, { $set: { name: 'Alice Renamed' } });
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    try {
+      const deleted = await deleteRoleByName('editor');
+
+      expect([...deleted!.reassignedUserIds].sort()).toEqual([alice._id.toString(), eveId].sort());
+    } finally {
+      spy.mockRestore();
+      mongoose.set('strictQuery', strictQuery);
+    }
+    expect((await User.findById(bob._id).lean())!.role).toBe(SystemRoles.USER);
+    expect((await User.findById(eveId).lean())!.role).toBe(SystemRoles.USER);
+    expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
+  });
+
+  it('keeps the members it moved when an overlapping deletion moves them again before the read-back', async () => {
+    const strictQuery = mongoose.get('strictQuery');
+    mongoose.set('strictQuery', true);
+    await createRoleByName({ name: 'editor' });
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
+    ]);
+    let first = true;
+    let overlapping: Awaited<ReturnType<typeof deleteRoleByName>> = null;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        if (!first) {
+          return realUpdateMany(filter, update, options);
+        }
+        first = false;
+        /** Bob leaves before the write, so this batch must read its tag back. */
+        await User.updateOne({ _id: bob._id }, { $set: { role: SystemRoles.USER } });
+        const result = await realUpdateMany(filter, update, options);
+        /** Before the read-back: Alice is added back and an overlapping deletion moves her. */
+        await User.updateOne({ _id: alice._id }, { $set: { role: 'editor' } });
+        overlapping = await deleteRoleByName('editor');
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+      mongoose.set('strictQuery', strictQuery);
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+    expect(overlapping!.reassignedUserIds).toEqual([alice._id.toString()]);
+    expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
+  });
+
+  it('reports an account re-added to the role between passes once', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    let readded = false;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if (
+          !readded &&
+          (update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER
+        ) {
+          /** An administrator adds Alice back before the next pass. */
+          readded = true;
+          await User.updateOne({ _id: alice._id }, { $set: { role: 'editor' } });
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let deleted: Awaited<ReturnType<typeof deleteRoleByName>>;
+    try {
+      deleted = await deleteRoleByName('editor');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(deleted!.reassignedUserIds).toEqual([alice._id.toString()]);
+    expect((await User.findById(alice._id).lean())!.role).toBe(SystemRoles.USER);
+  });
+
+  it('keeps the role and reports who it moved when members keep joining after every pass', async () => {
+    await createRoleByName({ name: 'editor' });
+    await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    let joined = 0;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          /** Another member joins after every reassignment write. */
+          joined++;
+          await User.create({
+            name: `Late ${joined}`,
+            email: `late${joined}@test.com`,
+            role: 'editor',
+            username: `late${joined}`,
+          });
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    const moved = (caught as RoleDeletionError).reassignedUserIds;
+    expect(moved).toHaveLength(joined);
+    expect(await User.countDocuments({ _id: { $in: moved }, role: SystemRoles.USER })).toBe(
+      moved.length,
+    );
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+  });
+
+  it('reports the members a write moved when it commits but its acknowledgement is lost', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          throw new Error('acknowledgement lost');
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+    expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
+  });
+
+  it('reports the members it moved when another deletion removes the role first', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          /** A concurrent deletion removes the role between the reassignment and the delete. */
+          await Role.deleteOne({ name: 'editor' });
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+  });
+
+  it.each([
+    ['given', true],
+    ['resolved', false],
+  ])('never moves the members of a role recreated mid-delete (id %s)', async (_label, withId) => {
+    const original = await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    let danaId = '';
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          /** After the first pass: the role is deleted, recreated, and given a new member. */
+          await Role.deleteOne({ _id: original._id });
+          await createRoleByName({ name: 'editor' });
+          const dana = await User.create({
+            name: 'Dana',
+            email: 'dana@test.com',
+            role: 'editor',
+            username: 'dana',
+          });
+          danaId = dana._id.toString();
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor', withId ? { id: String(original._id) } : undefined);
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+    expect((await User.findById(danaId).lean())!.role).toBe('editor');
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+  });
+
+  it('checks the role identity before every batch of a large role', async () => {
+    const original = await createRoleByName({ name: 'editor' });
+    await User.insertMany(
+      Array.from({ length: 1001 }, (_, i) => ({
+        name: `Member ${i}`,
+        email: `member${i}@test.com`,
+        username: `member${i}`,
+        role: 'editor',
+      })),
+    );
+    let writes = 0;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if (
+          (update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER &&
+          writes++ === 0
+        ) {
+          /** After the first batch: the role is deleted and recreated under the same name, so
+           * the accounts still holding the name now belong to the replacement. */
+          await Role.deleteOne({ _id: original._id });
+          await createRoleByName({ name: 'editor' });
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor', { id: String(original._id) });
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
+    expect((caught as RoleDeletionError).reassignedUserIds).toHaveLength(1000);
+    expect(await User.countDocuments({ role: 'editor' })).toBe(1);
+  });
+
+  it('reports the members it moved and evicts caches when the role delete rejects', async () => {
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const aliceIndex = `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`;
+    mockCache.get.mockImplementation(async (key: string) =>
+      key === aliceIndex ? ['auth-cache-alice'] : undefined,
+    );
+    mockCache.set.mockClear();
+    const spy = jest.spyOn(Role, 'findOneAndDelete').mockImplementationOnce((() => {
+      throw new Error('acknowledgement lost');
+    }) as unknown as typeof Role.findOneAndDelete);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('delete_failed');
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-alice');
+    expect(mockCache.set).toHaveBeenCalledWith('editor', null);
+  });
+
+  it('a retry after a failed delete moves and reports only the members still on the role', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const spy = jest.spyOn(Role, 'findOneAndDelete').mockImplementationOnce((() => {
+      throw new Error('db down');
+    }) as unknown as typeof Role.findOneAndDelete);
+    await expect(deleteRoleByName('editor')).rejects.toBeInstanceOf(RoleDeletionError);
+    spy.mockRestore();
+    const bob = await User.create({
+      name: 'Bob',
+      email: 'bob@test.com',
+      role: 'editor',
+      username: 'bob',
+    });
+
+    const retried = await deleteRoleByName('editor');
+
+    expect(retried!.reassignedUserIds).toEqual([bob._id.toString()]);
+    expect((await User.findById(alice._id).lean())!.role).toBe(SystemRoles.USER);
+    expect(await Role.exists({ name: 'editor' })).toBeNull();
+  });
+
+  it('keeps the reassignment tag as evidence when the write and its recovery read both fail', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const realUpdateMany = User.updateMany.bind(User);
+    const updateSpy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          throw new Error('acknowledgement lost');
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+    const realFind = User.find.bind(User);
+    const findSpy = jest.spyOn(User, 'find').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      ...rest: unknown[]
+    ) => {
+      if (filter && '_roleReassignment' in filter) {
+        throw new Error('database unreachable');
+      }
+      return (realFind as (...args: unknown[]) => unknown)(filter, ...rest);
+    }) as unknown as typeof User.find);
+
+    try {
+      await expect(deleteRoleByName('editor')).rejects.toBeInstanceOf(RoleDeletionError);
+    } finally {
+      updateSpy.mockRestore();
+      findSpy.mockRestore();
+    }
+
+    const stored = await User.collection.findOne({ _id: alice._id });
+    expect(stored?.role).toBe(SystemRoles.USER);
+    expect(stored?._roleReassignment).toBeDefined();
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+  });
+
+  it('leaves a role recreated under the same name when the expected id no longer matches', async () => {
+    const original = await createRoleByName({ name: 'editor' });
+    await Role.deleteOne({ name: 'editor' });
+    await createRoleByName({ name: 'editor' });
+    await User.create({ name: 'Dana', email: 'dana@test.com', role: 'editor', username: 'dana' });
+
+    const result = await deleteRoleByName('editor', { id: String(original._id) });
+
+    expect(result).toBeNull();
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+    const dana = await User.findOne({ email: 'dana@test.com' }).lean();
+    expect(dana!.role).toBe('editor');
+  });
+
+  it('deletes the role when the expected id matches', async () => {
+    const created = await createRoleByName({ name: 'editor' });
+
+    const result = await deleteRoleByName('editor', { id: String(created._id) });
+
+    expect(result?.role.name).toBe('editor');
+    expect(await Role.exists({ name: 'editor' })).toBeNull();
   });
 
   it('returns null when role does not exist', async () => {
@@ -639,6 +1402,36 @@ describe('deleteRoleByName', () => {
 
     expect(result).toBeNull();
     expect(mockCache.set).toHaveBeenCalledWith('nonexistent', null);
+  });
+
+  it('invalidates cached auth user documents for reassigned users', async () => {
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    await createRoleByName({ name: 'editor' });
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
+    ]);
+    mockCache.get.mockImplementation((key: string) => {
+      if (key === `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`) {
+        return Promise.resolve(['auth-cache-alice']);
+      }
+      if (key === `${AUTH_USER_DOC_BY_ID_PREFIX}:${bob._id.toString()}`) {
+        return Promise.resolve(['auth-cache-bob']);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    await deleteRoleByName('editor');
+
+    expect(mockGetCache).toHaveBeenCalledWith(CacheKeys.AUTH_USER_DOC);
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-alice');
+    expect(mockCache.delete).toHaveBeenCalledWith(
+      `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`,
+    );
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-bob');
+    expect(mockCache.delete).toHaveBeenCalledWith(
+      `${AUTH_USER_DOC_BY_ID_PREFIX}:${bob._id.toString()}`,
+    );
   });
 });
 
@@ -762,6 +1555,84 @@ describe('updateUsersByRole', () => {
 
     const alice = await User.findOne({ email: 'alice@test.com' }).lean();
     expect(alice!.role).toBe(SystemRoles.USER);
+  });
+
+  it('invalidates cached auth user documents for migrated users', async () => {
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
+    ]);
+    mockCache.get.mockImplementation((key: string) => {
+      if (key === `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`) {
+        return Promise.resolve(['auth-cache-alice']);
+      }
+      if (key === `${AUTH_USER_DOC_BY_ID_PREFIX}:${bob._id.toString()}`) {
+        return Promise.resolve(['auth-cache-bob']);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    await updateUsersByRole('editor', 'senior-editor');
+
+    expect(mockGetCache).toHaveBeenCalledWith(CacheKeys.AUTH_USER_DOC);
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-alice');
+    expect(mockCache.delete).toHaveBeenCalledWith(
+      `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`,
+    );
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-bob');
+    expect(mockCache.delete).toHaveBeenCalledWith(
+      `${AUTH_USER_DOC_BY_ID_PREFIX}:${bob._id.toString()}`,
+    );
+  });
+});
+
+describe('updateUsersRoleByIds', () => {
+  it('invalidates cached auth user documents for explicitly reassigned users', async () => {
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'viewer', username: 'bob' },
+    ]);
+    mockCache.get.mockImplementation((key: string) => {
+      if (key === `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`) {
+        return Promise.resolve(['auth-cache-alice']);
+      }
+      if (key === `${AUTH_USER_DOC_BY_ID_PREFIX}:${bob._id.toString()}`) {
+        return Promise.resolve(['auth-cache-bob']);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    await updateUsersRoleByIds([alice._id.toString(), bob._id.toString()], 'admin-lite');
+
+    const updatedUsers = await User.find({ _id: { $in: [alice._id, bob._id] } }).lean();
+    expect(updatedUsers.map((user) => user.role)).toEqual(['admin-lite', 'admin-lite']);
+    expect(mockGetCache).toHaveBeenCalledWith(CacheKeys.AUTH_USER_DOC);
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-alice');
+    expect(mockCache.delete).toHaveBeenCalledWith(
+      `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`,
+    );
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-bob');
+    expect(mockCache.delete).toHaveBeenCalledWith(
+      `${AUTH_USER_DOC_BY_ID_PREFIX}:${bob._id.toString()}`,
+    );
+  });
+
+  it('with fromRole, changes only the users still on that role', async () => {
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'writer', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'viewer', username: 'bob' },
+    ]);
+
+    await updateUsersRoleByIds([alice._id.toString(), bob._id.toString()], 'editor', {
+      fromRole: 'writer',
+    });
+
+    const roles = await User.find({ _id: { $in: [alice._id, bob._id] } })
+      .sort({ username: 1 })
+      .lean();
+    expect(roles.map((user) => user.role)).toEqual(['editor', 'viewer']);
   });
 });
 
@@ -898,5 +1769,224 @@ describe('createRoleByName - duplicate key race', () => {
     await expect(createRoleByName({ name: 'editor2' })).rejects.toThrow(/already exists/);
 
     insertSpy.mockRestore();
+  });
+});
+
+describe('role-name-keyed operations stay in the caller tenant partition', () => {
+  const inTenant = <T>(tenantId: string, run: () => Promise<T>): Promise<T> =>
+    tenantStorage.run({ tenantId }, run);
+
+  /** An `editor` role and member at platform level and in tenant-a, and a tenant-only role. */
+  async function seed() {
+    const platformRole = await Role.create({ name: 'editor', description: 'platform' });
+    const platformUser = await User.create({ email: 'p@example.com', role: 'editor' });
+    const tenant = await inTenant('tenant-a', async () => ({
+      role: await Role.create({ name: 'editor', description: 'tenant' }),
+      user: await User.create({ email: 't@example.com', role: 'editor' }),
+      only: await Role.create({ name: 'tenant-only' }),
+    }));
+    return {
+      platformRoleId: platformRole._id.toString(),
+      platformUserId: platformUser._id.toString(),
+      tenantRoleId: tenant.role._id.toString(),
+      tenantUserId: tenant.user._id.toString(),
+    };
+  }
+
+  const userRole = async (id: string) =>
+    (await User.collection.findOne({ _id: new mongoose.Types.ObjectId(id) }))?.role;
+  const roleDescription = async (id: string) =>
+    (await Role.collection.findOne({ _id: new mongoose.Types.ObjectId(id) }))?.description;
+
+  it('reads and lists only the platform roles and members outside a tenant', async () => {
+    const ids = await seed();
+
+    expect(String((await getPartitionRole('editor'))?._id)).toBe(ids.platformRoleId);
+    expect(await getPartitionRole('tenant-only')).toBeNull();
+    expect((await listRoles()).map(({ name }) => name)).toEqual(['editor']);
+    expect(await countRoles()).toBe(1);
+    expect(await findUserIdsByRole('editor')).toEqual([ids.platformUserId]);
+    expect((await listUsersByRole('editor')).map(({ _id }) => String(_id))).toEqual([
+      ids.platformUserId,
+    ]);
+    expect(await countUsersByRole('editor')).toBe(1);
+  });
+
+  it("reads and lists only the active tenant's roles and members inside it", async () => {
+    const ids = await seed();
+
+    const found = await inTenant('tenant-a', async () => ({
+      role: await getPartitionRole('editor'),
+      roles: (await listRoles()).map(({ name }) => name).sort(),
+      members: await findUserIdsByRole('editor'),
+      count: await countUsersByRole('editor'),
+    }));
+
+    expect(String(found.role?._id)).toBe(ids.tenantRoleId);
+    expect(found.roles).toEqual(['editor', 'tenant-only']);
+    expect(found.members).toEqual([ids.tenantUserId]);
+    expect(found.count).toBe(1);
+  });
+
+  it('creates a missing system role in the partition that reads it, never reading the role cache', async () => {
+    await inTenant('tenant-a', () => Role.create({ name: SystemRoles.USER }));
+
+    const platform = await getPartitionRole(SystemRoles.USER);
+
+    expect(platform?.name).toBe(SystemRoles.USER);
+    expect(platform?.tenantId).toBeUndefined();
+    expect(await Role.collection.countDocuments({ name: SystemRoles.USER })).toBe(2);
+    expect(mockCache.get).not.toHaveBeenCalled();
+  });
+
+  it("renames and migrates only the platform role and its members, leaving the tenant's", async () => {
+    const ids = await seed();
+    const platform = await getPartitionRole('editor');
+
+    await updateUsersByRole('editor', 'writer');
+    const renamed = await updateRoleByName(
+      'editor',
+      { name: 'writer', description: 'moved' },
+      { id: String(platform?._id) },
+    );
+
+    expect(String(renamed._id)).toBe(ids.platformRoleId);
+    expect(await userRole(ids.platformUserId)).toBe('writer');
+    expect(await userRole(ids.tenantUserId)).toBe('editor');
+    expect(await roleDescription(ids.tenantRoleId)).toBe('tenant');
+    expect(
+      (await Role.collection.findOne({ _id: new mongoose.Types.ObjectId(ids.tenantRoleId) }))?.name,
+    ).toBe('editor');
+  });
+
+  it("creates a platform role whose name a tenant's role holds, and refuses one the partition holds", async () => {
+    await seed();
+
+    const created = await createRoleByName({ name: 'tenant-only' });
+
+    expect(created.tenantId).toBeUndefined();
+    await expect(createRoleByName({ name: 'editor' })).rejects.toThrow(/already exists/);
+    await expect(
+      inTenant('tenant-a', () => createRoleByName({ name: 'tenant-only' })),
+    ).rejects.toThrow(/already exists/);
+  });
+
+  it('updates only the role document an id names, and nothing once it no longer has the name', async () => {
+    const tenantRole = await inTenant('tenant-a', () =>
+      Role.create({ name: 'editor', description: 'tenant' }),
+    );
+    const platformRole = await Role.create({ name: 'editor', description: 'platform' });
+
+    const updated = await updateRoleByName(
+      'editor',
+      { description: 'changed' },
+      { id: String(platformRole._id) },
+    );
+    const missed = await updateRoleByName(
+      'writer',
+      { description: 'never' },
+      { id: String(platformRole._id) },
+    );
+
+    expect(String(updated._id)).toBe(String(platformRole._id));
+    expect(missed).toBeNull();
+    expect(await roleDescription(String(platformRole._id))).toBe('changed');
+    expect(await roleDescription(String(tenantRole._id))).toBe('tenant');
+  });
+
+  it('writes access permissions to the role document it was given, never another of its name', async () => {
+    const tenantRole = await inTenant('tenant-a', () =>
+      Role.create({ name: 'editor', permissions: {} }),
+    );
+    await Role.create({ name: 'editor', permissions: {} });
+    const platform = await getPartitionRole('editor');
+
+    await updateAccessPermissions(
+      'editor',
+      { [PermissionTypes.BOOKMARKS]: { [Permissions.USE]: true } },
+      platform as IRole,
+    );
+
+    const stored = await Role.collection
+      .find({ name: 'editor' })
+      .project({ tenantId: 1, permissions: 1 })
+      .toArray();
+    const byTenant = new Map(stored.map((role) => [role.tenantId ?? '-', role.permissions]));
+    expect(byTenant.get('-')?.[PermissionTypes.BOOKMARKS]).toEqual({ [Permissions.USE]: true });
+    expect(byTenant.get('tenant-a')?.[PermissionTypes.BOOKMARKS]).toBeUndefined();
+    expect(String(tenantRole._id)).not.toBe(String(platform?._id));
+  });
+
+  it('reads and writes by name alone the platform role outside a tenant, though an older tenant role has its name', async () => {
+    const tenantRole = await inTenant('tenant-a', () =>
+      Role.create({ name: 'editor', description: 'tenant', permissions: {} }),
+    );
+    const platformRole = await Role.create({
+      name: 'editor',
+      description: 'platform',
+      permissions: {},
+    });
+
+    const read = await getRoleByName('editor');
+    const updated = await updateRoleByName('editor', { description: 'changed' });
+    await updateAccessPermissions('editor', {
+      [PermissionTypes.BOOKMARKS]: { [Permissions.USE]: true },
+    });
+    /** A role read without its `_id`, as `GET /api/roles/:roleName` reads (and caches) it. */
+    const withoutId = await getRoleByName('editor', '-_id -__v');
+    await updateAccessPermissions(
+      'editor',
+      { [PermissionTypes.PROMPTS]: { [Permissions.USE]: false } },
+      withoutId,
+    );
+
+    expect(String(read._id)).toBe(String(platformRole._id));
+    expect(String(updated._id)).toBe(String(platformRole._id));
+    expect(withoutId._id).toBeUndefined();
+    const stored = async (id: unknown) =>
+      Role.collection.findOne({ _id: new mongoose.Types.ObjectId(String(id)) });
+    expect(await stored(platformRole._id)).toMatchObject({
+      description: 'changed',
+      permissions: {
+        [PermissionTypes.BOOKMARKS]: { [Permissions.USE]: true },
+        [PermissionTypes.PROMPTS]: { [Permissions.USE]: false },
+      },
+    });
+    const tenantStored = await stored(tenantRole._id);
+    expect(tenantStored?.description).toBe('tenant');
+    expect(tenantStored?.permissions?.[PermissionTypes.BOOKMARKS]).toBeUndefined();
+    expect(tenantStored?.permissions?.[PermissionTypes.PROMPTS]).toBeUndefined();
+  });
+
+  it("deletes only the platform role and reassigns only its members, leaving the tenant's", async () => {
+    const ids = await seed();
+
+    const deleted = await deleteRoleByName('editor');
+    const refused = await deleteRoleByName('editor', { id: ids.tenantRoleId });
+
+    expect(String(deleted?.role._id)).toBe(ids.platformRoleId);
+    expect(refused).toBeNull();
+    expect(await userRole(ids.platformUserId)).toBe(SystemRoles.USER);
+    expect(await userRole(ids.tenantUserId)).toBe('editor');
+    expect(await roleDescription(ids.tenantRoleId)).toBe('tenant');
+  });
+
+  it("deletes and renames only the active tenant's role and members inside it", async () => {
+    const ids = await seed();
+
+    await inTenant('tenant-a', async () => {
+      await updateUsersByRole('editor', 'writer');
+      await updateRoleByName('editor', { name: 'writer' });
+      await deleteRoleByName('tenant-only');
+    });
+
+    expect(await userRole(ids.tenantUserId)).toBe('writer');
+    expect(await userRole(ids.platformUserId)).toBe('editor');
+    expect(await roleDescription(ids.platformRoleId)).toBe('platform');
+    expect(
+      (await Role.collection.findOne({ _id: new mongoose.Types.ObjectId(ids.platformRoleId) }))
+        ?.name,
+    ).toBe('editor');
+    expect(await Role.collection.countDocuments({ name: 'tenant-only' })).toBe(0);
   });
 });

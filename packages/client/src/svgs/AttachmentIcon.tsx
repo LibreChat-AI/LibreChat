@@ -1,4 +1,10 @@
-export default function AttachmentIcon({ className = '' }) {
+import { JSX } from 'react/jsx-runtime';
+
+export default function AttachmentIcon({
+  className = '',
+}: {
+  className?: string | undefined;
+}): JSX.Element {
   return (
     <svg
       width="24"

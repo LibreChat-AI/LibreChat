@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
 import { DropdownPopup, Skeleton } from '@librechat/client';
@@ -6,11 +6,13 @@ import { AccessRoleIds, ResourceType } from 'librechat-data-provider';
 import { useGetAccessRolesQuery } from 'librechat-data-provider/react-query';
 import type { AccessRole } from 'librechat-data-provider';
 import type * as t from '~/common';
-import { cn, getRoleLocalizationKeys } from '~/utils';
+import { cn, getRoleLocalizationKeys, RESOURCE_CONFIGS } from '~/utils';
+import { MenuContainerContext } from './container';
 import { useLocalize } from '~/hooks';
 
 interface AccessRolesPickerProps {
   id?: string;
+  ariaLabel?: string;
   resourceType?: ResourceType;
   selectedRoleId?: AccessRoleIds;
   onRoleChange: (roleId: AccessRoleIds) => void;
@@ -19,12 +21,15 @@ interface AccessRolesPickerProps {
 
 export default function AccessRolesPicker({
   id,
+  ariaLabel,
   resourceType = ResourceType.AGENT,
   selectedRoleId = AccessRoleIds.AGENT_VIEWER,
   onRoleChange,
   className = '',
 }: AccessRolesPickerProps) {
   const localize = useLocalize();
+  const menuContainer = useContext(MenuContainerContext);
+  const menuId = React.useId();
   const [isOpen, setIsOpen] = React.useState(false);
   const { data: accessRoles, isLoading: rolesLoading } = useGetAccessRolesQuery(resourceType);
 
@@ -37,6 +42,12 @@ export default function AccessRolesPicker({
     };
   };
 
+  const ownerRoleId = RESOURCE_CONFIGS[resourceType]?.defaultOwnerRoleId;
+  const filteredRoles =
+    resourceType === ResourceType.SHARED_LINK
+      ? (accessRoles || []).filter((role) => role.accessRoleId !== ownerRoleId)
+      : accessRoles || [];
+
   const selectedRole = accessRoles?.find((role) => role.accessRoleId === selectedRoleId);
   const selectedRoleInfo = selectedRole ? getLocalizedRoleInfo(selectedRole.accessRoleId) : null;
 
@@ -44,7 +55,7 @@ export default function AccessRolesPicker({
     return <Skeleton className="h-10 w-24 rounded-lg" />;
   }
 
-  const dropdownItems: t.MenuItemProps[] = accessRoles.map((role: AccessRole) => {
+  const dropdownItems: t.MenuItemProps[] = filteredRoles.map((role: AccessRole) => {
     const localizedInfo = getLocalizedRoleInfo(role.accessRoleId);
     return {
       id: role.accessRoleId,
@@ -55,9 +66,9 @@ export default function AccessRolesPicker({
       },
       render: (props) => (
         <button {...props}>
-          <div className="flex flex-col items-start gap-0.5 text-left">
-            <span className="font-medium text-text-primary">{localizedInfo.name}</span>
-            <span className="text-xs text-text-secondary">{localizedInfo.description}</span>
+          <div className="flex flex-col items-start gap-0.5 text-start">
+            <span className="text-text-primary font-medium">{localizedInfo.name}</span>
+            <span className="text-text-secondary text-xs">{localizedInfo.description}</span>
           </div>
         </button>
       ),
@@ -65,26 +76,31 @@ export default function AccessRolesPicker({
   });
 
   return (
-    <div className={className} id={id}>
+    <div className={className}>
       <DropdownPopup
-        menuId="access-roles-menu"
+        menuId={`access-roles-menu-${menuId}`}
         isOpen={isOpen}
         setIsOpen={setIsOpen}
         trigger={
           <Ariakit.MenuButton
-            aria-label={selectedRoleInfo?.description || 'Select role'}
+            id={id}
+            aria-label={
+              ariaLabel || selectedRoleInfo?.description || localize('com_ui_role_select')
+            }
             className={cn(
-              'flex items-center justify-between gap-2 rounded-xl border border-border-light bg-transparent px-3 py-2 text-sm transition-colors hover:bg-surface-tertiary',
+              'border-border-light hover:bg-surface-tertiary flex items-center justify-between gap-2 rounded-xl border bg-transparent px-3 py-2 text-sm transition-colors',
             )}
           >
             <span className="font-medium">
               {selectedRoleInfo?.name || localize('com_ui_select')}
             </span>
-            <ChevronDown className="h-4 w-4 text-text-secondary" aria-hidden="true" />
+            <ChevronDown className="text-text-secondary h-4 w-4" aria-hidden="true" />
           </Ariakit.MenuButton>
         }
         items={dropdownItems}
-        className="w-[280px]"
+        className="w-[min(17.5rem,90vw)]"
+        portal={menuContainer != null}
+        portalElement={menuContainer}
       />
     </div>
   );

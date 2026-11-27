@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function FacebookIcon() {
+export default function FacebookIcon(): JSX.Element {
   return (
     <svg viewBox="0 0 40 40" width="25" height="25" aria-hidden="true">
       <linearGradient

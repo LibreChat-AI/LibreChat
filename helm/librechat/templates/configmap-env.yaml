@@ -3,21 +3,55 @@ apiVersion: v1
 metadata:
   name: {{ include "librechat.fullname" $ }}-configenv
 data:
+  {{- $configEnv := default dict .Values.librechat.configEnv }}
+  {{- $adminPanelUrl := .Values.librechat.adminPanelUrl }}
+  {{- $configAdminPanelUrl := get $configEnv "ADMIN_PANEL_URL" }}
   {{- if (index .Values "librechat-rag-api" "enabled") }}
   RAG_API_URL: http://{{ include "rag.fullname" (index .Subcharts "librechat-rag-api") | lower }}.{{ .Release.Namespace | lower }}.svc.cluster.local:8000 
   {{- end }}
-  {{- if and (not (dig "configEnv" "MEILI_HOST" "" .Values.librechat)) .Values.meilisearch.enabled }}
+  {{- if and (not (get $configEnv "MEILI_HOST")) .Values.meilisearch.enabled }}
   MEILI_HOST: http://{{ include "meilisearch.fullname" .Subcharts.meilisearch }}.{{ .Release.Namespace | lower }}.svc.cluster.local:7700
   {{- end }}
-  {{- if and (not (dig "configEnv" "MONGO_URI" "" .Values.librechat)) .Values.mongodb.enabled }}
+  {{- if and (not (get $configEnv "MONGO_URI")) .Values.mongodb.enabled (not (include "librechat.bundledMongoAuth" .)) }}
   MONGO_URI: mongodb://{{ include "mongodb.service.nameOverride" .Subcharts.mongodb }}.{{ .Release.Namespace | lower }}.svc.cluster.local:27017/LibreChat
   {{- end }}
-  {{- if and (not (dig "configEnv" "USE_REDIS" "" .Values.librechat)) .Values.redis.enabled }}
+  {{- if and (not (get $configEnv "USE_REDIS")) .Values.redis.enabled }}
   USE_REDIS: "true"
   {{- end }}
-  {{- if and (not (dig "configEnv" "REDIS_URI" "" .Values.librechat)) .Values.redis.enabled }}
-  REDIS_URI: redis://{{ include "common.names.fullname" .Subcharts.redis }}-master.{{ .Release.Namespace | lower }}.svc.cluster.local:6379
+  {{- if and (not (get $configEnv "REDIS_URI")) .Values.redis.enabled }}
+  REDIS_URI: {{ include "librechat.bundledRedisURI" . }}
   {{- end }}
-  {{- if .Values.librechat.configEnv }}
-  {{- toYaml .Values.librechat.configEnv | nindent 2 }}
+  {{- if and $adminPanelUrl (not $configAdminPanelUrl) }}
+  ADMIN_PANEL_URL: {{ $adminPanelUrl | quote }}
+  {{- end }}
+  {{- if and .Values.langfuseFanout.enabled (not (hasKey $configEnv "LANGFUSE_FANOUT_ENABLED")) }}
+  LANGFUSE_FANOUT_ENABLED: "true"
+  {{- end }}
+  {{- if and .Values.langfuseFanout.enabled (not (hasKey $configEnv "LANGFUSE_FANOUT_COLLECTOR_URL")) }}
+  LANGFUSE_FANOUT_COLLECTOR_URL: http://{{ include "librechat.langfuseFanout.fullname" . }}.{{ .Release.Namespace | lower }}.svc.cluster.local:{{ .Values.langfuseFanout.service.port }}
+  {{- end }}
+  {{- if and .Values.langfuseFanout.enabled (not (hasKey $configEnv "LANGFUSE_FANOUT_TENANT_DESTINATIONS")) }}
+  {{- include "librechat.langfuseFanout.validateDestinationKeys" . }}
+  {{- $tenantDestinations := list }}
+  {{- range $name, $destination := .Values.langfuseFanout.tenant.destinations }}
+  {{- $tenantDestinations = append $tenantDestinations (printf "%s=%s" $name $destination.baseUrl) }}
+  {{- end }}
+  LANGFUSE_FANOUT_TENANT_DESTINATIONS: {{ join "," $tenantDestinations | quote }}
+  {{- end }}
+  {{- if and .Values.channelGateway.enabled (eq .Values.channelGateway.mode "shared") }}
+  {{- if not (hasKey $configEnv "SLACK_WORKSPACES_ENABLED") }}
+  SLACK_WORKSPACES_ENABLED: "true"
+  {{- end }}
+  {{- if and .Values.channelGateway.ingress.enabled (not (hasKey $configEnv "SLACK_GATEWAY_URL")) }}
+  SLACK_GATEWAY_URL: {{ printf "https://%s" (required "channelGateway.ingress.host is required" .Values.channelGateway.ingress.host) | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if $configEnv }}
+  {{- $renderedConfigEnv := $configEnv }}
+  {{- if and $adminPanelUrl (hasKey $configEnv "ADMIN_PANEL_URL") (not $configAdminPanelUrl) }}
+  {{- $renderedConfigEnv = omit $configEnv "ADMIN_PANEL_URL" }}
+  {{- end }}
+  {{- if $renderedConfigEnv }}
+  {{- toYaml $renderedConfigEnv | nindent 2 }}
+  {{- end }}
   {{- end }}

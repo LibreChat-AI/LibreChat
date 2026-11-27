@@ -198,12 +198,6 @@
  */
 
 /**
- * @exports Ollama
- * @typedef {import('ollama').Ollama} Ollama
- * @memberof typedefs
- */
-
-/**
  * @exports AxiosResponse
  * @typedef {import('axios').AxiosResponse} AxiosResponse
  * @memberof typedefs
@@ -284,12 +278,6 @@
 /**
  * @exports ChatCompletionPayload
  * @typedef {import('openai').OpenAI.ChatCompletionCreateParams} ChatCompletionPayload
- * @memberof typedefs
- */
-
-/**
- * @exports OllamaMessage
- * @typedef {import('ollama').Message} OllamaMessage
  * @memberof typedefs
  */
 
@@ -933,6 +921,7 @@
  *   signal?: AbortSignal,
  *   memory?: ConversationSummaryBufferMemory,
  *   tool_resources?: AgentToolResources,
+ *   jobCreatedAt?: number,
  *   web_search?: ReturnType<typeof import('~/server/services/Tools/search').createOnSearchResults>,
  * }} LoadToolOptions
  * @memberof typedefs
@@ -1114,6 +1103,18 @@
  */
 
 /**
+ * @exports BalanceReservation
+ * @typedef {import('@librechat/api').BalanceReservation} BalanceReservation
+ * @memberof typedefs
+ */
+
+/**
+ * @exports BalanceReservations
+ * @typedef {import('@librechat/api').BalanceReservations} BalanceReservations
+ * @memberof typedefs
+ */
+
+/**
  * @exports Keyv
  * @typedef {import('keyv')} Keyv
  * @memberof typedefs
@@ -1287,6 +1288,7 @@
  * @property {string} [proxy] - Proxy configuration
  * @property {Object} [tools] - Available tools for the agent
  * @property {Object} [eventHandlers] - Custom event handlers
+ * @property {import('@librechat/api').AgentStartupTelemetry} [startupTelemetry] - Startup latency recorder
  * @property {Object} [addParams] - Additional parameters to add to requests
  * @property {string[]} [dropParams] - Parameters to remove from requests
  * @memberof typedefs
@@ -1490,9 +1492,6 @@
 /**
  * @exports EndpointServiceConfig
  * @typedef {Object} EndpointServiceConfig
- * @property {string} openAIApiKey - The API key for OpenAI.
- * @property {string} azureOpenAIApiKey - The API key for Azure OpenAI.
- * @property {boolean} userProvidedOpenAI - Flag to indicate if OpenAI API key is user provided.
  * @property {string} googleKey - The Palm key.
  * @property {boolean|{userProvide: boolean}} [openAI] - Flag to indicate if OpenAI endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [assistant] - Flag to indicate if Assistant endpoint is user provided, or its configuration.

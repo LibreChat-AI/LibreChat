@@ -1,12 +1,13 @@
 import React, { useState, useMemo } from 'react';
-import type { TPrincipal, PrincipalType, PrincipalSearchParams } from 'librechat-data-provider';
 import { useSearchPrincipalsQuery } from 'librechat-data-provider/react-query';
+import type { TPrincipal, PrincipalType, PrincipalSearchParams } from 'librechat-data-provider';
 import PeoplePickerSearchItem from './PeoplePickerSearchItem';
 import { SearchPicker } from './SearchPicker';
 import { useLocalize } from '~/hooks';
 
 interface UnifiedPeopleSearchProps {
   onAddPeople: (principals: TPrincipal[]) => void;
+  label?: string;
   placeholder?: string;
   className?: string;
   typeFilter?: Array<PrincipalType.USER | PrincipalType.GROUP | PrincipalType.ROLE> | null;
@@ -15,6 +16,7 @@ interface UnifiedPeopleSearchProps {
 
 export default function UnifiedPeopleSearch({
   onAddPeople,
+  label,
   placeholder,
   className = '',
   typeFilter = null,
@@ -76,7 +78,8 @@ export default function UnifiedPeopleSearch({
         }}
         onPick={handlePick}
         isLoading={isLoading}
-        label=""
+        label={label || placeholder || localize('com_ui_search_default_placeholder')}
+        labelClassName="sr-only"
       />
     </div>
   );

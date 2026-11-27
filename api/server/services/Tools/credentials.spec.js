@@ -94,6 +94,35 @@ describe('loadAuthValues', () => {
     expect(getUserPluginAuthValue).not.toHaveBeenCalled();
   });
 
+  it('should load independent authentication fields in parallel', async () => {
+    delete process.env.FIRST_KEY;
+    delete process.env.SECOND_KEY;
+    let resolveFirst;
+    const firstValue = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    getUserPluginAuthValue.mockImplementation((_userId, field) => {
+      if (field === 'FIRST_KEY') {
+        return firstValue;
+      }
+      return Promise.resolve('second-value');
+    });
+
+    const resultPromise = loadAuthValues({
+      userId: 'user1',
+      authFields: ['FIRST_KEY', 'SECOND_KEY'],
+    });
+    await Promise.resolve();
+    const callCountBeforeFirstResolved = getUserPluginAuthValue.mock.calls.length;
+    resolveFirst('first-value');
+
+    await expect(resultPromise).resolves.toEqual({
+      FIRST_KEY: 'first-value',
+      SECOND_KEY: 'second-value',
+    });
+    expect(callCountBeforeFirstResolved).toBe(2);
+  });
+
   it('should return real env value from first matching field in fallback chain', async () => {
     process.env.GEMINI_API_KEY = 'gemini-key';
     process.env.GOOGLE_KEY = 'google-key';
@@ -118,6 +147,34 @@ describe('loadAuthValues', () => {
     });
 
     expect(result).toEqual({ GOOGLE_KEY: undefined });
+  });
+
+  it('should distinguish a missing optional credential from a credential-store failure', async () => {
+    delete process.env.KEENABLE_API_URL;
+    const missingError = Object.assign(new Error('No auth found'), {
+      code: 'PLUGIN_AUTH_NOT_FOUND',
+    });
+    getUserPluginAuthValue.mockRejectedValueOnce(missingError);
+
+    await expect(
+      loadAuthValues({
+        userId: 'user1',
+        authFields: ['KEENABLE_API_URL'],
+        optional: new Set(['KEENABLE_API_URL']),
+        failOnOptionalError: true,
+      }),
+    ).resolves.toEqual({ KEENABLE_API_URL: undefined });
+
+    getUserPluginAuthValue.mockRejectedValueOnce(new Error('Database unavailable'));
+
+    await expect(
+      loadAuthValues({
+        userId: 'user1',
+        authFields: ['KEENABLE_API_URL'],
+        optional: new Set(['KEENABLE_API_URL']),
+        failOnOptionalError: true,
+      }),
+    ).rejects.toThrow('Database unavailable');
   });
 
   it('should not leak sentinel through catch path when DB lookup throws', async () => {

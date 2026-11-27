@@ -1,69 +1,51 @@
-import React from 'react';
 import { Skeleton } from '@librechat/client';
 
 export default function AgentPanelSkeleton() {
   return (
-    <div className="h-auto bg-white dark:bg-transparent">
-      {/* Avatar */}
-      <div className="mb-4">
-        <div className="flex w-full items-center justify-center gap-4">
-          <Skeleton className="relative h-20 w-20 rounded-full" />
-        </div>
-        {/* Name */}
-        <Skeleton className="mb-2 h-5 w-1/5 rounded-lg" />
-        <Skeleton className="mb-1 h-9 w-full rounded-lg" />
-        <Skeleton className="h-3 w-1/4 rounded-lg" />
-      </div>
-
-      {/* Description */}
-      <div className="mb-4">
-        <Skeleton className="mb-2 h-5 w-1/4 rounded-lg" />
-        <Skeleton className="h-9 w-full rounded-lg" />
-      </div>
-
-      {/* Instructions */}
-      <div className="mb-6">
-        <Skeleton className="mb-2 h-5 w-1/4 rounded-lg" />
-        <Skeleton className="h-[100px] w-full rounded-lg" />
-      </div>
-
-      {/* Model and Provider */}
-      <div className="mb-6">
-        <Skeleton className="mb-2 h-5 w-1/4 rounded-lg" />
-        <Skeleton className="h-9 w-full rounded-lg" />
-      </div>
-
-      {/* Capabilities */}
-      <div className="mb-6">
-        <Skeleton className="mb-2 h-5 w-1/4 rounded-lg" />
-        <Skeleton className="mb-2 h-5 w-36 rounded-lg" />
-        <Skeleton className="mb-4 h-[35px] w-full rounded-lg" />
-        <Skeleton className="mb-2 h-5 w-24 rounded-lg" />
-        <Skeleton className="h-[35px] w-full rounded-lg" />
-      </div>
-
-      {/* Tools & Actions */}
-      <div className="mb-6">
-        <Skeleton className="mb-2 h-5 w-1/4 rounded-lg" />
-        <Skeleton className="mb-2 h-[35px] w-full rounded-lg" />
-        <Skeleton className="mb-2 h-[35px] w-full rounded-lg" />
-        <div className="flex space-x-2">
-          <Skeleton className="h-8 w-1/2 rounded-lg" />
-          <Skeleton className="h-8 w-1/2 rounded-lg" />
+    <div className="h-auto pt-1" aria-hidden="true">
+      {/* IDENTITY — inline avatar + name/description */}
+      <div className="mt-1 mb-3 flex items-center gap-3">
+        <Skeleton className="h-16 w-16 shrink-0 rounded-full" />
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <Skeleton className="h-9 w-full rounded-xl" />
+          <Skeleton className="h-9 w-full rounded-xl" />
         </div>
       </div>
 
-      {/* Admin Settings */}
-      <div className="mb-6">
-        <Skeleton className="h-[35px] w-full rounded-lg" />
+      {/* MODEL + CATEGORY — 2-column grid */}
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <div className="flex flex-col">
+          <Skeleton className="mb-1 h-3 w-12 rounded" />
+          <Skeleton className="h-9 w-full rounded-xl" />
+        </div>
+        <div className="flex flex-col">
+          <Skeleton className="mb-1 h-3 w-16 rounded" />
+          <Skeleton className="h-9 w-full rounded-xl" />
+        </div>
       </div>
 
-      {/* Bottom Buttons */}
-      <div className="flex items-center justify-end gap-2">
-        <Skeleton className="h-[35px] w-16 rounded-lg" />
-        <Skeleton className="h-[35px] w-16 rounded-lg" />
-        <Skeleton className="h-[35px] w-16 rounded-lg" />
-        <Skeleton className="h-[35px] w-full rounded-lg" />
+      {/* INSTRUCTIONS */}
+      <div className="mb-3 flex flex-col">
+        <Skeleton className="mb-1 h-3 w-20 rounded" />
+        <Skeleton className="h-[5.5rem] w-full rounded-xl" />
+      </div>
+
+      {/* TOOLS — header + a couple of rows */}
+      <div className="mb-3 flex flex-col">
+        <Skeleton className="mb-1 h-3 w-16 rounded" />
+        <div className="flex flex-col gap-1.5">
+          <Skeleton className="h-10 w-full rounded-lg" />
+          <Skeleton className="h-10 w-full rounded-lg" />
+        </div>
+      </div>
+
+      {/* SUPPORT CONTACT */}
+      <div className="mb-3 flex flex-col">
+        <Skeleton className="mb-1 h-3 w-24 rounded" />
+        <div className="space-y-2">
+          <Skeleton className="h-9 w-full rounded-xl" />
+          <Skeleton className="h-9 w-full rounded-xl" />
+        </div>
       </div>
     </div>
   );

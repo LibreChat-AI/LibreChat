@@ -7,8 +7,8 @@ export default function Regenerate({ onClick }: TGenButtonProps) {
   const localize = useLocalize();
 
   return (
-    <Button onClick={onClick}>
-      <RegenerateIcon className="h-3 w-3 flex-shrink-0 text-gray-600/90 dark:text-gray-400" />
+    <Button onClick={onClick} shortcutId="regenerateResponse">
+      <RegenerateIcon className="text-text-secondary h-3 w-3 shrink-0" />
       {localize('com_ui_regenerate')}
     </Button>
   );

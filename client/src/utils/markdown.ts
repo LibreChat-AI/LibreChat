@@ -1,3 +1,6 @@
+import { highContrastDarkTheme, highContrastLightTheme } from '@librechat/client';
+import type { IThemeRGB } from '@librechat/client';
+
 const SAFE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 
 /**
@@ -169,6 +172,13 @@ const markdownCSS = `
   box-sizing: content-box;
 }
 
+/* Rendered in place of the document when the marked CDN does not load. Its own
+   rule rather than an inline style so a contrast mode can reach it. */
+.markdown-error {
+  color: #e53e3e;
+  padding: 1rem;
+}
+
 /* Dark theme */
 @media (prefers-color-scheme: dark) {
   .markdown-body {
@@ -255,7 +265,53 @@ const isSafeUrl = (url) => {
   try { return SAFE_PROTOCOLS.has(new URL(trimmed).protocol); } catch(e) { return false; }
 };`;
 
-function generateMarkdownHtml(content: string): string {
+/**
+ * The stylesheet above is a fixed GitHub palette selected by the iframe's own
+ * `prefers-color-scheme`, which no app token reaches. In a contrast mode this
+ * block is appended unconditionally, so it also overrides that media query and
+ * an explicit contrast choice is honoured whatever the OS is set to. Every
+ * colour the media query sets has to be answered here, including the `thead`
+ * tint: leaving it would strand #f6f8fa or #161b22 under the new ink. Contrast
+ * palettes collapse subtle fills onto the canvas, so the header reads through
+ * its bold cells and its border rather than a tint of its own.
+ */
+function contrastMarkdownCSS(isDarkMode: boolean): string {
+  const palette = isDarkMode ? highContrastDarkTheme : highContrastLightTheme;
+  const hex = (token: keyof IThemeRGB, fallback: string): string => {
+    const channels = palette[token]?.trim().split(/\s+/).map(Number);
+    if (channels?.length !== 3 || channels.some(Number.isNaN)) {
+      return fallback;
+    }
+    return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+  };
+
+  const canvas = hex('rgb-surface-primary', isDarkMode ? '#000000' : '#ffffff');
+  const ink = hex('rgb-text-primary', isDarkMode ? '#ffffff' : '#000000');
+  const link = hex('rgb-link', isDarkMode ? '#8cc8ff' : '#0000cc');
+  const border = hex('rgb-border-medium', ink);
+  const codeFill = hex('rgb-surface-secondary', canvas);
+  /** The renderer-failure notice is the one message this document paints itself,
+   *  and it has to survive a CDN outage inside a contrast mode. */
+  const destructive = hex('rgb-text-destructive', isDarkMode ? '#ff8f8f' : '#a10000');
+
+  return `
+.markdown-body { color: ${ink}; background-color: ${canvas}; }
+body { background-color: ${canvas}; }
+.markdown-body h1, .markdown-body h2 { border-bottom-color: ${border}; }
+.markdown-body a, .markdown-body a:hover { color: ${link}; text-decoration: underline; }
+.markdown-body table th, .markdown-body table td { border-color: ${border}; }
+.markdown-body table thead { background-color: ${canvas}; }
+.markdown-body blockquote { border-left-color: ${border}; color: ${ink}; }
+.markdown-body hr { background-color: ${border}; }
+.markdown-body code, .markdown-body pre { color: ${ink}; background-color: ${codeFill}; }
+.markdown-body pre { border: 1px solid ${border}; }
+::-webkit-scrollbar-thumb { background-color: ${ink}; }
+* { scrollbar-color: ${ink} ${canvas}; }
+.markdown-error { color: ${destructive}; }
+`;
+}
+
+function generateMarkdownHtml(content: string, contrastCSS = ''): string {
   const normalizedContent = content.replace(/^( {2})(-|\d+\.)/gm, '    $2');
   const escapedContent = escapeForTemplateLiteral(normalizedContent);
 
@@ -265,7 +321,7 @@ function generateMarkdownHtml(content: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Markdown Preview</title>
-<style>${markdownCSS}</style>
+<style>${markdownCSS}${contrastCSS}</style>
 </head>
 <body>
 <div class="markdown-body" id="content" style="padding:2rem;margin:1rem;min-height:100vh"></div>
@@ -273,7 +329,7 @@ function generateMarkdownHtml(content: string): string {
 <script>
 if (typeof marked === 'undefined') {
   document.getElementById('content').innerHTML =
-    '<p style="color:#e53e3e;padding:1rem">Markdown renderer failed to load. Check network connectivity.</p>';
+    '<p class="markdown-error">Markdown renderer failed to load. Check network connectivity.</p>';
 } else {
 ${EMBEDDED_IS_SAFE_URL}
 marked.use({
@@ -298,10 +354,14 @@ document.getElementById('content').innerHTML = marked.parse(\`${escapedContent}\
 </html>`;
 }
 
-export const getMarkdownFiles = (content: string): Record<string, string> => {
+export const getMarkdownFiles = (
+  content: string,
+  isDarkMode = false,
+  highContrast = false,
+): Record<string, string> => {
   const md = content || '# No content provided';
   return {
     'content.md': md,
-    'index.html': generateMarkdownHtml(md),
+    'index.html': generateMarkdownHtml(md, highContrast ? contrastMarkdownCSS(isDarkMode) : ''),
   };
 };

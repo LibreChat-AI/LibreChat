@@ -1,8 +1,20 @@
-import { replaceSpecialVars, parseConvo, parseCompactConvo, parseTextParts } from '../src/parsers';
+import {
+  parseConvo,
+  getSpeechText,
+  parseTextParts,
+  parseThinkingContent,
+  parseCompactConvo,
+  replaceSpecialVars,
+  getEphemeralSender,
+  getResponseSender,
+  isConfiguredSender,
+  encodeEphemeralAgentId,
+  parseEphemeralAgentId,
+} from '../src/parsers';
 import { specialVariables } from '../src/config';
 import { EModelEndpoint, Providers } from '../src/schemas';
 import { ContentTypes } from '../src/types/runs';
-import type { TMessageContentParts } from '../src/types/assistants';
+import type { TMessageContentParts } from '../src/types/content';
 import type { TUser, TConversation } from '../src/types';
 
 // Mock dayjs module with consistent date/time values regardless of environment
@@ -586,6 +598,74 @@ describe('parseCompactConvo - defaultParamsEndpoint', () => {
   });
 });
 
+describe('getSpeechText', () => {
+  test('speaks text parts and skips think parts', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.THINK, think: 'internal reasoning' },
+      { type: ContentTypes.TEXT, text: 'First.' },
+      { type: ContentTypes.THINK, think: 'more reasoning' },
+      { type: ContentTypes.TEXT, text: 'Second.' },
+    ];
+    expect(getSpeechText({ content, text: 'ignored' })).toBe('First. Second.');
+  });
+
+  test('is empty for a response that only reasoned', () => {
+    const content: TMessageContentParts[] = [{ type: ContentTypes.THINK, think: 'reasoning' }];
+    expect(getSpeechText({ content })).toBe('');
+  });
+
+  test('never speaks steer parts', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.STEER, steer: 'user words' } as TMessageContentParts,
+      { type: ContentTypes.TEXT, text: 'answer' },
+    ];
+    expect(getSpeechText({ content })).toBe('answer');
+  });
+
+  test('falls back to plain text when there are no content parts', () => {
+    expect(getSpeechText({ content: [], text: 'plain answer' })).toBe('plain answer');
+    expect(getSpeechText({ text: 'plain answer' })).toBe('plain answer');
+    expect(getSpeechText({ content: null, text: null })).toBe('');
+  });
+
+  test('speaks string content, as imported messages may carry it', () => {
+    const content = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
+    expect(getSpeechText({ content, text: '' })).toBe('The answer is 4.');
+  });
+
+  test('falls back to text when string content is empty', () => {
+    expect(getSpeechText({ content: '', text: 'stored answer' })).toBe('stored answer');
+  });
+
+  test('strips a legacy thinking block from plain text', () => {
+    const text = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
+    expect(getSpeechText({ text })).toBe('The answer is 4.');
+  });
+
+  test('speaks a repeated thinking block, which the message view shows as answer text', () => {
+    const text = ':::thinking\na\n:::\nAnswer 1\n:::thinking\nb\n:::\nAnswer 2';
+    expect(getSpeechText({ text })).toBe(parseThinkingContent(text).regularContent);
+    expect(getSpeechText({ text })).toBe('Answer 1\n:::thinking\nb\n:::\nAnswer 2');
+  });
+
+  test('trims structured answers so whitespace alone is not speakable', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.THINK, think: 'reasoning' },
+      { type: ContentTypes.TEXT, text: '\n' },
+    ];
+    expect(getSpeechText({ content })).toBe('');
+  });
+
+  test('speaks an unmatched marker, which the UI shows as answer text', () => {
+    const text = 'Wrap reasoning in a :::thinking block.';
+    expect(getSpeechText({ text })).toBe(text);
+  });
+
+  test('keeps plain text that merely uses colons', () => {
+    expect(getSpeechText({ text: 'Ratio is 3:1 ::: done' })).toBe('Ratio is 3:1 ::: done');
+  });
+});
+
 describe('parseTextParts', () => {
   test('should concatenate text parts', () => {
     const parts: TMessageContentParts[] = [
@@ -669,5 +749,263 @@ describe('parseTextParts', () => {
       { type: ContentTypes.TEXT, text: 'World' },
     ];
     expect(parseTextParts(parts)).toBe('Hello World');
+  });
+
+  test('should exclude steer parts by default (generic extraction must not speak user words)', () => {
+    const parts: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: 'assistant output' },
+      { type: ContentTypes.STEER, steer: 'user mid-run words' },
+      { type: ContentTypes.TEXT, text: 'more output' },
+    ];
+    expect(parseTextParts(parts)).toBe('assistant output more output');
+  });
+
+  test('should include steer parts when includeSteer is set', () => {
+    const parts: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: 'assistant output' },
+      { type: ContentTypes.STEER, steer: 'user mid-run words' },
+    ];
+    expect(parseTextParts(parts, false, { includeSteer: true })).toBe(
+      'assistant output user mid-run words',
+    );
+  });
+
+  test('should combine includeSteer with skipReasoning', () => {
+    const parts: TMessageContentParts[] = [
+      { type: ContentTypes.THINK, think: 'internal reasoning' },
+      { type: ContentTypes.TEXT, text: 'visible answer' },
+      { type: ContentTypes.STEER, steer: 'steered words' },
+    ];
+    expect(parseTextParts(parts, true, { includeSteer: true })).toBe(
+      'visible answer steered words',
+    );
+  });
+});
+
+describe('encodeEphemeralAgentId / parseEphemeralAgentId', () => {
+  test('round-trips endpoint and model without a sender', () => {
+    const id = encodeEphemeralAgentId({ endpoint: 'openAI', model: 'gpt-4o' });
+    expect(id).toBe('openAI__gpt-4o');
+    expect(parseEphemeralAgentId(id)).toEqual({
+      endpoint: 'openAI',
+      model: 'gpt-4o',
+      sender: undefined,
+      index: undefined,
+    });
+  });
+
+  test('round-trips a sender', () => {
+    const id = encodeEphemeralAgentId({
+      endpoint: 'Together AI',
+      model: 'Qwen/Qwen2.5-72B-Instruct',
+      sender: 'Fast Qwen',
+    });
+    expect(id).toBe('Together AI__Qwen/Qwen2.5-72B-Instruct___Fast Qwen');
+    expect(parseEphemeralAgentId(id)?.sender).toBe('Fast Qwen');
+    expect(parseEphemeralAgentId(id)?.model).toBe('Qwen/Qwen2.5-72B-Instruct');
+  });
+
+  test('round-trips a sender alongside an index suffix', () => {
+    const id = encodeEphemeralAgentId({
+      endpoint: 'openAI',
+      model: 'gpt-4o',
+      sender: 'GPT-4o',
+      index: 1,
+    });
+    expect(id).toBe('openAI__gpt-4o___GPT-4o____1');
+    expect(parseEphemeralAgentId(id)).toEqual({
+      endpoint: 'openAI',
+      model: 'gpt-4o',
+      sender: 'GPT-4o',
+      index: 1,
+    });
+  });
+
+  test('omits the sender segment for an empty sender, parsing back to undefined', () => {
+    const id = encodeEphemeralAgentId({ endpoint: 'openAI', model: 'gpt-4o', sender: '' });
+    expect(id).toBe('openAI__gpt-4o');
+    expect(parseEphemeralAgentId(id)?.sender).toBeUndefined();
+  });
+
+  test('restores colons in the endpoint, model, and sender', () => {
+    const id = encodeEphemeralAgentId({
+      endpoint: 'custom',
+      model: 'claude-3:opus',
+      sender: 'Label:With:Colons',
+    });
+    expect(parseEphemeralAgentId(id)).toEqual({
+      endpoint: 'custom',
+      model: 'claude-3:opus',
+      sender: 'Label:With:Colons',
+      index: undefined,
+    });
+  });
+
+  test('returns undefined for ids without the ephemeral format', () => {
+    expect(parseEphemeralAgentId('agent_abc123')).toBeUndefined();
+  });
+
+  /** Characterization of known format quirks (SiblingHeader and the persisted
+   *  sender both decode this format, so lock the behavior rather than change it):
+   *  the parser splits on the first `___` and keeps only the next segment, and
+   *  restores every `__` in the sender to `:`. */
+  test('truncates a sender containing a triple underscore (known quirk)', () => {
+    const id = encodeEphemeralAgentId({ endpoint: 'openAI', model: 'gpt-4o', sender: 'A___B' });
+    expect(parseEphemeralAgentId(id)?.sender).toBe('A');
+  });
+
+  test('decodes a literal double underscore in a sender to a colon (known quirk)', () => {
+    const id = encodeEphemeralAgentId({ endpoint: 'openAI', model: 'gpt-4o', sender: 'My__Bot' });
+    expect(parseEphemeralAgentId(id)?.sender).toBe('My:Bot');
+  });
+});
+
+describe('getEphemeralSender', () => {
+  test('prefers modelLabel over the spec and endpoint labels', () => {
+    expect(
+      getEphemeralSender({
+        modelLabel: 'My Label',
+        specLabel: 'Spec Label',
+        modelDisplayLabel: 'Endpoint Label',
+      }),
+    ).toBe('My Label');
+  });
+
+  test('falls back to the spec label, then the endpoint display label', () => {
+    expect(
+      getEphemeralSender({ specLabel: 'Spec Label', modelDisplayLabel: 'Endpoint Label' }),
+    ).toBe('Spec Label');
+    expect(getEphemeralSender({ modelDisplayLabel: 'Endpoint Label' })).toBe('Endpoint Label');
+  });
+
+  test('returns an empty string when no label is set', () => {
+    expect(getEphemeralSender({})).toBe('');
+    expect(getEphemeralSender({ modelLabel: null, specLabel: null, modelDisplayLabel: null })).toBe(
+      '',
+    );
+  });
+
+  /** `??` chain: an empty-string label short-circuits, preserving the exact
+   *  pre-consolidation behavior of every call site. */
+  test('an empty-string modelLabel short-circuits the chain', () => {
+    expect(getEphemeralSender({ modelLabel: '', specLabel: 'Spec Label' })).toBe('');
+  });
+});
+
+describe('isConfiguredSender', () => {
+  const gptSender = getResponseSender({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' });
+
+  test('is false without a sender to judge', () => {
+    expect(isConfiguredSender({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' })).toBe(false);
+    expect(isConfiguredSender({ sender: '', endpoint: EModelEndpoint.openAI })).toBe(false);
+  });
+
+  test('is false for the model-derived name the endpoint produces', () => {
+    expect(
+      isConfiguredSender({ sender: gptSender, endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({
+        sender: 'Claude',
+        endpoint: EModelEndpoint.anthropic,
+        model: 'claude-5',
+      }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({ sender: 'Gemini', endpoint: EModelEndpoint.google, model: 'gemini-3' }),
+    ).toBe(false);
+  });
+
+  test('is true for a label standing in for the model', () => {
+    expect(
+      isConfiguredSender({ sender: 'Acme', endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+    ).toBe(true);
+    expect(
+      isConfiguredSender({ sender: 'Acme', endpoint: EModelEndpoint.anthropic, model: 'claude-5' }),
+    ).toBe(true);
+  });
+
+  /* An endpoint that ignores the label writes the model-derived name as the sender, so
+     equality settles the gating without listing which endpoints honour what. */
+  test('follows the sender an endpoint actually wrote', () => {
+    const chatGptLabel = 'Acme';
+    const openAI = { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', chatGptLabel };
+    const anthropic = { endpoint: EModelEndpoint.anthropic, model: 'claude-5', chatGptLabel };
+
+    expect(isConfiguredSender({ ...openAI, sender: getResponseSender(openAI) })).toBe(true);
+    expect(isConfiguredSender({ ...anthropic, sender: getResponseSender(anthropic) })).toBe(false);
+  });
+
+  /* A custom endpoint's `endpoint` is its own configured name, and `getResponseSender`
+     reaches its heuristics only through `endpointType`. */
+  test('reads an unrecognized endpoint as a custom one', () => {
+    expect(
+      isConfiguredSender({ sender: gptSender, endpoint: 'Together AI', model: 'gpt-4o' }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({ sender: 'Together', endpoint: 'Together AI', model: 'gpt-4o' }),
+    ).toBe(true);
+  });
+
+  /* An agent or assistant is named by its author and `getResponseSender` has no branch
+     for it, so the header shows that name whether or not the response stored a sender. */
+  test('is true for an agent or assistant, stored sender or not', () => {
+    expect(isConfiguredSender({ sender: 'My Agent', endpoint: EModelEndpoint.agents })).toBe(true);
+    expect(
+      isConfiguredSender({ sender: 'My Assistant', endpoint: EModelEndpoint.assistants }),
+    ).toBe(true);
+    expect(isConfiguredSender({ endpoint: EModelEndpoint.agents, model: 'gpt-4o' })).toBe(true);
+  });
+
+  /* A user turn is headed by the person who wrote it: no model to withhold, and its
+     `User` sender would never match a derived name. */
+  test('is false for a user turn whatever it carries', () => {
+    expect(
+      isConfiguredSender({
+        sender: 'User',
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-4o',
+        isCreatedByUser: true,
+      }),
+    ).toBe(false);
+    expect(
+      isConfiguredSender({
+        sender: 'User',
+        endpoint: EModelEndpoint.agents,
+        isCreatedByUser: true,
+      }),
+    ).toBe(false);
+  });
+
+  /* An endpoint that cannot be named says nothing either way, and reading that silence
+     as "configured" would withhold the model from every unlabelled row it reached — one
+     such row disables the hover for a whole shared transcript. */
+  test('is false when there is no endpoint to derive a name from', () => {
+    expect(isConfiguredSender({ sender: 'GPT-4o', model: 'gpt-4o' })).toBe(false);
+    expect(isConfiguredSender({ sender: 'Acme', model: 'gpt-4o' })).toBe(false);
+  });
+
+  /* The invariant the helper exists to hold: true exactly when the sender the app wrote
+     is one of the configured labels rather than a name derived from the model. */
+  test('agrees with the sender chain on every label source', () => {
+    const cases = [
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', modelLabel: 'Acme' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', specLabel: 'Acme' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', modelDisplayLabel: 'Acme' },
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', chatGptLabel: 'Acme' },
+      { endpoint: EModelEndpoint.anthropic, model: 'claude-5', chatGptLabel: 'Acme' },
+      { endpoint: EModelEndpoint.anthropic, model: 'claude-5', modelLabel: 'Acme' },
+      { endpoint: 'Together AI', endpointType: EModelEndpoint.custom, model: 'qwen' },
+    ];
+    for (const endpointOption of cases) {
+      const { modelLabel, specLabel, modelDisplayLabel } = endpointOption as Record<string, string>;
+      /** Mirrors `resolveSender`: the label chain first, `getResponseSender` behind it. */
+      const sender =
+        getEphemeralSender({ modelLabel, specLabel, modelDisplayLabel }) ||
+        getResponseSender(endpointOption as never);
+
+      expect(isConfiguredSender({ ...(endpointOption as never), sender })).toBe(sender === 'Acme');
+    }
   });
 });

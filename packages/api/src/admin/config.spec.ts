@@ -43,6 +43,13 @@ describe('isValidFieldPath', () => {
     expect(isValidFieldPath('prototypeChain')).toBe(true);
     expect(isValidFieldPath('a.myConstructor')).toBe(true);
   });
+
+  it('rejects MongoDB operator segments', () => {
+    expect(isValidFieldPath('webSearch.$[].serperApiKey')).toBe(false);
+    expect(isValidFieldPath('speech.tts.$.apiKey')).toBe(false);
+    expect(isValidFieldPath('a.$set')).toBe(false);
+    expect(isValidFieldPath('$')).toBe(false);
+  });
 });
 
 describe('getTopLevelSection', () => {

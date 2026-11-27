@@ -41,7 +41,7 @@ const usePresetIndexOptions: TUsePresetOptions = (_preset) => {
   const setExample: TSetExample = (i, type, newValue = null) => {
     const update = {};
     const current = preset?.examples?.slice() || [];
-    const currentExample = { ...current[i] } || {};
+    const currentExample = { ...current[i] };
     currentExample[type] = { content: newValue };
     current[i] = currentExample;
     update['examples'] = current;

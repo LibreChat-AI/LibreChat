@@ -22,4 +22,8 @@ const sessionSchema: Schema<ISession> = new Schema({
   },
 });
 
+sessionSchema.index({ user: 1, refreshTokenHash: 1 }, { unique: true });
+/** `deleteSession({ refreshToken })` has no user in its filter, so the compound index above cannot serve it. */
+sessionSchema.index({ refreshTokenHash: 1 });
+
 export default sessionSchema;

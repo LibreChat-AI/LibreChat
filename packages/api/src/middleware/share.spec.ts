@@ -6,7 +6,7 @@ jest.mock('@librechat/data-schemas', () => ({
   },
 }));
 
-import { Permissions, PermissionTypes, ResourceType } from 'librechat-data-provider';
+import { Permissions, PermissionTypes, PrincipalType, ResourceType } from 'librechat-data-provider';
 import type { NextFunction, Response } from 'express';
 import type { IRole } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types/http';
@@ -19,6 +19,9 @@ type ShareTestRequest = ServerRequest & {
   };
   body: ServerRequest['body'] & {
     public?: boolean;
+    updated?: Array<{
+      type?: string;
+    }>;
   };
 };
 
@@ -168,6 +171,41 @@ describe('createSharePolicyMiddleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('requires SHARE_PUBLIC when PUBLIC is granted through updated principals', async () => {
+    const { checkSharePublicAccess } = createSharePolicyMiddleware({
+      getRoleByName,
+      hasCapability,
+    });
+    getRoleByName.mockResolvedValue(
+      createRole({
+        [PermissionTypes.SHARED_LINKS]: {
+          [Permissions.SHARE]: true,
+          [Permissions.SHARE_PUBLIC]: false,
+        },
+      }),
+    );
+    const req = createRequest({
+      params: { resourceType: ResourceType.SHARED_LINK },
+      body: {
+        updated: [
+          {
+            type: PrincipalType.PUBLIC,
+          },
+        ],
+      },
+    });
+    const res = createResponse();
+
+    await checkSharePublicAccess(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'Forbidden',
+      message: `You do not have permission to share ${ResourceType.SHARED_LINK} resources publicly`,
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('reuses the role permission lookup for public sharing checks', async () => {
     const { checkShareAccess, checkSharePublicAccess } = createSharePolicyMiddleware({
       getRoleByName,
@@ -210,22 +248,25 @@ describe('createSharePolicyMiddleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('returns 400 for unsupported resource type', async () => {
-    const { checkShareAccess } = createSharePolicyMiddleware({
-      getRoleByName,
-      hasCapability,
-    });
-    const req = createRequest({ params: { resourceType: 'unsupported' } });
-    const res = createResponse();
+  it.each(['unsupported', ResourceType.SLACK_BOT])(
+    'rejects generic sharing for %s',
+    async (resourceType) => {
+      const { checkShareAccess } = createSharePolicyMiddleware({
+        getRoleByName,
+        hasCapability,
+      });
+      const req = createRequest({ params: { resourceType } });
+      const res = createResponse();
 
-    await checkShareAccess(req, res, next);
+      await checkShareAccess(req, res, next);
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({
-      error: 'Bad Request',
-      message: 'Unsupported resource type for sharing: unsupported',
-    });
-  });
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Bad Request',
+        message: `Unsupported resource type for sharing: ${resourceType}`,
+      });
+    },
+  );
 
   it('returns 403 when role has no permissions object', async () => {
     const { checkShareAccess } = createSharePolicyMiddleware({
