@@ -1,7 +1,13 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { Constants, ContentTypes, FileSources, EModelEndpoint } = require('librechat-data-provider');
+const {
+  Constants,
+  Providers,
+  ContentTypes,
+  FileSources,
+  EModelEndpoint,
+} = require('librechat-data-provider');
 const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
@@ -4333,6 +4339,84 @@ describe('BaseClient', () => {
             citations: { enabled: true },
           },
         },
+      ]);
+    });
+  });
+
+  describe('addAudios and addVideos for agents that share the history', () => {
+    const audio = Buffer.from('RIFF recorded memo');
+    const video = Buffer.from('ftypmp42 recorded clip');
+    const files = {
+      audio: {
+        file_id: 'file-memo',
+        filename: 'memo.wav',
+        filepath: '/uploads/user-1/memo.wav',
+        source: FileSources.local,
+        type: 'audio/wav',
+        bytes: audio.length,
+      },
+      video: {
+        file_id: 'file-clip',
+        filename: 'clip.mp4',
+        filepath: '/uploads/user-1/clip.mp4',
+        source: FileSources.local,
+        type: 'video/mp4',
+        bytes: video.length,
+      },
+    };
+    let uploads;
+
+    beforeAll(async () => {
+      uploads = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'uploads-'));
+      await fs.promises.mkdir(path.join(uploads, 'user-1'));
+      await fs.promises.writeFile(path.join(uploads, 'user-1', 'memo.wav'), audio);
+      await fs.promises.writeFile(path.join(uploads, 'user-1', 'clip.mp4'), video);
+    });
+
+    afterAll(() => fs.promises.rm(uploads, { recursive: true, force: true }));
+
+    beforeEach(() => {
+      TestClient.options = {
+        endpoint: EModelEndpoint.agents,
+        req: { config: { paths: { uploads } } },
+        agent: {
+          provider: Providers.OPENROUTER,
+          endpoint: 'OpenRouter',
+          model_parameters: { model: 'google/gemini-2.5-flash' },
+        },
+      };
+      TestClient.agentConfigs = undefined;
+    });
+
+    it("encodes the primary agent's own parts when no other agent reads the history", async () => {
+      const message = {};
+      await TestClient.addAudios(message, [files.audio]);
+      await TestClient.addVideos(message, [files.video]);
+
+      expect(message.audios).toEqual([
+        { type: 'input_audio', input_audio: { data: audio.toString('base64'), format: 'wav' } },
+      ]);
+      expect(message.videos).toEqual([
+        {
+          type: 'video_url',
+          video_url: { url: `data:video/mp4;base64,${video.toString('base64')}` },
+        },
+      ]);
+    });
+
+    it('encodes Gemini parts when a chained agent cannot read OpenAI-compatible audio and video', async () => {
+      TestClient.agentConfigs = new Map([
+        ['agent_gpt', { provider: EModelEndpoint.openAI, model_parameters: { model: 'gpt-4.1' } }],
+      ]);
+      const message = {};
+      await TestClient.addAudios(message, [files.audio]);
+      await TestClient.addVideos(message, [files.video]);
+
+      expect(message.audios).toEqual([
+        { type: 'media', mimeType: 'audio/wav', data: audio.toString('base64') },
+      ]);
+      expect(message.videos).toEqual([
+        { type: 'media', mimeType: 'video/mp4', data: video.toString('base64') },
       ]);
     });
   });

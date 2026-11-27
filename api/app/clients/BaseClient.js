@@ -1729,6 +1729,7 @@ class BaseClient {
       {
         provider: this.options.agent?.provider ?? this.options.endpoint,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+        recipients: this.agentConfigs?.values(),
         onMissingFile,
       },
       getStrategyFunctions,
@@ -1745,6 +1746,7 @@ class BaseClient {
       {
         provider: this.options.agent?.provider ?? this.options.endpoint,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+        recipients: this.agentConfigs?.values(),
         onMissingFile,
       },
       getStrategyFunctions,
