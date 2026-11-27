@@ -1,7 +1,7 @@
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { logger, escapeRegExp } from '@librechat/data-schemas';
-import { Constants, ContentTypes, AnnotationTypes } from 'librechat-data-provider';
+import { isUUID, Constants, ContentTypes, AnnotationTypes } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import { settleAll, settleStarted } from '~/utils/promises';
 import { announceReply } from '~/conversations/announce';
@@ -20,6 +20,8 @@ export interface ThreadMessage {
   content: ThreadContentPart[];
   metadata?: { messageId?: string } | null;
   assistant_id?: string | null;
+  /** The run that created the message; empty for one a user or the API added. */
+  run_id?: string | null;
   file_ids?: string[];
   files?: unknown[];
   model?: string;
@@ -67,11 +69,25 @@ export interface ThreadWriteContext {
   interfaceConfig?: AppConfig['interfaceConfig'];
 }
 
+/** Who writes from an Assistants request, and how long what it writes is kept. */
+export function threadWriteContext(req: ThreadRequest): ThreadWriteContext {
+  return {
+    userId: req.user.id,
+    isTemporary: req.resolvedConversation?.isTemporary ?? req.body?.isTemporary,
+    expiredAt: req.resolvedConversation?.expiredAt,
+    interfaceConfig: req.config?.interfaceConfig,
+  };
+}
+
 export interface ThreadSyncDeps {
-  /** Upserts a message; resolves with the stored row, or empty when nothing was written. */
+  /**
+   * Upserts a message; resolves with the stored row, or empty when nothing was written. With
+   * `insertOnly`, an existing row is left as it is and resolved instead.
+   */
   saveMessage: (
     ctx: ThreadWriteContext,
     message: SyncedMessage & { user: string },
+    options?: { context?: string; insertOnly?: boolean },
   ) => Promise<Record<string, unknown> | null | undefined>;
   /** Merges `update` into the conversation; resolves with the stored conversation, if any. */
   saveConvo: (
@@ -101,12 +117,18 @@ export interface SyncMessagesParams {
   apiMessages: ThreadMessage[];
   assistant_id?: string;
   conversationId: string;
+  /** The run read back after a stop or an error, and the id the client shows its reply under. */
+  reply?: { messageId?: string; runId?: string };
 }
 
 /**
  * Synchronizes LibreChat messages to thread messages: saves the thread messages LibreChat is
  * missing, tags them on the thread with their LibreChat ids, and records the files users attached
  * on the conversation.
+ *
+ * The assistant messages of `reply.runId` are saved as one reply under `reply.messageId`, so the
+ * copy a cancelled run kept as it streamed (`unfinished`) is replaced in place, whether it landed
+ * before this read or after it, and is never duplicated.
  *
  * Every save and thread update it starts settles before it returns or throws, so a failed update
  * or a throw partway through cannot leave a save landing after the caller settled, which on a
@@ -122,26 +144,55 @@ export async function syncMessages(
     apiMessages,
     assistant_id,
     conversationId,
+    reply,
   }: SyncMessagesParams,
 ): Promise<SyncedMessage[]> {
   const result: SyncedMessage[] = [];
   const dbMessageMap = new Map(dbMessages.map((msg) => [msg.messageId, msg]));
+  const replyId = isUUID.safeParse(reply?.messageId).success ? reply?.messageId : undefined;
+  /** What cancelled runs kept as they streamed (`unfinished`), by the prompt each answers: a run
+   *  that could not tag its provider message after the cut is found by that prompt instead. */
+  const kept = new Map<string, SyncedMessage>();
+  for (const msg of dbMessages) {
+    if (msg.unfinished === true && msg.isCreatedByUser !== true) {
+      kept.set(String(msg.parentMessageId), msg);
+    }
+  }
+  /** The kept reply an untagged assistant message belongs to: the one it continues, or the one
+   *  answering the message before it. */
+  const keptReply = (previous: SyncedMessage | null) => {
+    if (previous?.unfinished === true && previous.isCreatedByUser !== true) {
+      return previous;
+    }
+    return previous != null ? kept.get(previous.messageId) : undefined;
+  };
 
   const modifyPromises: Promise<unknown>[] = [];
   const recordPromises: Promise<unknown>[] = [];
-  const ctx: ThreadWriteContext = {
-    userId: openai.req.user.id,
-    isTemporary: openai.req.resolvedConversation?.isTemporary ?? openai.req.body?.isTemporary,
-    expiredAt: openai.req.resolvedConversation?.expiredAt,
-    interfaceConfig: openai.req.config?.interfaceConfig,
-  };
+  const ctx = threadWriteContext(openai.req);
   /** The assistant writes this synchronization performed. Their results decide whether a reply
    *  is actually in the history: a write that resolved empty must not raise an indicator. */
   const assistantRecordPromises: Promise<Record<string, unknown> | null | undefined>[] = [];
 
+  /** Saves the run's reply without overwriting another conversation's row; the copy the
+   *  cancelled run kept, which may have landed since the database was read, is replaced. The
+   *  insert-only writer does not stamp model output, so the reply says it is not user input. */
+  const saveReply = async (row: SyncedMessage & { user: string }) => {
+    const message = { ...row, isUserSubmitted: false };
+    const saved = await deps.saveMessage(ctx, message, { insertOnly: true });
+    if (saved == null || saved.conversationId !== conversationId) {
+      return null;
+    }
+    return saved.unfinished === true ? deps.saveMessage(ctx, message) : saved;
+  };
+
   /** Saves `dbMessage` and tags its thread message with the LibreChat id. */
   const processNewMessage = (dbMessage: SyncedMessage, apiMessage: ThreadMessage) => {
-    const recorded = deps.saveMessage(ctx, { ...dbMessage, user: openai.req.user.id });
+    const message = { ...dbMessage, user: openai.req.user.id };
+    const recorded =
+      replyId != null && dbMessage.messageId === replyId
+        ? saveReply(message)
+        : deps.saveMessage(ctx, message);
     recordPromises.push(recorded);
     if (dbMessage.role === 'assistant') {
       assistantRecordPromises.push(recorded);
@@ -185,9 +236,17 @@ export async function syncMessages(
   await settleStarted(
     () => {
       for (const apiMessage of apiMessages) {
+        /* Every assistant message of the read-back run belongs to its reply */
+        const replies =
+          replyId != null && apiMessage.role === 'assistant' && apiMessage.run_id === reply?.runId;
         /* Whether the message exists in the database, by its metadata */
-        const dbMessageId = apiMessage.metadata?.messageId;
-        const dbMessage = dbMessageId != null ? dbMessageMap.get(dbMessageId) : undefined;
+        const dbMessageId = replies ? replyId : apiMessage.metadata?.messageId;
+        let stored = dbMessageId != null ? dbMessageMap.get(dbMessageId) : undefined;
+        if (dbMessageId == null && apiMessage.role === 'assistant') {
+          stored = keptReply(lastMessage);
+        }
+        /* The provider's copy of the reply replaces what the cancelled run kept as it streamed */
+        const dbMessage = replies && stored?.unfinished === true ? undefined : stored;
         const continues =
           apiMessage.role === 'assistant' &&
           lastMessage?.role === 'assistant' &&
@@ -225,7 +284,7 @@ export async function syncMessages(
         const newMessage: SyncedMessage = {
           thread_id,
           conversationId,
-          messageId: randomUUID(),
+          messageId: replies && replyId != null ? replyId : randomUUID(),
           endpoint,
           parentMessageId: lastMessage ? lastMessage.messageId : Constants.NO_PARENT,
           role: apiMessage.role,
