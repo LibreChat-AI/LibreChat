@@ -36,6 +36,7 @@ jest.mock('@librechat/api', () => ({
   })),
   applyAxiosProxyConfig: jest.fn(),
   resolveConfigSecret: jest.fn((value) => value),
+  resolveHeaders: jest.fn(({ headers }) => ({ ...headers })),
   applySSRFSafeAgentIfDirect: jest.fn(),
   contentFilterBlockResponse: jest.fn((finding) => ({
     error: 'content_filter_block',
@@ -67,6 +68,7 @@ const {
   inspectContent,
   extractFileContent,
   getSafeErrorMetadata,
+  resolveHeaders,
   contentFilterBlockResponse,
   contentFilterUninspectableResponse,
   getBlockedUninspectableFileField,
@@ -504,5 +506,32 @@ describe('STT transcript content filtering', () => {
       { type: 'Error', status: 503 },
     );
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain(rawProviderDetail);
+  });
+
+  it('merges resolved schema headers into the provider request', async () => {
+    const service = new STTService();
+    const user = { id: 'u1', email: 'user@example.com' };
+    service.providerStrategies.test = () => ['https://provider.test/stt', Buffer.from('audio'), {}];
+    axios.post.mockResolvedValueOnce({ status: 200, data: { text: 'hi' } });
+
+    await service.sttRequest(
+      'test',
+      { headers: { 'x-end-user': '{{LIBRECHAT_USER_EMAIL}}' } },
+      {
+        audioBuffer: Buffer.from('audio'),
+        audioFile: { mimetype: 'audio/webm' },
+        language: '',
+        user,
+      },
+    );
+
+    expect(resolveHeaders).toHaveBeenCalledWith({
+      headers: { 'x-end-user': '{{LIBRECHAT_USER_EMAIL}}' },
+      user,
+      stripUnresolved: true,
+    });
+    expect(axios.post.mock.calls.at(-1)[2].headers).toEqual({
+      'x-end-user': '{{LIBRECHAT_USER_EMAIL}}',
+    });
   });
 });
