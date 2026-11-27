@@ -294,6 +294,7 @@ export function projectAgentManagementResponse(
     skills_enabled: source.skills_enabled,
     skill_authoring_enabled: source.skill_authoring_enabled,
     skills_scope: source.skills_scope,
+    text_only: source.text_only,
     memory_scope: source.memory_scope,
     agent_ids: source.agent_ids,
     edges: source.edges,

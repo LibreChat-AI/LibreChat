@@ -797,8 +797,8 @@ export function getSchemaDefaults<Schema extends z.ZodObject>(
  * Declares whether an agent's model reads images. `false` makes an agent on that model get a
  * short text note in place of each image (other agents in a chain or handoff still get the
  * image); `true` overrides a less specific `false`. Precedence, first declaration wins: the
- * agent's model spec, then the model's entry in its endpoint's models list, then the endpoint.
- * Nothing declared sends images as before.
+ * agent builder's "Text-only model" switch, the agent's model spec, the model's entry in its
+ * endpoint's models list, then the endpoint. Nothing declared sends images as before.
  */
 const visionSchema = z.boolean().optional();
 

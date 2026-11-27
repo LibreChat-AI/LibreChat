@@ -77,6 +77,27 @@ describe('resolveVision', () => {
     ).toBe(false);
   });
 
+  it("takes the agent's own text-only switch over every declaration", () => {
+    expect(
+      resolveVision({
+        endpoint: 'LiteLLM',
+        model: 'gpt-4o',
+        customEndpointConfig: litellm,
+        modelSpec: { vision: true },
+        textOnly: true,
+      }),
+    ).toBe(false);
+    expect(resolveVision({ endpoint: 'groq', model: 'llama3', textOnly: true })).toBe(false);
+    expect(
+      resolveVision({
+        endpoint: 'LiteLLM',
+        model: 'gpt-4o',
+        customEndpointConfig: litellm,
+        textOnly: false,
+      }),
+    ).toBe(true);
+  });
+
   it.each([
     EModelEndpoint.openAI,
     EModelEndpoint.google,

@@ -141,7 +141,7 @@ describe('discoverConnectedAgents', () => {
         req: makeReq(),
         res: makeRes(),
         primaryConfig,
-        endpointOption: { endpoint: 'agents', spec: 'primary-spec' },
+        endpointOption: { endpoint: EModelEndpoint.agents, spec: 'primary-spec' },
         allowedProviders: new Set(),
         getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
         loadTools: jest.fn(),
@@ -2076,7 +2076,7 @@ describe('model spec handoffs', () => {
     if (!preset) throw new Error('Missing test preset');
     preset.vision = false;
     await discoverConnectedAgents(
-      { ...options, endpointOption: { endpoint: 'agents', spec: 'primary-spec' } },
+      { ...options, endpointOption: { endpoint: EModelEndpoint.agents, spec: 'primary-spec' } },
       deps(),
     );
     expect(mockInitializeAgent).toHaveBeenCalledWith(

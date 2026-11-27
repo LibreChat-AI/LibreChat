@@ -818,8 +818,8 @@ export type InitializedAgent = Agent & {
   /** Detail level LibreChat encodes image content blocks with, from the agent's
    * model parameters. Absent when the agent does not configure one. */
   imageDetail?: ImageDetail;
-  /** Whether the agent's model reads images, as its spec or librechat.yaml declares it; `false`
-   *  gives it a text note in place of each image. Absent when nothing is declared. */
+  /** Whether the agent's model reads images, as the agent, its spec or librechat.yaml declares
+   *  it; `false` gives it a text note in place of each image. Absent when nothing is declared. */
   vision?: boolean;
   /** How this agent receives its attachments this turn, settled once every routing input is final. */
   deliveryRouting: TurnDeliveryRouting;
@@ -1631,6 +1631,7 @@ export async function initializeAgent(
     model: agent.model,
     customEndpointConfig,
     modelSpec: params.modelSpec,
+    textOnly: agent.text_only,
   });
 
   const inference = resolveAgentInferenceParameters({

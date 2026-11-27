@@ -20,6 +20,7 @@ import Sections from '~/components/SidePanel/Parameters/Sections';
 import BackButton from '~/components/SidePanel/BackButton';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
+import { ToggleSetting } from './Advanced/ui';
 import { Panel } from '~/common';
 import { cn } from '~/utils';
 
@@ -282,6 +283,19 @@ export default function ModelPanel({
             </Alert>
           )}
         </div>
+        <Controller
+          name="text_only"
+          control={control}
+          render={({ field }) => (
+            <ToggleSetting
+              id="agent-text-only"
+              label={localize('com_ui_agent_text_only')}
+              checked={field.value === true}
+              onCheckedChange={field.onChange}
+              info={<p>{localize('com_ui_agent_text_only_info')}</p>}
+            />
+          )}
+        />
       </div>
       {webSearchBlocked && (
         <Alert variant="warning" role="status">

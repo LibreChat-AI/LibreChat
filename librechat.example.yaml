@@ -1428,7 +1428,8 @@ endpoints:
       # (optional) These models cannot read images. An agent on one of them gets a
       # short text note in place of each image, while vision agents in the same
       # chain or handoff still get the image. Precedence, first declaration wins:
-      # the agent's model spec, then the model's entry, then the endpoint.
+      # the agent builder's "Text-only model" switch, the agent's model spec, the
+      # model's entry, then the endpoint.
       vision: false
       titleConvo: true
       titleModel: 'mixtral-8x7b-32768'

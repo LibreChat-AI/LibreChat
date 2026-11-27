@@ -8178,12 +8178,14 @@ describe('initializeAgent: image input declarations', () => {
   const initializeOn = async (
     customEndpointConfig: Record<string, unknown>,
     modelSpec?: TModelSpec,
+    textOnly?: boolean,
   ) => {
     const { agent, req, res, loadTools, db } = createMocks({
       provider: 'LiteLLM',
       overrideProvider: Providers.OPENAI,
       model: 'qwen3',
     });
+    agent.text_only = textOnly;
     mockGetProviderConfig.mockReturnValue({
       getOptions: jest.fn().mockResolvedValue({ llmConfig: { model: 'qwen3' } }),
       overrideProvider: Providers.OPENAI,
@@ -8225,6 +8227,21 @@ describe('initializeAgent: image input declarations', () => {
     );
 
     expect(result.vision).toBe(true);
+  });
+
+  it("lets the agent's own text-only switch outrank its spec and endpoint", async () => {
+    const result = await initializeOn(
+      { name: 'LiteLLM', vision: true, models: { default: ['qwen3'] } },
+      {
+        name: 'qwen',
+        label: 'Qwen',
+        vision: true,
+        preset: { endpoint: 'LiteLLM', model: 'qwen3' },
+      } as TModelSpec,
+      true,
+    );
+
+    expect(result.vision).toBe(false);
   });
 
   it('declares nothing when the configuration says nothing', async () => {

@@ -21,6 +21,8 @@ export interface ResolveVisionParams {
   customEndpointConfig?: Partial<TEndpoint>;
   /** The model spec the agent runs under, if any. */
   modelSpec?: Pick<TModelSpec, 'vision'> | null;
+  /** The agent's own text-only switch; when on, it outranks every other declaration. */
+  textOnly?: boolean;
 }
 
 function getListedConfig(
@@ -55,9 +57,10 @@ function getModelVision(config: VisionConfig, model?: string | null): boolean | 
 }
 
 /**
- * Whether an agent's model reads images, by the first declaration found: its model spec, the
- * model's entry in its endpoint's models list (Azure: the model in its group), then the
- * endpoint. `undefined` when nothing is declared, so images are sent as before.
+ * Whether an agent's model reads images, by the first declaration found: the agent's own
+ * text-only switch, its model spec, the model's entry in its endpoint's models list (Azure: the
+ * model in its group), then the endpoint. `undefined` when nothing is declared, so images are
+ * sent as before.
  */
 export function resolveVision({
   appConfig,
@@ -65,7 +68,11 @@ export function resolveVision({
   model,
   customEndpointConfig,
   modelSpec,
+  textOnly,
 }: ResolveVisionParams): boolean | undefined {
+  if (textOnly === true) {
+    return false;
+  }
   if (typeof modelSpec?.vision === 'boolean') {
     return modelSpec.vision;
   }

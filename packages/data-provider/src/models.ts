@@ -60,7 +60,8 @@ export type TModelSpec = {
   memory?: boolean;
   /**
    * Whether this spec's model reads images. `false` gives the spec's agent a short text note in
-   * place of each image; it outranks the `vision` of the model's entry and of its endpoint.
+   * place of each image; it outranks the `vision` of the model's entry and of its endpoint, and
+   * yields only to the agent's own "Text-only model" switch.
    */
   vision?: boolean;
   /** Equip the spec's ephemeral agent with the `ask_user_question` HITL tool. */

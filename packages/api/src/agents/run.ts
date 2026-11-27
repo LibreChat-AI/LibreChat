@@ -3049,7 +3049,7 @@ export async function createRun({
     if (agent.vision != null) {
       /**
        * Typed structurally for the same reason as `graphTools`: the per-agent
-       * field ships in `@librechat/agents` after 4.2.13 (LibreChat-AI/agents#AGENTS_PR),
+       * field ships in `@librechat/agents` after 4.2.13 (LibreChat-AI/agents#754),
        * and older SDK versions ignore it (the model then still gets the images).
        * Inline the field in the literal once the dependency is bumped.
        */
