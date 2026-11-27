@@ -83,6 +83,37 @@ async function openSavedChat(page: Page, conversationId: string) {
     .click();
 }
 
+type StoredMessage = { isCreatedByUser?: boolean; content?: { type: string }[] };
+
+/** The kinds of content each saved reply of the open chat holds, oldest reply first. */
+async function savedReplyParts(page: Page): Promise<string[][]> {
+  const conversationId = new URL(page.url()).pathname.split('/').pop() ?? '';
+  const token = await getAccessToken(page);
+  const messages = await requestJson<StoredMessage[]>(page, {
+    path: `/api/messages/${encodeURIComponent(conversationId)}`,
+    token,
+  });
+  return messages
+    .filter((message) => message.isCreatedByUser !== true)
+    .map((message) => (message.content ?? []).map((part) => part.type));
+}
+
+/** Stops the streaming run from the composer and resolves with the stop's status. */
+async function stopRun(page: Page): Promise<number> {
+  const [stopped] = await Promise.all([
+    page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+    page.getByRole('button', { name: 'Stop generating' }).click(),
+  ]);
+  await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+    timeout: 20_000,
+  });
+  return stopped.status();
+}
+
+/** A run that writes a whole message (`apart-one`), calls a tool, then streams a second one. */
+const PARTS = 'E2E_ASSISTANT_SLOW:E2E_ASSISTANT_PARTS';
+const RUN_PARTS = ['text', 'tool_call', 'text'];
+
 /** How the stop route refuses a run whose account is being deleted (`withAssistantRun`). */
 const ACCOUNT_DELETION_REFUSAL = {
   status: 409,
@@ -407,6 +438,85 @@ test.describe('assistants stream', () => {
       await expect(pane.getByText(CRASH)).toHaveCount(0);
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled();
       await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('stopping a run that wrote a message and called a tool keeps each part once @scenario:assistants-stop-keeps-each-run-part-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-stop-parts');
+    const assistant = await createAssistant(page, `E2E stop parts ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, `${PARTS}:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      expect(await stopRun(page)).toBe(200);
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      await expect(messagesView(page).getByText(/apart-one/)).toHaveCount(1);
+
+      /** The stop saved the run as one reply: its first message, the tool call, then the cut. */
+      await page.reload();
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/apart-one/)).toHaveCount(1);
+      expect(await savedReplyParts(page)).toEqual([RUN_PARTS]);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('stopping the next run of the chat keeps the earlier stopped reply whole @scenario:assistants-next-stop-keeps-earlier-parts-once', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('assistant-next-parts');
+    const second = `E2E_ASSISTANT_SLOW:second-${label}`;
+    const assistant = await createAssistant(page, `E2E next parts ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, `${PARTS}:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      expect(await stopRun(page)).toBe(200);
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      /** The stopped request checks the run's stop marker again 2 s after it closes, and a run
+       *  started before that loses its own marker to the check, so its stop finds no run. */
+      await page.waitForTimeout(3_000);
+
+      await send(page, second);
+      await expect(messagesView(page).getByText(second)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/achunk-003/)).toHaveCount(2, { timeout: 20_000 });
+      expect(await stopRun(page)).toBe(200);
+
+      /** Reading the thread back again finds every message of the first run in its reply. */
+      await page.reload();
+      await expect(messagesView(page).getByText(second)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/apart-one/)).toHaveCount(1);
+      expect(await savedReplyParts(page)).toEqual([RUN_PARTS, ['text']]);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a run whose stream drops keeps each part once in the reply the app reads back @scenario:assistants-dropped-run-keeps-each-part-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-drop-parts');
+    const assistant = await createAssistant(page, `E2E drop parts ${label}`);
+    try {
+      /** The fake Assistants API cuts the stream; the app reads the run back and shows the error. */
+      await sendToAssistant(page, assistant.id, `${PARTS}:E2E_ASSISTANT_DROP:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      await expect(messagesView(page).getByText(/apart-one/)).toHaveCount(1);
+
+      await page.reload();
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/apart-one/)).toHaveCount(1);
+      expect(await savedReplyParts(page)).toEqual([RUN_PARTS]);
     } finally {
       await deleteAssistant(page, assistant.id);
     }
