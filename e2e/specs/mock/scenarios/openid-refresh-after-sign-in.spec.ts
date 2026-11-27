@@ -6,13 +6,16 @@ import { inOneProject, repoRoot } from './lint.helpers';
 /**
  * With `OPENID_REUSE_TOKENS`, a refresh that spends a refresh-token grant answers with the ID token
  * that grant issued and keeps the refresh token the identity provider rotated in, the first grant
- * after sign-in included, so the session outlives the sign-in tokens.
+ * after sign-in included, so the session outlives the sign-in tokens. A provider that keeps the
+ * refresh token gets the same answer once the last grant's tokens ran out, even while the answer
+ * to that grant still holds its publication open.
  *
  * Token reuse is a process-wide switch, and the mock harness signs in with a local account and has
  * no identity provider, so the verdicts come from one run of the route spec. It signs in through
  * the OpenID callback and refreshes through `/api/auth/refresh` with the real routers, session
  * store, refresh and publication services and their records on a real database, with only the
- * identity provider replaced by one that rotates refresh tokens and refuses spent ones.
+ * identity provider replaced by one that rotates refresh tokens, or keeps them, and refuses spent
+ * ones.
  */
 
 type JestAssertion = { fullName: string; status: string };
@@ -21,6 +24,7 @@ type JestReport = { testResults: { assertionResults: JestAssertion[] }[] };
 const SPEC = 'server/routes/__tests__/auth.openid-refresh.spec.js';
 const JEST = resolve(repoRoot, 'node_modules/.bin/jest');
 const SUITE = 'OpenID token reuse from sign-in through refresh';
+const KEPT = 'with a provider that keeps the refresh token';
 
 let report: JestAssertion[] | undefined;
 
@@ -72,5 +76,17 @@ test.describe('OpenID token reuse across sign-in and refresh', () => {
 
   test('an OpenID session keeps refreshing with the refresh token its last grant rotated in @scenario:openid-session-refreshes-with-the-rotated-token', () => {
     expectPassed('refreshes again with the token the first grant rotated in');
+  });
+
+  test('with a provider that keeps the refresh token, a refresh after the last grant ran out returns the ID token of its own grant @scenario:non-rotating-openid-refresh-returns-its-own-grant', () => {
+    expectPassed(
+      `${KEPT} answers a refresh after the last grant ran out with the ID token of its own grant`,
+    );
+  });
+
+  test('with a provider that keeps the refresh token, tabs that refresh together after the last grant ran out share one grant @scenario:non-rotating-openid-tabs-share-one-grant', () => {
+    expectPassed(
+      `${KEPT} shares one grant between tabs that refresh together after the last grant ran out`,
+    );
   });
 });
