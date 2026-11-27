@@ -107,3 +107,35 @@ describe('initializeAnthropic – custom headers', () => {
     }
   });
 });
+
+describe('initializeAnthropic – web search tool version', () => {
+  it('keeps web_search_20250305 when webSearchToolVersion is not configured', async () => {
+    const { params, restore } = createParams(
+      { [EModelEndpoint.anthropic]: {} },
+      { ANTHROPIC_API_KEY: 'sk-ant-test' },
+    );
+    params.model_parameters = { model: 'claude-sonnet-4-5', web_search: true };
+
+    try {
+      const result = await initializeAnthropic(params);
+      expect(result.tools).toEqual([{ type: 'web_search_20250305', name: 'web_search' }]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('threads endpoints.anthropic.webSearchToolVersion into the web search tool', async () => {
+    const { params, restore } = createParams(
+      { [EModelEndpoint.anthropic]: { webSearchToolVersion: 'web_search_20260209' } },
+      { ANTHROPIC_API_KEY: 'sk-ant-test' },
+    );
+    params.model_parameters = { model: 'claude-sonnet-4-5', web_search: true };
+
+    try {
+      const result = await initializeAnthropic(params);
+      expect(result.tools).toEqual([{ type: 'web_search_20260209', name: 'web_search' }]);
+    } finally {
+      restore();
+    }
+  });
+});

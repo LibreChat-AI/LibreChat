@@ -11,6 +11,7 @@ import {
   bindsThinkingBlocks,
   isThinkingOffConfig,
   anthropicSettings,
+  ANTHROPIC_WEB_SEARCH_TOOL_VERSIONS,
   tConversationSchema,
   removeNullishValues,
   ThinkingDisplay,
@@ -430,7 +431,7 @@ function getLLMConfig(
 
   if (enableWebSearch) {
     tools.push({
-      type: 'web_search_20250305',
+      type: options.webSearchToolVersion ?? ANTHROPIC_WEB_SEARCH_TOOL_VERSIONS[0],
       name: 'web_search',
     });
 

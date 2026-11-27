@@ -697,6 +697,27 @@ describe('getLLMConfig', () => {
           },
         ]);
       });
+
+      it.each(['web_search_20260209', 'web_search_20260318'] as const)(
+        'should use the configured web search tool version %s',
+        (version) => {
+          const result = getLLMConfig('sk-ant-websearch-key', {
+            modelOptions: { model: 'claude-opus-5-5', web_search: true },
+            webSearchToolVersion: version,
+          });
+
+          expect(result.tools).toEqual([{ type: version, name: 'web_search' }]);
+        },
+      );
+
+      it('should not add a web search tool when web_search is off, whatever the version', () => {
+        const result = getLLMConfig('sk-ant-websearch-key', {
+          modelOptions: { model: 'claude-opus-5-5', web_search: false },
+          webSearchToolVersion: 'web_search_20260209',
+        });
+
+        expect(result.tools).toEqual([]);
+      });
     });
 
     describe('Production-like Configuration Scenarios', () => {

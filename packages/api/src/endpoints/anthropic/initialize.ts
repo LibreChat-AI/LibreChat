@@ -80,6 +80,9 @@ export async function initializeAnthropic(
       user: user?.id,
     },
     ...(headers && { headers }),
+    ...(anthropicConfig?.webSearchToolVersion && {
+      webSearchToolVersion: anthropicConfig.webSearchToolVersion,
+    }),
     // Pass Vertex AI options if configured
     ...(vertexOptions && { vertexOptions }),
     // Pass full Vertex AI config including model mappings
