@@ -422,6 +422,63 @@ describe('custom endpoint stream usage defaults', () => {
   });
 });
 
+describe('image input declarations', () => {
+  it('passes each agent its own vision, through eager, lazy and graph subagents', async () => {
+    const eagerChild = makeAgent({ id: 'agent_eager', name: 'Eager child', vision: false });
+    const lazyResolve = jest
+      .fn()
+      .mockResolvedValue(makeAgent({ id: 'agent_lazy', name: 'Lazy child', vision: false }));
+    const graphMember = makeAgent({ id: 'agent_graph', name: 'Graph member', vision: false });
+    const graphDefinition = {
+      type: 'text_only_team',
+      name: 'Text-only team',
+      description: 'Runs on a text-only model',
+      agent_ids: [graphMember.id],
+      edges: [],
+      entry_agent_id: graphMember.id,
+      result_agent_id: graphMember.id,
+    };
+    const [root, chained] = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: {
+            enabled: true,
+            allowSelf: false,
+            agent_ids: [eagerChild.id, 'agent_lazy'],
+            graphs: [graphDefinition],
+          },
+          subagentAgentConfigs: [eagerChild],
+          lazySubagentConfigs: [
+            {
+              id: 'agent_lazy',
+              name: 'Lazy child',
+              description: 'Resolves only when selected',
+              configId: 'agent_lazy:1:fingerprint',
+              resolve: lazyResolve,
+            },
+          ],
+          subagentGraphConfigs: [{ definition: graphDefinition, memberConfigs: [graphMember] }],
+        }),
+        makeAgent({ id: 'agent_chained', vision: false }),
+      ],
+    });
+
+    expect(root).not.toHaveProperty('vision');
+    expect(chained.vision).toBe(false);
+    const configs = root.subagentConfigs as Array<Record<string, unknown>>;
+    const eager = configs.find((config) => config.type === 'agent_eager');
+    expect((eager?.agentInputs as Record<string, unknown>).vision).toBe(false);
+    const lazy = configs.find((config) => config.type === 'agent_lazy');
+    const lazyInputs = await (
+      lazy?.resolveAgentInputs as (context: never) => Promise<Record<string, unknown>>
+    )({ signal: new AbortController().signal } as never);
+    expect(lazyInputs.vision).toBe(false);
+    const graph = configs.find((config) => config.type === 'text_only_team');
+    const [member] = graph?.agents as Array<Record<string, unknown>>;
+    expect(member.vision).toBe(false);
+  });
+});
+
 describe('model-level callbacks', () => {
   it('propagates guards through root, fallback, summary, eager, lazy, and graph clients', async () => {
     const modelCallback: ModelBoundChatModelCallback = {

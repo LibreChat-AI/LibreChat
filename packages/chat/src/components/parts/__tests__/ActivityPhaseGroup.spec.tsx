@@ -784,8 +784,17 @@ describe('ActivityPhaseGroup open live header', () => {
       ...(reasoning_label == null ? {} : { reasoning_label }),
     }) as unknown as TMessageContentParts;
 
-  test('previews the newest finished sentence while collapsed', () => {
-    render(
+  test('previews the newest finished sentence while collapsed until a label lands', () => {
+    const view = render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought()]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByRole('button')).toHaveTextContent('Next I check the ordering.');
+
+    /** The label is the summary the deployment asked for, and the thought's
+     *  own row is titled by it: once it lands, a sentence no longer wins. */
+    view.rerender(
       <ActivityPhaseGroup
         labelPart={makeLabelPart('')}
         hasContent
@@ -794,7 +803,11 @@ describe('ActivityPhaseGroup open live header', () => {
         <div data-testid="phase-content" />
       </ActivityPhaseGroup>,
     );
-    expect(screen.getByRole('button')).toHaveTextContent('Next I check the ordering.');
+    settle();
+    const header = screen.getByRole('button');
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(within(header).getByTitle('Comparing refs')).toBeInTheDocument();
+    expect(within(header).queryByTitle('Next I check the ordering.')).toBeNull();
   });
 
   test("titles an open card by the thought's label instead of repeating its text", () => {

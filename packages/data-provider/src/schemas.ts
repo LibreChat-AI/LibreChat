@@ -452,6 +452,7 @@ export const defaultAgentFormValues = {
   skills_enabled: undefined as boolean | undefined,
   /** Enables runtime skill creation without exposing an existing skill catalog. */
   skill_authoring_enabled: undefined as boolean | undefined,
+  text_only: undefined as boolean | undefined,
   /** Explicit catalog scope. Missing preserves the legacy enabled + empty = all behavior. */
   skills_scope: undefined as SkillsScope | undefined,
   /** `undefined` = feature disabled by default (no subagent tool injected). */

@@ -3845,6 +3845,23 @@ describe('Agent Methods', () => {
       expect(revertedAgent.skill_authoring_enabled).toBeUndefined();
     });
 
+    test('clears the text-only switch when the restored version predates it', async () => {
+      const agentId = `agent_${uuidv4()}`;
+
+      await createAgent({
+        id: agentId,
+        name: 'Text-only Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+      });
+      await updateAgent({ id: agentId }, { text_only: true });
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
+
+      expect(revertedAgent.text_only).toBeUndefined();
+    });
+
     test('renews a code environment reference until the guarded write settles', async () => {
       const environmentId = `environment_${uuidv4()}`;
       await mongoose.models.CodeEnvironment.create({

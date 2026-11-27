@@ -495,14 +495,14 @@ describe('createLoadConfigModels – safe failure logging', () => {
 });
 
 describe('configuredModelList', () => {
-  it('returns string entries of a configured list and undefined otherwise', () => {
+  it('returns the model names of a configured list and undefined otherwise', () => {
     const appConfig = {
       endpoints: {
-        [EModelEndpoint.openAI]: { models: ['a', 7, 'b'] },
+        [EModelEndpoint.openAI]: { models: ['a', 7, { name: 'c', vision: false }, 'b'] },
         [EModelEndpoint.google]: { streamRate: 25 },
       },
     } as unknown as Parameters<typeof configuredModelList>[0];
-    expect(configuredModelList(appConfig, EModelEndpoint.openAI)).toEqual(['a', 'b']);
+    expect(configuredModelList(appConfig, EModelEndpoint.openAI)).toEqual(['a', 'c', 'b']);
     expect(configuredModelList(appConfig, EModelEndpoint.google)).toBeUndefined();
     expect(configuredModelList(undefined, EModelEndpoint.anthropic)).toBeUndefined();
   });
