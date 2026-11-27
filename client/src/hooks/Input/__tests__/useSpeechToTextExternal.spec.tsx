@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import useSpeechToTextExternal from '../useSpeechToTextExternal';
+import translationEn from '~/locales/en/translation.json';
 import store from '~/store';
 
 /**
@@ -26,6 +27,20 @@ jest.mock('~/data-provider', () => ({
 jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
+
+/* Returns the key, so a toast that skipped localization shows up as a sentence. */
+jest.mock('../../useLocalize', () => ({
+  __esModule: true,
+  default: () => (key: string) => key,
+}));
+
+/** Every toast the hook raised, checked against the English catalog: a hard-coded
+ *  sentence is not a key there, so it fails here in any language. */
+const toastsShown = () =>
+  mockShowToast.mock.calls.map(([toast]: [{ message: string; status: string }]) => ({
+    ...toast,
+    localized: Object.hasOwn(translationEn, toast.message),
+  }));
 
 type RecorderListener = (event: BlobEvent) => void;
 
@@ -199,9 +214,9 @@ describe('useSpeechToTextExternal', () => {
 
     expect(mockGetUserMedia).not.toHaveBeenCalled();
     expect(result.current.isListening).toBe(false);
-    expect(mockShowToast).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'error' as const }),
-    );
+    expect(toastsShown()).toEqual([
+      { message: 'com_ui_speech_recording_not_supported', status: 'error', localized: true },
+    ]);
   });
 
   it('releases the microphone when the recorder cannot be constructed', async () => {
@@ -218,6 +233,10 @@ describe('useSpeechToTextExternal', () => {
     expect(mockGetUserMedia).toHaveBeenCalledTimes(1);
     expect(currentTrack.stop).toHaveBeenCalledTimes(1);
     expect(result.current.isListening).toBe(false);
+    /* The browser's exception text is English and technical; it stays out of the toast. */
+    expect(toastsShown()).toEqual([
+      { message: 'com_ui_speech_recording_start_error', status: 'error', localized: true },
+    ]);
   });
 
   /* The recorder's `stop` handler runs from a listener registered at start, so
@@ -308,6 +327,72 @@ describe('useSpeechToTextExternal', () => {
 
     expect(mockProcessAudio).not.toHaveBeenCalled();
     expect(onTranscriptionSettled).toHaveBeenCalledTimes(1);
+    expect(toastsShown()).toEqual([
+      { message: 'com_ui_speech_too_short', status: 'warning', localized: true },
+    ]);
+  });
+
+  /* A provider failure, an empty transcript and an unreachable server all reach
+     `onError` alike, so the toast must not guess that the audio was too short. */
+  it('reports a failed transcription without blaming the length of the audio', async () => {
+    const { result, setText, onTranscriptionSettled } = setup();
+    await start(result.current.externalStartRecording);
+    const recorder = FakeMediaRecorder.instances[0];
+    act(() => recorder.emitData(new Blob(['take'], { type: 'audio/webm' })));
+    act(() => result.current.externalStopRecording());
+
+    act(() => mockProcessAudio.mock.calls[0]?.[1]?.onError?.(new Error('Request failed')));
+
+    expect(setText).not.toHaveBeenCalled();
+    expect(onTranscriptionSettled).toHaveBeenCalledTimes(1);
+    expect(toastsShown()).toEqual([
+      { message: 'com_ui_speech_transcription_failed', status: 'error', localized: true },
+    ]);
+  });
+
+  it('asks the user to wait while the previous take is still being transcribed', async () => {
+    const { result } = setup();
+    await start(result.current.externalStartRecording);
+    const recorder = FakeMediaRecorder.instances[0];
+    act(() => recorder.emitData(new Blob(['take'], { type: 'audio/webm' })));
+    act(() => result.current.externalStopRecording());
+
+    await start(result.current.externalStartRecording);
+
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    expect(toastsShown()).toEqual([
+      { message: 'com_ui_speech_transcription_pending', status: 'warning', localized: true },
+    ]);
+  });
+
+  it('reports a refused microphone in the UI language', async () => {
+    mockGetUserMedia.mockImplementation(() =>
+      Promise.reject(new DOMException('Permission denied', 'NotAllowedError')),
+    );
+    const { result } = setup();
+
+    await start(result.current.externalStartRecording);
+
+    expect(result.current.isListening).toBe(false);
+    expect(toastsShown()).toEqual([
+      { message: 'com_ui_microphone_unavailable', status: 'error', localized: true },
+    ]);
+  });
+
+  it('localizes the start and stop refusals', async () => {
+    const { result } = setup();
+    act(() => result.current.externalStopRecording());
+    await start(result.current.externalStartRecording);
+    act(() => result.current.externalStartRecording());
+    /* A recorder that left the recording state without its `stop` event. */
+    FakeMediaRecorder.instances[0].state = 'inactive';
+    act(() => result.current.externalStopRecording());
+
+    expect(toastsShown()).toEqual([
+      { message: 'com_ui_speech_not_recording', status: 'warning', localized: true },
+      { message: 'com_ui_speech_already_recording', status: 'warning', localized: true },
+      { message: 'com_ui_speech_not_recording', status: 'error', localized: true },
+    ]);
   });
 
   it('does not settle a discarded take', async () => {
