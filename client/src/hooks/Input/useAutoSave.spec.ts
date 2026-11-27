@@ -33,7 +33,7 @@ jest.mock('~/utils', () => ({
 }));
 
 import React from 'react';
-import { renderHook, act } from '@testing-library/react';
+import { render, renderHook, act } from '@testing-library/react';
 import { useRecoilValue } from 'recoil';
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import { useChatFormContext } from '~/Providers';
@@ -60,6 +60,7 @@ import {
 } from '~/utils/drafts';
 import { markPastedTextFile } from '~/utils/files';
 import { useAutoSave } from '~/hooks';
+import type { CapturedComposerDraft } from '~/utils/drafts';
 import type { ExtendedFile } from '~/common';
 
 const mockSetValue = jest.fn();
@@ -1792,4 +1793,42 @@ describe('useAutoSave — exact text across navigation', () => {
       mockSetValue.mockReset();
     },
   );
+});
+
+describe('useAutoSave composer registration', () => {
+  it('keeps the composer claimed for passive effects of the commit that re-registers it', () => {
+    window.history.replaceState({}, '', '/c/registered-owner');
+    const textAreaRef = makeTextAreaRef();
+    const reads: boolean[] = [];
+    let owner: CapturedComposerDraft | null = null;
+    /** Reads ownership the way an upload's cleanup effect does: from a child, in the commit that
+     * moves the composer onto the pending key. */
+    const Reader = ({ isSubmitting }: { isSubmitting: boolean }) => {
+      React.useEffect(() => {
+        if (owner) reads.push(owner());
+      }, [isSubmitting]);
+      return null;
+    };
+    const Composer = ({ isSubmitting }: { isSubmitting: boolean }) => {
+      const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+      useAutoSave({
+        index: 52,
+        conversationId: 'registered-owner',
+        isSubmitting,
+        textAreaRef,
+        files,
+        setFiles,
+      });
+      return React.createElement(Reader, { isSubmitting });
+    };
+    const { rerender, unmount } = render(React.createElement(Composer, { isSubmitting: false }));
+    owner = captureComposerDraft(52, 'registered-owner');
+    expect(owner()).toBe(true);
+    rerender(React.createElement(Composer, { isSubmitting: true }));
+    rerender(React.createElement(Composer, { isSubmitting: false }));
+    expect(reads).toEqual([true, true]);
+    expect(owner()).toBe(true);
+    unmount();
+    window.history.replaceState({}, '', '/');
+  });
 });
