@@ -2934,6 +2934,49 @@ describe('sanitizeGeminiSchema', () => {
     });
   });
 
+  it('strips JSON Schema 2019-09+ applicators and conditionals Vertex AI rejects', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          contains: { type: 'string', pattern: '^id_' },
+          minContains: 1,
+          maxContains: 3,
+          unevaluatedItems: false,
+        },
+        mode: { type: 'string', enum: ['a', 'b'] },
+      },
+      if: { properties: { mode: { const: 'a' } } },
+      then: { required: ['ids'] },
+      else: { required: [] },
+      unevaluatedProperties: false,
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' } },
+        mode: { type: 'string', enum: ['a', 'b'] },
+      },
+    });
+  });
+
+  it('keeps properties named like the stripped conditional keywords', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        if: { type: 'string' },
+        then: { type: 'string' },
+        contains: { type: 'string' },
+      },
+      required: ['if'],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual(schema);
+  });
+
   it('strips tuple/array-extension keywords Gemini rejects (prefixItems, additionalItems)', () => {
     const schema = {
       type: 'array',

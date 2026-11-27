@@ -515,7 +515,9 @@ export async function loadToolDefinitions(
     return {
       name: def.name,
       description: def.description,
-      parameters: def.parameters,
+      /** OpenAPI-derived schemas can carry keywords Gemini/Vertex rejects, like MCP schemas. */
+      parameters:
+        isGoogle && def.parameters ? sanitizeGeminiSchema(def.parameters) : def.parameters,
     };
   });
 

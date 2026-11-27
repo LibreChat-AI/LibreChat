@@ -520,6 +520,59 @@ describe('classification.ts', () => {
       expect(Array.isArray(params?.properties?.mcp_server?.oneOf)).toBe(true);
     });
 
+    type PTCParams = {
+      properties?: Record<string, { uniqueItems?: boolean; type?: string }>;
+    };
+
+    const classifyWithPTC = (provider: Providers, definitionsOnly: boolean) =>
+      buildToolClassification({
+        loadedTools: [createMCPTool('tool1')],
+        userId: 'user1',
+        agentId: 'agent1',
+        agentToolOptions: { tool1: { allowed_callers: ['code_execution'] } },
+        programmaticToolsEnabled: true,
+        codeExecutionEnabled: true,
+        definitionsOnly,
+        provider,
+      });
+
+    const getPTCDefinitionParams = (
+      result: Awaited<ReturnType<typeof buildToolClassification>>,
+    ): PTCParams | undefined =>
+      result.toolDefinitions.find((d) => d.name === 'run_tools_with_bash')?.parameters as
+        | PTCParams
+        | undefined;
+
+    /* `tool_manifest` declares `uniqueItems`, which Gemini/Vertex rejects with a 400. */
+    it('should sanitize the PTC definition schema for Google providers', async () => {
+      const result = await classifyWithPTC(Providers.GOOGLE, true);
+
+      const manifest = getPTCDefinitionParams(result)?.properties?.tool_manifest;
+      expect(manifest?.type).toBe('array');
+      expect(manifest?.uniqueItems).toBeUndefined();
+    });
+
+    it('should sanitize the PTC instance schema for Vertex AI without mutating the shared schema', async () => {
+      const vertex = await classifyWithPTC(Providers.VERTEXAI, false);
+
+      const ptcTool = vertex.additionalTools.find((t) => t.name === 'run_tools_with_bash');
+      const schema = (ptcTool as unknown as { schema: PTCParams }).schema;
+      expect(schema.properties?.tool_manifest?.uniqueItems).toBeUndefined();
+      expect(
+        getPTCDefinitionParams(vertex)?.properties?.tool_manifest?.uniqueItems,
+      ).toBeUndefined();
+
+      /* A later non-Google agent still gets the SDK's original schema. */
+      const openAI = await classifyWithPTC(Providers.OPENAI, false);
+      expect(getPTCDefinitionParams(openAI)?.properties?.tool_manifest?.uniqueItems).toBe(true);
+    });
+
+    it('should keep the original PTC schema for non-Google providers', async () => {
+      const result = await classifyWithPTC(Providers.OPENAI, true);
+
+      expect(getPTCDefinitionParams(result)?.properties?.tool_manifest?.uniqueItems).toBe(true);
+    });
+
     it('should add PTC definition when definitionsOnly=true and capabilities allow programmatic tools', async () => {
       const loadedTools: GenericTool[] = [createMCPTool('tool1')];
 
