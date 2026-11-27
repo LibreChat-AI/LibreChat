@@ -1105,3 +1105,106 @@ describe('turned-off project fields', () => {
     expect(project.instructions).toBe('');
   });
 });
+
+describe('projects.files', () => {
+  const owner = new mongoose.Types.ObjectId().toString();
+  const MB = 1024 * 1024;
+
+  async function reference(fileId: string, overrides: Partial<IMongoFile> = {}) {
+    return File.create({
+      user: owner,
+      file_id: fileId,
+      filename: `${fileId}.pdf`,
+      filepath: `/uploads/${fileId}.pdf`,
+      type: 'application/pdf',
+      bytes: MB,
+      embedded: true,
+      context: FileContext.message_attachment,
+      ...overrides,
+    });
+  }
+
+  async function newProject() {
+    const project = await methods.createChatProject(owner, { name: 'Files' });
+    return project._id!.toString();
+  }
+
+  it.each([
+    ['files.enabled: false', { files: { enabled: false } }],
+    ['maxFiles: 0', { maxFiles: 0 }],
+  ])('refuses every attach with %s', async (_label, limits) => {
+    const projectId = await newProject();
+    await reference('off-a');
+
+    await expect(methods.addChatProjectFile(owner, projectId, 'off-a', limits)).rejects.toThrow(
+      'Project files are turned off',
+    );
+    expect((await methods.getChatProject(owner, projectId))?.file_ids).toEqual([]);
+  });
+
+  it('refuses a file over fileSizeLimit and attaches one under it', async () => {
+    const projectId = await newProject();
+    await reference('big', { bytes: 3 * MB });
+    await reference('small', { bytes: MB });
+    const limits = { files: { fileSizeLimit: 2 } };
+
+    await expect(methods.addChatProjectFile(owner, projectId, 'big', limits)).rejects.toThrow(
+      'Project file too large',
+    );
+    const attached = await methods.addChatProjectFile(owner, projectId, 'small', limits);
+    expect(attached?.file_ids).toEqual(['small']);
+  });
+
+  it('refuses a type outside supportedMimeTypes', async () => {
+    const projectId = await newProject();
+    await reference('sheet', { type: 'application/vnd.ms-excel' });
+    await reference('doc', { type: 'application/pdf' });
+    const limits = { files: { supportedMimeTypes: ['^application/pdf$', '^text/.*$'] } };
+
+    await expect(methods.addChatProjectFile(owner, projectId, 'sheet', limits)).rejects.toThrow(
+      'Project file type not allowed',
+    );
+    expect((await methods.addChatProjectFile(owner, projectId, 'doc', limits))?.file_ids).toEqual([
+      'doc',
+    ]);
+  });
+
+  it('refuses a file that would take the project past totalSizeLimit', async () => {
+    const projectId = await newProject();
+    await reference('one', { bytes: 2 * MB });
+    await reference('two', { bytes: 2 * MB });
+    const limits = { files: { totalSizeLimit: 3 } };
+
+    await methods.addChatProjectFile(owner, projectId, 'one', limits);
+    await expect(methods.addChatProjectFile(owner, projectId, 'two', limits)).rejects.toThrow(
+      'Project storage limit reached',
+    );
+    await methods.removeChatProjectFile(owner, projectId, 'one');
+    expect((await methods.addChatProjectFile(owner, projectId, 'two', limits))?.file_ids).toEqual([
+      'two',
+    ]);
+  });
+
+  it('keeps concurrent attaches within totalSizeLimit', async () => {
+    const projectId = await newProject();
+    const ids = Array.from({ length: 6 }, (_, index) => `race-${index}`);
+    await Promise.all(ids.map((id) => reference(id, { bytes: MB })));
+    const limits = { files: { totalSizeLimit: 3 } };
+
+    await Promise.allSettled(
+      ids.map((id) => methods.addChatProjectFile(owner, projectId, id, limits)),
+    );
+
+    const project = await methods.getChatProject(owner, projectId);
+    expect(project?.file_ids?.length).toBeLessThanOrEqual(3);
+    expect(project?.file_ids?.length).toBeGreaterThan(0);
+  });
+
+  it('leaves attaches unchanged when projects.files is unset', async () => {
+    const projectId = await newProject();
+    await reference('plain', { bytes: 600 * MB, type: 'application/octet-stream' });
+    expect((await methods.addChatProjectFile(owner, projectId, 'plain'))?.file_ids).toEqual([
+      'plain',
+    ]);
+  });
+});

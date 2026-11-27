@@ -34,6 +34,13 @@ const PROJECT_NOT_FOUND = 'Project not found';
 const CONVERSATION_NOT_FOUND = 'Conversation not found';
 const PROJECT_FILE_UNAVAILABLE = 'Project file unavailable';
 const PROJECT_FILE_LIMIT_REACHED = 'Project file limit reached';
+/** `projects.files` refusals from the attach, each with the status and code the client maps. */
+const PROJECT_FILE_REFUSALS = new Map<string, { status: number; code: string }>([
+  ['Project files are turned off', { status: 403, code: 'CHAT_PROJECT_FILES_OFF' }],
+  ['Project file too large', { status: 400, code: 'CHAT_PROJECT_FILE_TOO_LARGE' }],
+  ['Project file type not allowed', { status: 400, code: 'CHAT_PROJECT_FILE_TYPE' }],
+  ['Project storage limit reached', { status: 409, code: 'CHAT_PROJECT_STORAGE_LIMIT' }],
+]);
 
 const PROJECT_SORT_FIELDS = new Set<ChatProjectSortBy>(['name', 'createdAt', 'lastConversationAt']);
 
@@ -422,6 +429,17 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       }
       if (error instanceof Error && error.message === PROJECT_FILE_LIMIT_REACHED) {
         return res.status(409).json({ error: PROJECT_FILE_LIMIT_REACHED });
+      }
+      const message = error instanceof Error ? error.message : '';
+      const refusal = PROJECT_FILE_REFUSALS.get(message);
+      if (refusal) {
+        return res.status(refusal.status).json({ error: message, code: refusal.code });
+      }
+      if (error instanceof Error && error.message === CHAT_PROJECT_CONFLICT) {
+        return res.status(409).json({
+          message: 'Project was changed by another session',
+          code: 'CHAT_PROJECT_CONFLICT',
+        });
       }
       logger.error('[projects] Error adding project file', error);
       return res.status(500).json({ error: 'Error adding project file' });

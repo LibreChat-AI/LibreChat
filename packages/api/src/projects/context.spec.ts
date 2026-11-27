@@ -36,6 +36,25 @@ describe('resolveChatProjectContext', () => {
     expect(context?.file_ids).toEqual(['file-a']);
   });
 
+  it.each([
+    ['files.enabled: false', { files: { enabled: false } }],
+    ['maxFiles: 0', { maxFiles: 0 }],
+  ])('keeps attached files out of the turn with %s', async (_label, projectsConfig) => {
+    const context = await resolveChatProjectContext(
+      { userId: 'user-a', requestedProjectId: 'project-a' },
+      {
+        getConvo: jest.fn(),
+        getChatProject: jest.fn().mockResolvedValue(project),
+        getProjectFiles,
+        projectsConfig,
+      },
+    );
+
+    expect(context?.file_ids).toEqual([]);
+    expect(context?.resources).toEqual([]);
+    expect(context?.instructions).toBe('Use the project policy.');
+  });
+
   describe('without PROJECTS.USE', () => {
     const canUseProjects = jest.fn().mockResolvedValue(false);
 

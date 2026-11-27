@@ -10,6 +10,7 @@ import type { ReactNode } from 'react';
 import ProjectResources from './ProjectResources';
 
 const mockUploadMutateAsync = jest.fn();
+let mockStartupConfig: unknown = undefined;
 const mockCanUseFileSearch = jest.fn(() => true);
 const mockAddMutateAsync = jest.fn();
 const mockRemoveMutateAsync = jest.fn();
@@ -79,7 +80,7 @@ jest.mock('~/data-provider', () => ({
   useUploadFileMutation: () => ({ mutateAsync: mockUploadMutateAsync, isLoading: false }),
   useAddProjectFileMutation: () => ({ mutateAsync: mockAddMutateAsync, isLoading: false }),
   useRemoveProjectFileMutation: () => ({ mutateAsync: mockRemoveMutateAsync, isLoading: false }),
-  useGetStartupConfig: () => ({ data: undefined }),
+  useGetStartupConfig: () => ({ data: mockStartupConfig }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -218,6 +219,27 @@ describe('ProjectResources', () => {
     expect(screen.queryByText('unsafe internal upload detail')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Dismiss failed.txt upload' })).toBeInTheDocument();
   });
+  it('refuses a file over the project size or type limits before uploading it', async () => {
+    mockStartupConfig = {
+      projects: { files: { fileSizeLimit: 1, supportedMimeTypes: ['^text/plain$'] } },
+    };
+    try {
+      renderResources();
+      const input = screen.getByTestId('project-upload-input');
+      const big = new File(['x'], 'big.txt', { type: 'text/plain' });
+      Object.defineProperty(big, 'size', { value: 2 * 1024 * 1024 });
+      fireEvent.change(input, {
+        target: { files: [big, new File(['y'], 'sheet.csv', { type: 'text/csv' })] },
+      });
+
+      expect(await screen.findByText('com_ui_project_file_too_large')).toBeInTheDocument();
+      expect(screen.getByText('com_ui_project_file_type')).toBeInTheDocument();
+      expect(mockUploadMutateAsync).not.toHaveBeenCalled();
+    } finally {
+      mockStartupConfig = undefined;
+    }
+  });
+
   it('reserves remaining capacity across overlapping multi-file selections', async () => {
     let finishFirstUpload!: (file: TFileUpload) => void;
     mockProjectQueryState = { ...mockProjectQueryState, data: undefined, isLoading: true };

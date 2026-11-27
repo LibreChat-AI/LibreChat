@@ -1,5 +1,8 @@
 import {
+  mbToBytes,
   FileContext,
+  projectFilesEnabled,
+  convertStringsToRegex,
   MAX_CHAT_PROJECT_FILES,
   MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
   MAX_CHAT_PROJECT_NAME_LENGTH,
@@ -96,7 +99,7 @@ type ProjectCursor = {
 };
 export type ChatProjectLimits = Pick<
   TChatProjectsConfig,
-  'maxFiles' | 'maxInstructionsLength' | 'maxDescriptionLength' | 'maxProjectsPerUser'
+  'maxFiles' | 'maxInstructionsLength' | 'maxDescriptionLength' | 'maxProjectsPerUser' | 'files'
 >;
 
 export type ChatProjectErrorCode = 'CHAT_PROJECT_LIMIT';
@@ -113,6 +116,17 @@ export class ChatProjectError extends Error {
 
 const projectLimitReached = () =>
   new ChatProjectError('CHAT_PROJECT_LIMIT', 'Project limit reached');
+
+/** Failures `addChatProjectFile` reports for `projects.files` and `maxFiles: 0`. */
+export const ChatProjectFileErrors = {
+  off: 'Project files are turned off',
+  tooLarge: 'Project file too large',
+  type: 'Project file type not allowed',
+  storage: 'Project storage limit reached',
+} as const;
+
+/** Attempts a capped-storage attach makes when other attaches or removals keep moving the project. */
+const STORAGE_ATTACH_ATTEMPTS = 5;
 
 const DUPLICATE_KEY = 11000;
 
@@ -623,8 +637,12 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     projectId: string,
     fileId: string,
     limits?: Partial<ChatProjectLimits>,
+    attempt = 1,
   ): Promise<IChatProject | null> {
     const { maxFiles } = resolveChatProjectLimits(limits);
+    if (!projectFilesEnabled(limits)) {
+      throw new Error(ChatProjectFileErrors.off);
+    }
     const project = await getChatProject(user, projectId);
     if (!project) {
       return null;
@@ -648,10 +666,39 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
       ],
     })
-      .select('_id file_id expiresAt temp_file_id')
+      .select('_id file_id expiresAt temp_file_id bytes type')
       .lean();
     if (!file) {
       throw new Error('Project file unavailable');
+    }
+    const fileLimits = limits?.files;
+    if (fileLimits?.fileSizeLimit != null && file.bytes > mbToBytes(fileLimits.fileSizeLimit)) {
+      throw new Error(ChatProjectFileErrors.tooLarge);
+    }
+    if (
+      fileLimits?.supportedMimeTypes != null &&
+      !convertStringsToRegex(fileLimits.supportedMimeTypes).some((pattern) =>
+        pattern.test(file.type ?? ''),
+      )
+    ) {
+      throw new Error(ChatProjectFileErrors.type);
+    }
+    /* A storage cap is checked against the files attached at this revision, and the attach
+     * below only lands while the project is still at it, so concurrent attaches cannot pass
+     * the cap together; one that lost the race reads the project again. */
+    const capsStorage = fileLimits?.totalSizeLimit != null && !alreadyAttached;
+    if (capsStorage) {
+      const attached = await File.find({
+        file_id: { $in: project.file_ids ?? [] },
+        user,
+        tenantId: project.tenantId ?? null,
+      })
+        .select('bytes')
+        .lean<{ bytes?: number }[]>();
+      const used = attached.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0);
+      if (used + file.bytes > mbToBytes(fileLimits.totalSizeLimit as number)) {
+        throw new Error(ChatProjectFileErrors.storage);
+      }
     }
 
     const released = await File.updateOne(
@@ -697,6 +744,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
           user,
           file_ids: { $ne: fileId },
           [`file_ids.${maxFiles - 1}`]: { $exists: false },
+          ...(capsStorage && { contextRevision: project.contextRevision ?? 0 }),
         },
         { $addToSet: { file_ids: fileId }, $inc: { contextRevision: 1 } },
         { new: true, runValidators: true },
@@ -711,6 +759,12 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       await restoreTemporaryHold();
       if (!current) {
         return null;
+      }
+      if (capsStorage && (current.contextRevision ?? 0) !== (project.contextRevision ?? 0)) {
+        if (attempt >= STORAGE_ATTACH_ATTEMPTS) {
+          throw new Error(CHAT_PROJECT_CONFLICT);
+        }
+        return await addChatProjectFile(user, projectId, fileId, limits, attempt + 1);
       }
     } catch (error) {
       await restoreTemporaryHold();
