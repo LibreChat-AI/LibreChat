@@ -312,3 +312,230 @@ describe('syncMessages partially tagged replies', () => {
     });
   });
 });
+
+describe('syncMessages run reply', () => {
+  const replyId = '0b6f6c1e-5d4a-4c8e-9f3b-2a7d8e1c4b5f';
+  const text = (value: string) => [{ type: 'text', text: { value, annotations: [] } }];
+  const user: ThreadMessage = {
+    id: 'msg_user',
+    role: 'user',
+    created_at: 1,
+    content: text('prompt'),
+    metadata: { messageId: 'db-user' },
+  };
+  const runMessage = (id: string, value: string, run_id = 'run_1'): ThreadMessage => ({
+    id,
+    role: 'assistant',
+    created_at: 2,
+    run_id,
+    content: text(value),
+    assistant_id: 'asst_1',
+  });
+  /** The copy a cancelled run kept as it streamed. */
+  const kept = { messageId: replyId, conversationId: 'convo-123', unfinished: true };
+
+  function setup(stored?: Record<string, unknown>) {
+    const saveMessage = jest.fn(
+      async (
+        _ctx: unknown,
+        message: Record<string, unknown>,
+        options?: { insertOnly?: boolean },
+      ) => (options?.insertOnly && stored ? stored : { ...message }),
+    );
+    const deps = {
+      saveMessage,
+      saveConvo: jest.fn().mockResolvedValue(null),
+      stampConvoLastResponse: jest.fn().mockResolvedValue(null),
+      addThreadMetadata: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ThreadSyncDeps;
+    const update = jest.fn().mockResolvedValue({});
+    const openai: ThreadSyncClient = {
+      req: { user: { id: 'user-123' } },
+      beta: { threads: { messages: { update } } },
+    };
+    return { deps, saveMessage, update, openai };
+  }
+
+  it('saves the reply under the id the client shows, without overwriting a stored row', async () => {
+    const { deps, saveMessage, update, openai } = setup();
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-user', isCreatedByUser: true }],
+      apiMessages: [user, runMessage('msg_reply', 'achunk-001')],
+      conversationId: 'convo-123',
+      reply: { messageId: replyId, runId: 'run_1' },
+    });
+
+    expect(result.map((message) => message.messageId)).toEqual(['db-user', replyId]);
+    expect(result[1].parentMessageId).toBe('db-user');
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(saveMessage.mock.calls[0][1]).toMatchObject({
+      messageId: replyId,
+      unfinished: false,
+      isUserSubmitted: false,
+    });
+    expect(saveMessage.mock.calls[0][2]).toEqual({ insertOnly: true });
+    expect(update).toHaveBeenCalledWith('msg_reply', {
+      thread_id: 'thread_1',
+      metadata: { messageId: replyId },
+    });
+    expect(deps.stampConvoLastResponse).toHaveBeenCalledWith('user-123', 'convo-123', replyId);
+  });
+
+  it.each([
+    ['was read with the conversation', true],
+    ['landed after the conversation was read', false],
+  ])('replaces the copy a cancelled run kept that %s', async (_label, read) => {
+    const { deps, saveMessage, openai } = setup(kept);
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [
+        { messageId: 'db-user', isCreatedByUser: true },
+        ...(read ? [{ ...kept, content: text('achunk-001') }] : []),
+      ],
+      apiMessages: [user, runMessage('msg_reply', 'achunk-001 achunk-002')],
+      conversationId: 'convo-123',
+      reply: { messageId: replyId, runId: 'run_1' },
+    });
+
+    expect(result.map((message) => message.messageId)).toEqual(['db-user', replyId]);
+    expect(saveMessage).toHaveBeenCalledTimes(2);
+    expect(saveMessage.mock.calls[0][2]).toEqual({ insertOnly: true });
+    expect(saveMessage.mock.calls[1][2]).toBeUndefined();
+    expect(saveMessage.mock.calls[1][1]).toMatchObject({
+      messageId: replyId,
+      parentMessageId: 'db-user',
+      unfinished: false,
+      content: text('achunk-001 achunk-002'),
+    });
+  });
+
+  it('leaves a row of another conversation under the reply id alone', async () => {
+    const { deps, saveMessage, openai } = setup({ ...kept, conversationId: 'convo-other' });
+
+    await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-user', isCreatedByUser: true }],
+      apiMessages: [user, runMessage('msg_reply', 'achunk-001')],
+      conversationId: 'convo-123',
+      reply: { messageId: replyId, runId: 'run_1' },
+    });
+
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(deps.stampConvoLastResponse).not.toHaveBeenCalled();
+  });
+
+  it('saves every provider message of the run as one reply', async () => {
+    const { deps, saveMessage, openai } = setup();
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-user', isCreatedByUser: true }],
+      apiMessages: [user, runMessage('msg_one', 'one'), runMessage('msg_two', 'two')],
+      conversationId: 'convo-123',
+      reply: { messageId: replyId, runId: 'run_1' },
+    });
+
+    expect(result.map((message) => message.messageId)).toEqual(['db-user', replyId]);
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(saveMessage.mock.calls[0][1].content).toEqual([...text('one'), ...text('two')]);
+    expect(deps.addThreadMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: replyId,
+        messages: [{ id: 'msg_one' }, { id: 'msg_two' }],
+      }),
+    );
+  });
+
+  it('keeps the kept reply of an earlier run as it is stored', async () => {
+    const { deps, saveMessage, openai } = setup();
+    const earlier = { messageId: 'kept-earlier', unfinished: true, content: text('achunk-001') };
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-user', isCreatedByUser: true }, earlier],
+      apiMessages: [
+        user,
+        {
+          ...runMessage('msg_earlier', 'achunk-001', 'run_0'),
+          metadata: { messageId: earlier.messageId },
+        },
+        runMessage('msg_reply', 'second', 'run_1'),
+      ],
+      conversationId: 'convo-123',
+      reply: { messageId: replyId, runId: 'run_1' },
+    });
+
+    expect(result.map((message) => message.messageId)).toEqual([
+      'db-user',
+      'kept-earlier',
+      replyId,
+    ]);
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(saveMessage.mock.calls[0][1].messageId).toBe(replyId);
+  });
+
+  it.each([
+    ['its provider message', ['msg_earlier']],
+    ['its provider messages', ['msg_earlier', 'msg_earlier_2']],
+  ])('finds the kept reply of an earlier run that could not tag %s', async (_label, ids) => {
+    const { deps, saveMessage, openai } = setup();
+    const earlier = {
+      messageId: 'kept-earlier',
+      parentMessageId: 'db-user',
+      unfinished: true,
+      content: text('achunk-001'),
+    };
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-user', isCreatedByUser: true }, earlier],
+      apiMessages: [
+        user,
+        ...ids.map((id) => runMessage(id, 'achunk-001 achunk-002', 'run_0')),
+        runMessage('msg_reply', 'second', 'run_1'),
+      ],
+      conversationId: 'convo-123',
+      reply: { messageId: replyId, runId: 'run_1' },
+    });
+
+    expect(result.map((message) => message.messageId)).toEqual([
+      'db-user',
+      'kept-earlier',
+      replyId,
+    ]);
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(saveMessage.mock.calls[0][1].parentMessageId).toBe('kept-earlier');
+  });
+
+  it('gives the reply a new id when the one it was named by is not a UUID', async () => {
+    const { deps, saveMessage, openai } = setup();
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-user', isCreatedByUser: true }],
+      apiMessages: [user, runMessage('msg_reply', 'achunk-001')],
+      conversationId: 'convo-123',
+      reply: { messageId: '', runId: 'run_1' },
+    });
+
+    expect(result[1].messageId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(saveMessage.mock.calls[0][2]).toBeUndefined();
+  });
+});

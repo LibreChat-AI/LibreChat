@@ -3,6 +3,7 @@ const {
   countTokens,
   isAnnounceableReply,
   syncMessages: syncThreadMessages,
+  saveCutOffReply: saveThreadCutOffReply,
   processMessages: processThreadMessages,
 } = require('@librechat/api');
 const { Constants, ContentTypes, defaultOrderQuery } = require('librechat-data-provider');
@@ -245,6 +246,15 @@ const syncMessages = (params) =>
   syncThreadMessages({ saveMessage, saveConvo, stampConvoLastResponse, addThreadMetadata }, params);
 
 /**
+ * Keeps what a cancelled run streamed; see `saveCutOffReply` in `@librechat/api`.
+ *
+ * @param {Parameters<typeof import('@librechat/api').saveCutOffReply>[1]} params
+ * @return {Promise<void>}
+ */
+const saveCutOffReply = (params) =>
+  saveThreadCutOffReply({ saveMessage, addThreadMetadata }, params);
+
+/**
  * Maps messages to their corresponding steps. Steps with message creation will be paired with their messages,
  * while steps without message creation will be returned as is.
  *
@@ -363,6 +373,7 @@ async function checkMessageGaps({
     apiMessages,
     assistant_id,
     conversationId,
+    reply: { messageId: latestMessageId, runId: run_id },
   });
 
   return Object.values(
@@ -423,6 +434,7 @@ module.exports = {
   recordUsage,
   processMessages,
   saveUserMessage,
+  saveCutOffReply,
   checkMessageGaps,
   addThreadMetadata,
   mapMessagesToSteps,

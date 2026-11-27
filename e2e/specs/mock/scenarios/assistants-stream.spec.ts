@@ -176,6 +176,108 @@ test.describe('assistants stream', () => {
     }
   });
 
+  test('a stop that fails after cancelling keeps the reply that streamed @scenario:assistants-failed-stop-keeps-streamed-reply', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-stop-keeps');
+    const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_STEPS_FAIL:${label}`;
+    const assistant = await createAssistant(page, `E2E stop keeps ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, prompt);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      expect(stopped.status()).toBe(500);
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+
+      /** The stop could not read the run back, so what the chat keeps is the reply as it streamed. */
+      await page.reload();
+      await expect(messagesView(page).getByText(prompt)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible();
+      await expect(messagesView(page).getByText(/achunk-001/)).toHaveCount(1);
+      await expect(messagesView(page).getByText(/achunk-120/)).toHaveCount(0);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a stop that succeeds leaves one reply after a reload @scenario:assistants-stop-saves-one-reply', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-stop-one');
+    const assistant = await createAssistant(page, `E2E stop one ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, `E2E_ASSISTANT_SLOW:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      expect(stopped.status()).toBe(200);
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+
+      /** The run saved what it streamed and the stop saved the provider's copy: one reply. */
+      await page.reload();
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/achunk-001/)).toHaveCount(1);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a reply a failed stop kept stays in place when the next turn is stopped @scenario:assistants-kept-reply-stays-after-next-stop', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('assistant-kept-next');
+    const first = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_STEPS_FAIL:${label}`;
+    const second = `E2E_ASSISTANT_SLOW:second-${label}`;
+    const assistant = await createAssistant(page, `E2E kept next ${label}`);
+    const stop = async () => {
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      return stopped.status();
+    };
+    try {
+      await sendToAssistant(page, assistant.id, first);
+      await expect(messagesView(page).getByText(/achunk-004/)).toBeVisible({ timeout: 20_000 });
+      expect(await stop()).toBe(500);
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      await page.reload();
+      await expect(messagesView(page).getByText(/achunk-004/)).toBeVisible({ timeout: 20_000 });
+
+      const input = page.getByRole('textbox', { name: 'Message input' });
+      await input.fill(second);
+      await input.press('Enter');
+      await expect(messagesView(page).getByText(second)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/achunk-001/)).toHaveCount(2, { timeout: 20_000 });
+      expect(await stop()).toBe(200);
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+        timeout: 20_000,
+      });
+
+      /** Reading the thread back for the second stop finds the first reply already saved. */
+      await page.reload();
+      await expect(messagesView(page).getByText(second)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/achunk-001/)).toHaveCount(2);
+      const transcript = await messagesView(page).innerText();
+      const order = [first, 'achunk-001', second].map((part) => transcript.indexOf(part));
+      expect(order.every((position) => position >= 0)).toBe(true);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      expect(transcript.lastIndexOf('achunk-001')).toBeGreaterThan(transcript.indexOf(second));
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
   test('a failed assistant run shows an error and settles the composer @scenario:assistants-error-shows-error', async ({
     page,
   }) => {
