@@ -144,7 +144,10 @@ test('later visible read wins over a delayed unread response, and stale seen can
     release.resolve();
     expect((await unreadDelivered).ok()).toBe(true);
     /* Opening the chat closed the drawer on the mobile project, which is what it does for a
-       reader too, so the list is opened again to read the row's settled name. */
+       reader too, so the list is opened again to read the row's settled name. Only once that
+       close has ended: the drawer stays painted, close control included, while it slides, and
+       the shared opener would take it for open. Desktop renders no drawer. */
+    await expect(page.locator('#mobile-drawer')).toBeHidden();
     await openSidebar(page);
     await expect(
       row.getByRole('button', { name: `${title} conversation`, exact: true }),
