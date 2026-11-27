@@ -26,6 +26,8 @@ const runSteps = new Map();
 const unreadableSteps = new Set();
 /** Runs that report the tokens they used once they end, so each read of the run can bill them. */
 const billedRuns = new Set();
+/** Threads whose messages cannot be updated, so tagging a finished run's messages fails. */
+const untaggableThreads = new Set();
 /** What an `E2E_ASSISTANT_USAGE` run reports it used once it ends. */
 const RUN_USAGE = { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 };
 const requests = [];
@@ -455,6 +457,13 @@ function sendSlowAssistantStream(
     };
     runs.set(runId, settled);
     runSteps.set(runId, [...earlierSteps, runStep({ ...step, status })]);
+    if (status === 'completed') {
+      sendEvent('thread.message.completed', {
+        ...message,
+        status: 'completed',
+        completed_at: now(),
+      });
+    }
     sendEvent(status === 'cancelled' ? 'thread.run.cancelled' : 'thread.run.completed', settled);
     res.write('data: [DONE]\n\n');
     res.end();
@@ -522,6 +531,7 @@ const server = http.createServer(async (req, res) => {
     runSteps.clear();
     unreadableSteps.clear();
     billedRuns.clear();
+    untaggableThreads.clear();
     requests.length = 0;
     sendJson(res, 200, { ok: true });
     return;
@@ -654,6 +664,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (req.method === 'POST') {
+        /** A 4xx, which the OpenAI SDK does not retry, so tagging the run fails at once. */
+        if (untaggableThreads.has(threadId)) {
+          sendError(res, 400, 'E2E message metadata unavailable');
+          return;
+        }
         Object.assign(message, body);
         sendJson(res, 200, message);
         return;
@@ -678,6 +693,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const prompt = latestUserText(thread);
+      /** `E2E_ASSISTANT_TAG_FAIL` lets the run finish but refuses the metadata the app writes on
+       *  its messages afterwards, which fails the controller before it bills the run. */
+      if (prompt.includes('E2E_ASSISTANT_TAG_FAIL')) {
+        untaggableThreads.add(threadId);
+      }
       /** The app names a run to the browser (its `sync` frame) only once the run exists, so a
        *  stop sent while this holds reaches the app before the browser knows the conversation.
        *  The run is then refused rather than started, so it writes nothing after the test. */

@@ -133,13 +133,13 @@ const chatV1 = async (req, res) => {
 
   const cache = getLogStores(CacheKeys.ABORT_KEYS);
   const cacheKey = `${req.user.id}:${conversationId}`;
-  const claim = createRecoveryClaim(cache);
   /** Registered with the account cleanup barrier by the route, so deletion can stop and drain it. */
   const assistantRun = getAssistantRun(req);
 
   /** @type {Run | undefined} - The completed run, undefined if incomplete */
   let completedRun;
   let contentRejected = false;
+  const claim = createRecoveryClaim({ cache, completedRun: () => completedRun });
   const balanceReservations = createBalanceReservations();
 
   const handleError = assistantRun.guardErrors(res, async (error) => {
@@ -190,7 +190,7 @@ const chatV1 = async (req, res) => {
     await sleep(2000);
 
     try {
-      if (!(await claim({ key: cacheKey, thread_id, run_id, settled: Boolean(completedRun) }))) {
+      if (!(await claim({ key: cacheKey, thread_id, run_id, error }))) {
         logger.debug('[/assistants/chat/] Run already stopped or recovered');
         return res.end();
       }

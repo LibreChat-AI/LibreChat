@@ -35,7 +35,10 @@ const { getConvo } = require('~/models');
  * @returns {(error: Error) => Promise<void>} The error handler function
  */
 const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/chat/' }) => {
-  const claim = createRecoveryClaim(getLogStores(CacheKeys.ABORT_KEYS));
+  const claim = createRecoveryClaim({
+    cache: getLogStores(CacheKeys.ABORT_KEYS),
+    completedRun: () => getContext().completedRun,
+  });
 
   /**
    * Handles errors that occur during the chat process
@@ -103,8 +106,7 @@ const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/ch
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     try {
-      const settled = Boolean(getContext().completedRun);
-      if (!(await claim({ key: cacheKey, thread_id, run_id, settled }))) {
+      if (!(await claim({ key: cacheKey, thread_id, run_id, error }))) {
         logger.debug(`[${originPath}] Run already stopped or recovered`);
         return res.end();
       }

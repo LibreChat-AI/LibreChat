@@ -1,17 +1,26 @@
 import type { AssistantRunIds } from './run';
 
+/** The error the Assistants controllers raise when the response closes before the run settled. */
+export const REQUEST_CLOSED = 'Request closed';
+
 /** The slice of the abort-key cache a recovery claim reads and clears. */
 export interface AbortKeyCache {
   get: (key: string) => Promise<unknown>;
   delete: (key: string) => Promise<unknown>;
 }
 
+export interface RecoveryClaimDeps {
+  cache: AbortKeyCache;
+  /** The run the controller received once it ended; nothing while it has not received it. */
+  completedRun: () => unknown;
+}
+
 /** The run a request would recover, and the abort key of its conversation. */
 export interface RecoveryTarget extends AssistantRunIds {
   /** Names the conversation's current run as `thread_id:run_id`, which the stop route reads. */
   key: string;
-  /** The run ended on its own while the request waited, so its controller bills and saves it. */
-  settled?: boolean;
+  /** What the request's error handler got: the controller's failure, or {@link REQUEST_CLOSED}. */
+  error: unknown;
 }
 
 /**
@@ -27,20 +36,21 @@ export interface RecoveryTarget extends AssistantRunIds {
  * provider accepted on the thread in between would lose its entry, which needs this run to have
  * ended already and another client to start one within that round trip.
  *
- * A request's failure and its response closing can both ask; only the first ask can get the run.
+ * A request's failure and its response closing can both ask; only the first ask can get the run. A
+ * close leaves a run whose end the controller received to the controller without using up that
+ * ask: the controller bills and saves the run, and if that fails, its failure asks.
  */
-export function createRecoveryClaim(
-  cache: AbortKeyCache,
-): (target: RecoveryTarget) => Promise<boolean> {
+export function createRecoveryClaim({
+  cache,
+  completedRun,
+}: RecoveryClaimDeps): (target: RecoveryTarget) => Promise<boolean> {
   let asked = false;
-  return async ({ key, thread_id, run_id, settled = false }) => {
-    if (asked) {
+  return async ({ key, thread_id, run_id, error }) => {
+    const closed = error instanceof Error && error.message === REQUEST_CLOSED;
+    if (asked || (closed && Boolean(completedRun()))) {
       return false;
     }
     asked = true;
-    if (settled) {
-      return false;
-    }
     const entry = await cache.get(key);
     if (entry == null) {
       return true;

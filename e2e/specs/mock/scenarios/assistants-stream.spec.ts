@@ -734,4 +734,26 @@ test.describe('assistants stream', () => {
       await deleteAssistant(page, assistant.id);
     }
   });
+
+  test('a run that completed but could not be tagged at the provider is still billed once @scenario:assistants-completed-run-tag-failure-bills-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-tag-fail');
+    const assistant = await createAssistant(page, `E2E tag fail ${label}`);
+    try {
+      /** The run completes, then tagging its message at the provider fails before the controller
+       *  bills it, so the request recovers the run itself. */
+      const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_BRIEF:E2E_ASSISTANT_USAGE:E2E_ASSISTANT_TAG_FAIL:${label}`;
+      await sendToAssistant(page, assistant.id, prompt);
+      await expect(messagesView(page).getByText(/achunk-012/)).toBeVisible({ timeout: 20_000 });
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      const conversationId = new URL(page.url()).pathname.split('/').pop() ?? '';
+
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect(await billedFor(conversationId)).toBe(2);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
 });
