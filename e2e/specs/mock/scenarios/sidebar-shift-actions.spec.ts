@@ -1,9 +1,10 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { SeedConvo } from '../db';
 import { clearUserConversations, seedConversations } from '../db';
 import { getE2EUser } from '../../../setup/user';
+import { openSidebar } from './sidebar';
 
 /**
  * Holding shift swaps the open conversation's menu for archive and delete. Only that row
@@ -13,6 +14,36 @@ import { getE2EUser } from '../../../setup/user';
 
 const CHATS = 12;
 const userEmail = getE2EUser().email;
+
+/**
+ * Brings the conversation list on screen. A narrow viewport keeps the closed drawer mounted but
+ * unpainted, so nothing in it answers a role query until the drawer opens; desktop shows the list
+ * already, and the shared opener presses nothing there. The drawer's close control is painted as
+ * its slide starts, so the list is also waited into the viewport.
+ */
+async function showHistory(page: Page): Promise<Locator> {
+  await openSidebar(page);
+  const history = page.getByRole('region', { name: 'Chat History' });
+  await expect(history).toBeVisible();
+  await expect
+    .poll(async () => (await history.boundingBox())?.x ?? Number.NEGATIVE_INFINITY)
+    .toBeGreaterThanOrEqual(0);
+  return history;
+}
+
+/**
+ * Opens a conversation from its row and brings the list back. On a narrow viewport choosing a
+ * chat closes the drawer, and the drawer stays painted, close control included, for the whole of
+ * that slide: opened again before the slide ends, the shared opener would find it open, and the
+ * rows would be read from a drawer that goes on closing. So it is waited shut first. Desktop
+ * renders no drawer and keeps the list open.
+ */
+async function openFromRow(page: Page, row: Locator, conversationId: string) {
+  await row.click();
+  await expect(page).toHaveURL(new RegExp(`/c/${conversationId}`));
+  await expect(page.locator('#mobile-drawer')).toBeHidden();
+  await showHistory(page);
+}
 
 /** Listeners of one type on `window`, read from the browser rather than from the app. */
 async function windowListeners(page: Page, type: string): Promise<number> {
@@ -48,7 +79,7 @@ test.describe('shift over the sidebar', () => {
   test('holding shift offers archive and delete on the open conversation alone @scenario:shift-offers-quick-actions-on-the-open-conversation', async ({
     page,
   }) => {
-    const history = page.getByRole('region', { name: 'Chat History' });
+    const history = await showHistory(page);
     const rows = history.getByTestId('convo-item');
     await expect(rows).toHaveCount(CHATS);
     const open = rows.filter({ hasText: chats[0].title });
@@ -66,13 +97,12 @@ test.describe('shift over the sidebar', () => {
   test('opening another conversation moves the quick actions to its row @scenario:shift-quick-actions-follow-the-open-conversation', async ({
     page,
   }) => {
-    const history = page.getByRole('region', { name: 'Chat History' });
+    const history = await showHistory(page);
     const rows = history.getByTestId('convo-item');
     await expect(rows).toHaveCount(CHATS);
     const next = rows.filter({ hasText: chats[3].title });
 
-    await next.click();
-    await expect(page).toHaveURL(new RegExp(`/c/${chats[3].conversationId}`));
+    await openFromRow(page, next, chats[3].conversationId);
     await page.keyboard.down('Shift');
 
     await expect(next.getByRole('button', { name: 'Archive' })).toBeVisible();
@@ -83,15 +113,14 @@ test.describe('shift over the sidebar', () => {
   test('opening another conversation with shift still held offers them there at once @scenario:shift-held-across-a-conversation-switch', async ({
     page,
   }) => {
-    const history = page.getByRole('region', { name: 'Chat History' });
+    const history = await showHistory(page);
     const rows = history.getByTestId('convo-item');
     await expect(rows).toHaveCount(CHATS);
     const next = rows.filter({ hasText: chats[5].title });
 
     /** The key goes down once and is not pressed again: the next row never saw it go down. */
     await page.keyboard.down('Shift');
-    await next.click();
-    await expect(page).toHaveURL(new RegExp(`/c/${chats[5].conversationId}`));
+    await openFromRow(page, next, chats[5].conversationId);
 
     await expect(next.getByRole('button', { name: 'Archive' })).toBeVisible();
     await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(1);
@@ -104,7 +133,7 @@ test.describe('shift over the sidebar', () => {
     page,
   }) => {
     await page.goto('/c/new');
-    const history = page.getByRole('region', { name: 'Chat History' });
+    const history = await showHistory(page);
     const rows = history.getByTestId('convo-item');
     await expect(rows).toHaveCount(CHATS);
     const next = rows.filter({ hasText: chats[2].title });
@@ -112,8 +141,7 @@ test.describe('shift over the sidebar', () => {
     /** No row answers to the key here, so none reads it: it has to be tracked all the same. */
     await page.keyboard.down('Shift');
     await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(0);
-    await next.click();
-    await expect(page).toHaveURL(new RegExp(`/c/${chats[2].conversationId}`));
+    await openFromRow(page, next, chats[2].conversationId);
 
     await expect(next.getByRole('button', { name: 'Archive' })).toBeVisible();
     await page.keyboard.up('Shift');
@@ -123,7 +151,7 @@ test.describe('shift over the sidebar', () => {
   test('the list listens for the key once, however many conversations it holds @scenario:sidebar-listens-for-shift-once', async ({
     page,
   }) => {
-    const history = page.getByRole('region', { name: 'Chat History' });
+    const history = await showHistory(page);
     await expect(history.getByTestId('convo-item')).toHaveCount(CHATS);
 
     expect(await windowListeners(page, 'keyup')).toBe(1);
