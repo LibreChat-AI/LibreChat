@@ -13,7 +13,7 @@ const lines = (count: number, word = 'Analysis') =>
 
 const text = (value: string): Part => ({ type: 'text', text: value });
 
-const call = (id: string, name: string, args: Part, output: string): Part => ({
+const call = (id: string, name: string, args: Part, output: string, extra: Part = {}): Part => ({
   type: 'tool_call',
   tool_call: {
     id,
@@ -23,6 +23,7 @@ const call = (id: string, name: string, args: Part, output: string): Part => ({
     progress: 1,
     type: 'tool_call',
     runStepStatus: 'completed',
+    ...extra,
   },
 });
 
@@ -454,9 +455,6 @@ test('tool call controls stay clickable beneath the message navigation rail acro
     description: 'Drafts release notes.',
     body: 'Group merged PRs by type.',
   };
-  await page.route(/\/api\/skills(?:\?.*)?$/, (route) =>
-    route.fulfill({ json: { skills: [skill], has_more: false, after: null } }),
-  );
   await page.route(`**/api/skills/${skill._id}`, (route) => route.fulfill({ json: skill }));
   await page.goto('/');
   await page.evaluate(() => localStorage.setItem('autoExpandTools', 'true'));
@@ -476,6 +474,7 @@ test('tool call controls stay clickable beneath the message navigation rail acro
         'skill',
         { skillName: 'release-notes' },
         'Skill "release-notes" loaded. Follow the instructions below.',
+        { skillId: skill._id },
       ),
       text('After the skill.'),
       call(
