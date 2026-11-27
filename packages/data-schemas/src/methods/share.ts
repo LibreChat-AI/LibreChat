@@ -7,16 +7,18 @@ import {
   FileSources,
   isConfiguredSender,
 } from 'librechat-data-provider';
-import type { FilterQuery, Model } from 'mongoose';
+import type { AnyKeys, FilterQuery, Model } from 'mongoose';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type * as t from '~/types';
 import {
   sanitizeUIResourceContent,
   stripMessageUIResourceMarkers,
 } from '~/utils/stripUIResourceMarkers';
+import { CLAIM_INDEX, CLAIM_INDEX_OPTIONS } from '~/schema/share';
 import { activeExpirationFilter } from '~/utils/retention';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { MEILI_SEARCH_LIMIT } from '~/common/search';
+import { buildIndexWithRetry } from '~/utils/retry';
 import { CLIENT_MESSAGE_SELECT } from './message';
 import logger from '~/config/winston';
 
@@ -31,39 +33,84 @@ class ShareServiceError extends Error {
 
 const EXPECTED_SHARE_REJECTION_CODES = new Set(['TARGET_MESSAGE_NOT_FOUND', 'NO_MESSAGES']);
 
-type ShareOrder = Pick<t.ISharedLink, '_id' | 'createdAt'>;
+type ShareKey = { conversationId: string; user: string; targetMessageId?: string };
 
-const isEarlierShare = (candidate: ShareOrder, subject: ShareOrder): boolean => {
-  const candidateTime = candidate.createdAt?.getTime() ?? 0;
-  const subjectTime = subject.createdAt?.getTime() ?? 0;
-  if (candidateTime !== subjectTime) {
-    return candidateTime < subjectTime;
-  }
-  return String(candidate._id) < String(subject._id);
+/**
+ * The active links that hold a create's key: every link in the conversation for a whole-chat
+ * key, as the existence check reads it, or the links of the same message.
+ */
+const keyFilter = (key: ShareKey): FilterQuery<t.ISharedLink> => ({
+  conversationId: key.conversationId,
+  user: key.user,
+  ...activeExpirationFilter<t.ISharedLink>(),
+  ...(key.targetMessageId && { targetMessageId: key.targetMessageId }),
+});
+
+/** JSON keeps ids that contain a separator from naming another key. */
+const claimOf = ({ conversationId, targetMessageId }: ShareKey): string =>
+  JSON.stringify([conversationId, targetMessageId ?? null]);
+
+/** How long a create waits for the claim index before it fails instead of holding the request. */
+const CLAIM_INDEX_WAIT_MS = 2_000;
+/** Listing the indexes of a collection that does not exist yet. */
+const NAMESPACE_NOT_FOUND = 26;
+
+/** The claim index is the only unique one a new link can hit; some engines omit `keyPattern`. */
+const isClaimCollision = (error: unknown): boolean => {
+  const failure = error as { code?: unknown; keyPattern?: Record<string, unknown> } | null;
+  return failure?.code === 11000 && (failure.keyPattern == null || 'claim' in failure.keyPattern);
 };
 
 /**
- * `createSharedLink` checks for an existing share and inserts in two round trips, so two
- * concurrent creates can both clear the check. Re-reading after the insert closes that:
- * every racer that sees an earlier rival retracts its own document, and since they all
- * evaluate the same total order (createdAt, then `_id`), exactly one survives.
+ * `createSharedLink` checks for an existing share and inserts in separate round trips, so two
+ * concurrent creates can both clear the check. Each create inserts its link holding a claim on
+ * its key, which the claim index admits once, so a second create for the key fails its insert
+ * while the first decides. The holder then re-reads and retracts when another active link holds
+ * the key: one published since its check or, for a whole-chat key, a message link of the chat.
+ * Retracting for any rival can never keep two links, and with one holder per key it cannot leave
+ * none. Ordering by client-stamped `createdAt` and `_id` instead could keep two, since an
+ * earlier-stamped insert can land after a later create's re-read.
  */
-async function findOlderActiveShare(
+async function hasActiveRival(
   SharedLink: Model<t.ISharedLink>,
-  created: ShareOrder,
-  key: { conversationId: string; user: string; targetMessageId?: string },
+  id: Types.ObjectId,
+  key: ShareKey,
 ): Promise<boolean> {
-  const rivals = (await SharedLink.find({
-    conversationId: key.conversationId,
-    user: key.user,
-    _id: { $ne: created._id },
-    ...activeExpirationFilter<t.ISharedLink>(),
-    ...(key.targetMessageId && { targetMessageId: key.targetMessageId }),
-  })
-    .select('_id createdAt')
-    .lean()) as ShareOrder[];
+  const rival = await SharedLink.exists({ ...keyFilter(key), _id: { $ne: id } });
+  return rival != null;
+}
 
-  return rivals.some((rival) => isEarlierShare(rival, created));
+/**
+ * Inserts a create's link holding its key's claim. A claim on a link that still holds the key,
+ * as an active link or one whose create is deciding, refuses the insert as "already exists". A
+ * claim left on a link that no longer holds it (its create died or could not release it, and the
+ * link then expired or moved to another message) is cleared and the insert tried once more.
+ */
+async function insertClaimed(
+  SharedLink: Model<t.ISharedLink>,
+  link: AnyKeys<t.ISharedLink>,
+  key: ShareKey,
+): Promise<Types.ObjectId> {
+  const claim = claimOf(key);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const created = await SharedLink.create({ ...link, claim });
+      return created._id;
+    } catch (error) {
+      if (!isClaimCollision(error)) {
+        throw error;
+      }
+    }
+    const stale = await SharedLink.updateOne(
+      { user: key.user, claim, $nor: [keyFilter(key)] },
+      { $unset: { claim: 1 } },
+      { timestamps: false },
+    );
+    if (stale.modifiedCount === 0) {
+      break;
+    }
+  }
+  throw new ShareServiceError('Share already exists', 'SHARE_EXISTS');
 }
 
 export interface SharedLinkContentSnapshot {
@@ -1009,6 +1056,72 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     conversationId: string,
   ) => Promise<t.DeleteAllSharesResult & { deletedIds: string[] }>;
 } {
+  let claimIndex: Promise<void> | undefined;
+
+  /**
+   * Whether the collection already holds the claim index. MongoDB checks the `createIndex`
+   * privilege even for an index that exists, so an index provisioned apart from the
+   * application's credentials is found here rather than rebuilt. A collection that does not
+   * exist yet has none.
+   */
+  async function hasClaimIndex(SharedLink: Model<t.ISharedLink>): Promise<boolean> {
+    const indexes = (await SharedLink.listIndexes().catch((error: unknown) => {
+      if ((error as { code?: unknown } | null)?.code === NAMESPACE_NOT_FOUND) {
+        return [];
+      }
+      throw error;
+    })) as {
+      key?: Record<string, unknown>;
+      unique?: boolean;
+      partialFilterExpression?: Record<string, unknown>;
+    }[];
+    const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+    return indexes.some(
+      (index) =>
+        index.unique === true &&
+        same(index.key, CLAIM_INDEX) &&
+        same(index.partialFilterExpression, CLAIM_INDEX_OPTIONS.partialFilterExpression),
+    );
+  }
+
+  /**
+   * The claim index is what keeps a second create for a key from deciding beside the first, and
+   * no ordering of the re-reads alone keeps exactly one link, so every create requires it.
+   * `MONGO_AUTO_INDEX=false` skips schema indexes, so it is built before the first create when
+   * missing. A failed build is tried again by the next create; one still running past the wait
+   * fails the create instead of holding the request, as the resource lock's index does.
+   */
+  async function requireClaimIndex(SharedLink: Model<t.ISharedLink>): Promise<void> {
+    claimIndex ??= (async () => {
+      if (await hasClaimIndex(SharedLink)) {
+        return;
+      }
+      await buildIndexWithRetry(
+        /** Only this index: building every share index would override `MONGO_AUTO_INDEX=false`. */
+        // eslint-disable-next-line no-restricted-syntax -- Index DDL; tenant isolation scopes reads and writes, not index builds.
+        () => SharedLink.collection.createIndex(CLAIM_INDEX, CLAIM_INDEX_OPTIONS),
+        'createIndex(sharedlinks.user_1_claim_1)',
+      );
+    })().catch((error: unknown) => {
+      claimIndex = undefined;
+      throw error;
+    });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        claimIndex,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`Claim index not ready within ${CLAIM_INDEX_WAIT_MS}ms`)),
+            CLAIM_INDEX_WAIT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function accessRecord(share: t.ISharedLink | null): SharedLinkAccessRecord | null {
     if (!share?._id) {
       return null;
@@ -1505,28 +1618,29 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         ? await buildFileSnapshots(mongoose, messagesToShare, user)
         : [];
 
+      const key = { conversationId, user, targetMessageId };
+      await requireClaimIndex(SharedLink);
       const shareId = nanoid();
-      const created = await SharedLink.create({
-        shareId,
-        conversationId,
-        messages: conversationMessages,
-        title,
-        spec: conversation.spec || undefined,
-        user,
-        snapshotFiles,
-        ...(targetMessageId && { targetMessageId }),
-        ...(expiredAt && { expiredAt }),
-        ...(snapshotFiles && { fileSnapshots }),
-      });
+      const id = await insertClaimed(
+        SharedLink,
+        {
+          shareId,
+          conversationId,
+          messages: conversationMessages,
+          title,
+          spec: conversation.spec || undefined,
+          user,
+          snapshotFiles,
+          ...(targetMessageId && { targetMessageId }),
+          ...(expiredAt && { expiredAt }),
+          ...(snapshotFiles && { fileSnapshots }),
+        },
+        key,
+      );
 
-      const supersededBy = await findOlderActiveShare(SharedLink, created, {
-        conversationId,
-        user,
-        targetMessageId,
-      });
-      if (supersededBy) {
-        await SharedLink.deleteOne({ _id: created._id });
-        logger.warn('[createSharedLink] Concurrent create lost to an earlier share', {
+      if (await hasActiveRival(SharedLink, id, key)) {
+        await SharedLink.deleteOne({ _id: id });
+        logger.warn('[createSharedLink] Concurrent create lost to an existing share', {
           user,
           conversationId,
           targetMessageId,
@@ -1534,7 +1648,20 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         throw new ShareServiceError('Share already exists', 'SHARE_EXISTS');
       }
 
-      return { _id: created._id.toString(), shareId, conversationId, targetMessageId };
+      /** The link stays either way: a claim left on it only blocks while it holds the key. */
+      await SharedLink.updateOne(
+        { _id: id },
+        { $unset: { claim: 1 } },
+        { timestamps: false },
+      ).catch((error: unknown) =>
+        logger.warn('[createSharedLink] Claim release failed', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+          user,
+          conversationId,
+        }),
+      );
+
+      return { _id: id.toString(), shareId, conversationId, targetMessageId };
     } catch (error) {
       if (preflightFailed) {
         throw error;

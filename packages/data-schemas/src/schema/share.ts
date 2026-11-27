@@ -15,6 +15,7 @@ export interface ISharedLink extends Document {
   tenantId?: string;
   snapshotFiles?: boolean;
   fileSnapshots?: SharedFileSnapshot[];
+  claim?: string;
 }
 
 /**
@@ -82,6 +83,11 @@ const shareSchema: Schema<ISharedLink> = new Schema(
       type: [fileSnapshotSchema],
       default: undefined,
     },
+    /** The key a create holds until it decides whether its link stays; see `createSharedLink`. */
+    claim: {
+      type: String,
+      select: false,
+    },
   },
   { timestamps: true },
 );
@@ -93,5 +99,15 @@ shareSchema.index({ conversationId: 1, user: 1, targetMessageId: 1, tenantId: 1 
  * lookup could not use it and would scan every link in the deployment. */
 shareSchema.index({ user: 1, conversationId: 1 });
 shareSchema.index({ updatedAt: -1 });
+/**
+ * One link mid-create per key: a second create for it fails its insert instead of racing. Only
+ * links being created carry a claim. `createSharedLink` builds it too, for `MONGO_AUTO_INDEX=false`.
+ */
+export const CLAIM_INDEX: Record<string, 1> = { user: 1, claim: 1 };
+export const CLAIM_INDEX_OPTIONS: {
+  unique: boolean;
+  partialFilterExpression: Record<string, unknown>;
+} = { unique: true, partialFilterExpression: { claim: { $exists: true } } };
+shareSchema.index(CLAIM_INDEX, CLAIM_INDEX_OPTIONS);
 
 export default shareSchema;
