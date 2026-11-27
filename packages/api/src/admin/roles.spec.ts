@@ -1767,6 +1767,40 @@ describe('createAdminRolesHandlers', () => {
       );
     });
 
+    it('reports a deletion that could not move every account assigned meanwhile, coded in the trail', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = deleteDeps({
+        recordAuditEntry,
+        getRoleByName: jest.fn().mockResolvedValueOnce(mockRole()).mockResolvedValue(null),
+        deleteRoleByName: jest
+          .fn()
+          .mockRejectedValue(new RoleDeletionError('late_reassignment_failed', ['uid-1', 'uid-9'])),
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({
+        params: { name: 'editor' },
+        user: { _id: new Types.ObjectId(), role: 'admin' },
+      });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(200);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'role.member_removed',
+          metadata: expect.objectContaining({ userIds: 'uid-1,uid-9', count: 2 }),
+        }),
+      );
+      expect(recordAuditEntry).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          action: 'role.deleted',
+          outcome: 'success',
+          metadata: { code: 'ROLE_MEMBERS_LEFT', grantsRemoved: 0, membersReassigned: 2 },
+        }),
+      );
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('may still hold its name'));
+    });
+
     it('records only role.deleted when the deleted role had no grants', async () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({ recordAuditEntry });

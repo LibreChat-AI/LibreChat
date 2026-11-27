@@ -26,8 +26,14 @@ function isSystemRoleName(name: string): boolean {
  * - `deleted_elsewhere`: the targeted role vanished while (or after) its members were moved.
  * - `delete_failed`: every member was moved, then the role delete rejected; it may still have
  *   committed (its acknowledgement lost), which only a fresh read can tell.
+ * - `late_reassignment_failed`: the role was deleted, then not every account assigned to it
+ *   while it was deleted could be moved; such an account may still hold the role's name.
  */
-export type RoleDeletionFailure = 'reassignment_failed' | 'deleted_elsewhere' | 'delete_failed';
+export type RoleDeletionFailure =
+  | 'reassignment_failed'
+  | 'deleted_elsewhere'
+  | 'delete_failed'
+  | 'late_reassignment_failed';
 
 /** A role deletion that failed part way. Carries the accounts it already moved to USER, which
  * stay moved and must still be audited, whatever happened to the role. */
@@ -792,7 +798,7 @@ export function createRoleMethods(
    * role back after its write, and undoes itself (`addRoleMember` and `writeIdpRoleChange` in
    * `@librechat/api`), so no account keeps a name its partition no longer has. Holders of a role
    * recreated under the name since are its members and stay. The deletion already committed, so
-   * a failure here is logged, with the accounts it did move still reported, rather than thrown.
+   * a failure here throws `late_reassignment_failed` with every account moved so far.
    */
   async function withLateMembers(
     roleName: string,
@@ -801,20 +807,19 @@ export function createRoleMethods(
   ): Promise<string[]> {
     const Role = mongoose.models.Role;
     const nameIsFree = async () => (await Role.exists(partitioned)) == null;
-    let late: string[];
     try {
-      late = await reassignMembersToUser(roleName, nameIsFree);
+      return [...new Set([...moved, ...(await reassignMembersToUser(roleName, nameIsFree))])];
     } catch (error) {
-      late = error instanceof RoleDeletionError ? error.reassignedUserIds : [];
-      /** `deleted_elsewhere` here means a role of the name exists again: nothing failed. */
-      if (!(error instanceof RoleDeletionError && error.reason === 'deleted_elsewhere')) {
-        logger.error(
-          `[deleteRoleByName] accounts assigned "${roleName}" during its deletion were not all moved to USER:`,
-          error,
-        );
+      if (!(error instanceof RoleDeletionError)) {
+        throw error;
       }
+      const all = [...new Set([...moved, ...error.reassignedUserIds])];
+      /** `deleted_elsewhere` here means a role of the name exists again: nothing failed. */
+      if (error.reason === 'deleted_elsewhere') {
+        return all;
+      }
+      throw new RoleDeletionError('late_reassignment_failed', all, error.cause);
     }
-    return [...new Set([...moved, ...late])];
   }
 
   /**

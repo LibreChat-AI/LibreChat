@@ -13,7 +13,6 @@ import { _resetStrictCache } from '../models/plugins/tenantIsolation';
 import { createRoleMethods, RoleDeletionError } from './role';
 import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '../models';
-import logger from '~/config/winston';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -1414,8 +1413,7 @@ describe('deleteRoleByName', () => {
     expect(await Role.exists({ name: 'editor' })).toBeTruthy();
   });
 
-  it('resolves to the committed deletion, and logs, when moving a late member fails', async () => {
-    (logger.error as jest.Mock).mockClear();
+  it('throws late_reassignment_failed after the delete commits when moving a late member fails', async () => {
     await createRoleByName({ name: 'editor' });
     const eve = await createEve();
     const deleteSpy = aroundRoleDelete(async (remove) => {
@@ -1434,21 +1432,22 @@ describe('deleteRoleByName', () => {
       return realUpdateMany(filter, update, options);
     }) as unknown as typeof User.updateMany);
 
-    let deleted: Awaited<ReturnType<typeof deleteRoleByName>>;
+    let caught: unknown;
     try {
-      deleted = await deleteRoleByName('editor');
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
     } finally {
       deleteSpy.mockRestore();
       updateSpy.mockRestore();
     }
 
-    expect(deleted!.role.name).toBe('editor');
-    expect(deleted!.reassignedUserIds).toEqual([]);
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('late_reassignment_failed');
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([]);
+    expect(((caught as RoleDeletionError).cause as Error).message).toBe('database unreachable');
     expect(await Role.exists({ name: 'editor' })).toBeNull();
-    expect(logger.error).toHaveBeenCalledWith(
-      expect.stringContaining('were not all moved to USER'),
-      expect.any(RoleDeletionError),
-    );
+    expect((await User.findById(eve._id).lean())!.role).toBe('editor');
   });
 
   it('keeps the reassignment tag as evidence when the write and its recovery read both fail', async () => {

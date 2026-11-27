@@ -1095,6 +1095,9 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       };
 
       let deleted: RoleDeletion | null;
+      /** The role is gone, but an account assigned to it while it was deleted may still hold its
+       * name: recorded with the deletion so the trail shows the cleanup was incomplete. */
+      let membersLeft = false;
       try {
         deleted = await deleteRoleByName(name, {
           id: existing._id != null ? String(existing._id) : undefined,
@@ -1126,7 +1129,13 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
           logger.error('[adminRoles] dependents not restored, role state unverifiable:', name);
           return res.status(500).json({ error: 'Failed to delete role' });
         }
-        if (error instanceof RoleDeletionError && error.reason !== 'delete_failed') {
+        membersLeft =
+          error instanceof RoleDeletionError && error.reason === 'late_reassignment_failed';
+        if (
+          error instanceof RoleDeletionError &&
+          error.reason !== 'delete_failed' &&
+          !membersLeft
+        ) {
           /** Another request deleted the role; the members this one moved first are audited. */
           await auditRemovedGrants();
           await auditReassignedMembers(movedBeforeFailure);
@@ -1134,8 +1143,15 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
           return res.status(404).json({ error: 'Role not found' });
         }
         /** Confirmed absent after the delete itself rejected: it committed with its
-         * acknowledgement lost, so it is audited and reported as one, with the members it moved. */
+         * acknowledgement lost, or committed and then could not move every account assigned to
+         * it meanwhile, which a retry cannot reach. Either way it is audited and reported as a
+         * deletion, with the members it moved. */
         deleted = { role: existing, reassignedUserIds: movedBeforeFailure };
+        if (membersLeft) {
+          logger.error(
+            `[adminRoles] role "${name}" deleted, but accounts assigned to it while it was deleted may still hold its name`,
+          );
+        }
       }
       await invalidateAccess();
       if (!deleted) {
@@ -1147,7 +1163,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       await auditRemovedGrants();
       const audited = deleted.reassignedUserIds;
       await auditReassignedMembers(audited);
-      await recordOutcome('success', undefined, {
+      await recordOutcome('success', membersLeft ? 'ROLE_MEMBERS_LEFT' : undefined, {
         grantsRemoved: removedGrants.length,
         membersReassigned: audited.length,
       });
