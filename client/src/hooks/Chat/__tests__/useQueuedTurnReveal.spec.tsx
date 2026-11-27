@@ -490,10 +490,10 @@ describe('useQueuedTurnReveal', () => {
   );
 
   it.each([
-    ['known', { effectivePredecessorCreatedAt: 42 }],
-    ['unconfirmed', { expectedPredecessorCreatedAt: 41 }],
+    ['a known', { effectivePredecessorCreatedAt: 42 }],
+    ['an unconfirmed', { expectedPredecessorCreatedAt: 41 }],
   ] as const)(
-    'remembers a sibling admission with a %s boundary after its receipt disappears',
+    'remembers a sibling admission with %s boundary after its receipt disappears',
     (_, boundary) => {
       const { result, current, queryClient, setReceipts } = setup();
       act(() => {
