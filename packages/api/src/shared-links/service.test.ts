@@ -614,10 +614,13 @@ describe('grants written while their link is deleted', () => {
 
   /** The rows that named the links are gone by then, so only the owner's grant can find them. */
   test('a retried erasure removes what its window left when the sweep after the delete failed', async () => {
-    const link = await createLegacyLink(true);
+    const links = [await createLegacyLink(true), await createLegacyLink(true)];
+    const ids = links.map((link) => link._id);
     const deleteLinks = SharedLink.collection.deleteMany.bind(SharedLink.collection);
     jest.spyOn(SharedLink.collection, 'deleteMany').mockImplementationOnce(async (...args) => {
-      await migrate(link, async () => undefined);
+      for (const link of links) {
+        await migrate(link, async () => undefined);
+      }
       return deleteLinks(...args);
     });
     const sweep = AclEntry.deleteMany.bind(AclEntry);
@@ -629,11 +632,11 @@ describe('grants written while their link is deleted', () => {
     await expect(deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true })).rejects.toThrow(
       'acl down',
     );
-    expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(2);
+    expect(await AclEntry.countDocuments({ resourceId: { $in: ids } })).toBe(4);
 
     await deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true });
 
-    expect(await SharedLink.countDocuments({ _id: link._id })).toBe(0);
-    expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+    expect(await SharedLink.countDocuments({ _id: { $in: ids } })).toBe(0);
+    expect(await AclEntry.countDocuments({ resourceId: { $in: ids } })).toBe(0);
   });
 });

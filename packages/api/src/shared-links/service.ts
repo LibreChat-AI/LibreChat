@@ -342,15 +342,16 @@ export async function deleteAllSharedLinksWithCleanup(
      * the entries are swept again. Such grants include the owner's, which outlive a failed sweep
      * here, and a retry finds the deleted links through them since their rows are gone.
      */
-    if (deletedIds.length > 0) {
-      await cleanupBulkSharedLinkPermissions(deletedIds);
-    }
-    const owned = await getMethods().getSoleOwnedResourceIds(
-      new mongoose.Types.ObjectId(user),
-      ResourceType.SHARED_LINK,
-    );
-    for (const id of owned) {
-      await withdrawIfDeleted(id.toString());
+    const owned = (
+      await getMethods().getSoleOwnedResourceIds(
+        new mongoose.Types.ObjectId(user),
+        ResourceType.SHARED_LINK,
+      )
+    ).map((id) => id.toString());
+    const live = new Set(await getMethods().findExistingSharedLinkIds(owned));
+    const gone = new Set([...deletedIds, ...owned.filter((id) => !live.has(id))]);
+    if (gone.size > 0) {
+      await cleanupBulkSharedLinkPermissions([...gone]);
     }
   }
   if (!options.awaitCleanup && deletedIds.length > 0) {
