@@ -34,6 +34,14 @@ export function isAgentsStream(response: Response) {
   return isAgentGenerationStart(response);
 }
 
+/** The request that stops an Assistants run: a Stop, or the pane leaving the run's stream. */
+export function isAssistantsStop(response: Response) {
+  return (
+    response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === '/api/assistants/v2/chat/abort'
+  );
+}
+
 export function isAgentGenerationStart(response: Response) {
   const { pathname } = new URL(response.url());
   const isAgentsChat = pathname === '/api/agents/chat' || pathname.startsWith('/api/agents/chat/');

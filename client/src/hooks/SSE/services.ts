@@ -113,8 +113,13 @@ export default function useEventServices({
 
   const conversations = useMemo(() => createConversationCache(queryClient), [queryClient]);
   const navigation = useMemo<NavigationServices>(
-    () => ({ pathname, conversationId, navigate }),
-    [pathname, conversationId, navigate],
+    () => ({
+      pathname,
+      conversationId,
+      navigate,
+      shows: (id) => getConversation()?.conversationId === id,
+    }),
+    [pathname, conversationId, navigate, getConversation],
   );
   const focus = useMemo<FocusServices>(
     () => ({
