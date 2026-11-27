@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import childProcess from 'node:child_process';
 import type { HookInput, HookEvent } from '@librechat/agents';
 import type { PluginHookExecutionRequest } from './runtime';
 import type { PluginHookHandler } from './schema';
@@ -429,39 +430,80 @@ describe('createCommandExecutor', () => {
     expect(output).toEqual({});
   });
 
-  test.each<HookEvent>(['PreToolUse', 'UserPromptSubmit', 'SubagentStart', 'Stop', 'StopFinalize'])(
-    'fails closed on %s when the shell is missing',
-    async (event) => {
-      const output = await execute(
-        { type: 'command', command: 'exit 2' },
+  describe('shell launch failures', () => {
+    const handler = {
+      type: 'command',
+      command: 'exit 0',
+      commandWindows: 'exit 0',
+    } satisfies PluginHookHandler;
+
+    async function executeWithoutShell(event: HookEvent) {
+      const { spawn } = childProcess;
+      const failed = jest.fn();
+      // An empty PATH alone does not control executable lookup on every host.
+      const launch = jest
+        .spyOn(childProcess, 'spawn')
+        .mockImplementation((file, args, options) =>
+          spawn(path.join(pluginData, file), args, options).once('error', failed),
+        );
+
+      const result = await execute(
+        handler,
         { sourceEvent: event, targetEvent: event },
         { PATH: pluginData },
       );
-      expect(output).toEqual({
+
+      const windows = process.platform === 'win32';
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(launch).toHaveBeenCalledWith(
+        windows ? 'powershell.exe' : 'bash',
+        windows
+          ? ['-NoLogo', '-NoProfile', '-Command', handler.commandWindows]
+          : ['-c', handler.command, 'bash'],
+        expect.objectContaining({ cwd: pluginRoot }),
+      );
+      expect(failed).toHaveBeenCalledWith(expect.objectContaining({ code: 'ENOENT' }));
+      return result;
+    }
+
+    test.each<HookEvent>([
+      'PreToolUse',
+      'UserPromptSubmit',
+      'SubagentStart',
+      'Stop',
+      'StopFinalize',
+    ])('fails closed on %s when the shell is missing', async (event) => {
+      await expect(executeWithoutShell(event)).resolves.toEqual({
         decision: event === 'Stop' || event === 'StopFinalize' ? 'block' : 'deny',
         reason: 'Plugin hook command could not start',
       });
-    },
-  );
+    });
 
-  test.each<HookEvent>([
-    'RunStart',
-    'PostToolUse',
-    'PostToolUseFailure',
-    'PostToolBatch',
-    'PreemptBoundary',
-    'PermissionDenied',
-    'SubagentStop',
-    'StopFailure',
-    'PreCompact',
-    'PostCompact',
-  ])('keeps %s nonblocking when the shell is missing', async (event) => {
-    const output = await execute(
-      { type: 'command', command: 'exit 2' },
-      { sourceEvent: event, targetEvent: event },
-      { PATH: pluginData },
-    );
-    expect(output).toEqual({});
+    test.each<HookEvent>([
+      'RunStart',
+      'PostToolUse',
+      'PostToolUseFailure',
+      'PostToolBatch',
+      'PreemptBoundary',
+      'PermissionDenied',
+      'SubagentStop',
+      'StopFailure',
+      'PreCompact',
+      'PostCompact',
+    ])('keeps %s nonblocking when the shell is missing', async (event) => {
+      await expect(executeWithoutShell(event)).resolves.toEqual({});
+    });
+
+    test('does not spawn a valid shell for an already-aborted command', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const launch = jest.spyOn(childProcess, 'spawn');
+      const executor = createCommandExecutor({ pluginRoot, pluginData, env: { PATH: pluginData } });
+
+      expect(getShellHandlerIssue(handler)).toBeUndefined();
+      await expect(executor.execute(request(handler), controller.signal)).resolves.toEqual({});
+      expect(launch).not.toHaveBeenCalled();
+    });
   });
 
   test('fails closed when the shell is not executable', async () => {
@@ -479,19 +521,6 @@ describe('createCommandExecutor', () => {
       decision: 'deny',
       reason: 'Plugin hook command could not start',
     });
-  });
-
-  test('keeps an already-aborted command nonblocking when the shell is missing', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const executor = createCommandExecutor({
-      pluginRoot,
-      pluginData,
-      env: { PATH: pluginData },
-    });
-    await expect(
-      executor.execute(request({ type: 'command', command: 'exit 2' }), controller.signal),
-    ).resolves.toEqual({});
   });
 
   test('reports a missing shell without disabling command capabilities', () => {
