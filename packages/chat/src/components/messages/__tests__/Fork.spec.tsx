@@ -8,15 +8,17 @@ import type { ReactNode } from 'react';
 import type { ForkConversation, ForkPreferences } from '../../../react/messages/host';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import Fork from '../Fork';
 
 const mockShowToast = jest.fn();
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
+
+beforeAll(initEnglish);
 
 type Defaults = Pick<ForkPreferences, 'option' | 'splitAtTarget' | 'rememberOption'>;
 
@@ -78,7 +80,7 @@ describe('Fork', () => {
     );
 
     latestMessageId = 'assistant-3';
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
 
     expect(forkConversation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -97,11 +99,11 @@ describe('Fork', () => {
       </ForkHost>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork_more_options' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'com_ui_fork_exclude_files' }));
-    fireEvent.click(screen.getByRole('radio', { name: 'com_ui_fork_mode_visible' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'More options' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Leave out files' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Visible' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fork' }));
 
     expect(forkConversation).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -125,10 +127,10 @@ describe('Fork', () => {
       </ForkHost>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    const after = await screen.findByRole('radio', { name: 'com_ui_fork_scope_after' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
+    const after = await screen.findByRole('radio', { name: 'From here on' });
     expect(after).toHaveAttribute('aria-checked', 'true');
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fork' }));
 
     expect(forkConversation).toHaveBeenLastCalledWith(
       expect.objectContaining({ splitAtTarget: true, latestMessageId: 'assistant-9' }),
@@ -143,10 +145,10 @@ describe('Fork', () => {
       </ForkHost>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    const toggle = await screen.findByRole('button', { name: 'com_ui_fork_more_options' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
+    const toggle = await screen.findByRole('button', { name: 'More options' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('checkbox', { name: 'com_ui_fork_exclude_files' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Leave out files' })).toBeNull();
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
@@ -158,8 +160,8 @@ describe('Fork', () => {
       </ForkHost>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    const toggle = await screen.findByRole('button', { name: 'com_ui_fork_more_options' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
+    const toggle = await screen.findByRole('button', { name: 'More options' });
     const chevron = toggle.querySelector('svg');
     const region = document.getElementById(toggle.getAttribute('aria-controls') ?? '');
 
@@ -211,13 +213,10 @@ describe('Fork', () => {
     );
 
     act(() => setStored(ForkOptions.DIRECT_PATH));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork_more_options' }));
-    expect(screen.getByRole('radio', { name: 'com_ui_fork_mode_visible' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'More options' }));
+    expect(screen.getByRole('radio', { name: 'Visible' })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Fork' }));
 
     expect(forkConversation).toHaveBeenLastCalledWith(
       expect.objectContaining({ option: ForkOptions.DIRECT_PATH }),
@@ -232,8 +231,8 @@ describe('Fork', () => {
       </ForkHost>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Fork' }));
 
     const calls = forkConversation.mock.calls;
     expect(calls[calls.length - 1]?.[0]).not.toHaveProperty('excludeFiles');
@@ -246,24 +245,30 @@ describe('Fork', () => {
       </ForkHost>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Fork Menu' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Fork' }));
     expect(mockShowToast).toHaveBeenLastCalledWith(
-      expect.objectContaining({ message: 'com_ui_fork_processing' }),
+      expect.objectContaining({ message: 'Forking conversation...' }),
     );
 
     const [, events] = forkConversation.mock.calls[0];
     events.onSuccess();
     expect(mockShowToast).toHaveBeenLastCalledWith(
-      expect.objectContaining({ message: 'com_ui_fork_success', status: 'success' }),
+      expect.objectContaining({ message: 'Successfully forked conversation', status: 'success' }),
     );
     events.onError({ response: { status: 429 } });
     expect(mockShowToast).toHaveBeenLastCalledWith(
-      expect.objectContaining({ message: 'com_ui_fork_error_rate_limit', status: 'error' }),
+      expect.objectContaining({
+        message: 'Too many fork requests. Please try again later',
+        status: 'error',
+      }),
     );
     events.onError(new Error('boom'));
     expect(mockShowToast).toHaveBeenLastCalledWith(
-      expect.objectContaining({ message: 'com_ui_fork_error', status: 'error' }),
+      expect.objectContaining({
+        message: 'There was an error forking the conversation',
+        status: 'error',
+      }),
     );
   });
 
