@@ -24,7 +24,8 @@ const SPECS = [
 const JEST = resolve(repoRoot, 'node_modules/.bin/jest');
 const REQUESTS = 'Chat Completions reasoning effort';
 const AZURE = `${REQUESTS} on Azure`;
-const SUMMARIES = "summarization reasoning effort on another model of the agent's OpenAI endpoint";
+const SUMMARY = 'summarization reasoning effort';
+const SUMMARIES = `${SUMMARY} on another model of the agent's OpenAI endpoint`;
 
 let report: JestAssertion[] | undefined;
 
@@ -130,5 +131,15 @@ test.describe('reasoning effort on Chat Completions', () => {
       'leaves the Responses reasoning object behind for a model that takes none',
     );
     expectPassed(SUMMARIES, 'keeps the effort for a model that takes one');
+  });
+
+  test("a summary's own effort wins over the agent's on OpenAI and Azure @scenario:summary-own-effort-wins", () => {
+    for (const model of ['o3', 'gpt-5-mini']) {
+      expectPassed(
+        SUMMARY,
+        `overrides the agent's Chat Completions effort for a summary on ${model}`,
+      );
+    }
+    expectPassed(SUMMARY, "overrides the agent's effort on a same-deployment Azure summary");
   });
 });

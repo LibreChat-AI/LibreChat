@@ -1593,6 +1593,28 @@ function shapeSummarizationConfig(
   if (dropEffort && parameters?.reasoning === undefined) {
     parameters = { ...parameters, reasoning: undefined };
   }
+  /** An agent's Chat Completions effort rides in its `modelKwargs`, which the SDK's Azure client
+   *  sends even for a deployment name it cannot classify, where it ignores `reasoning`. A summary
+   *  that sets its own effort replaces the inherited one there too. */
+  const summaryEffort = isPlainObject(parameters?.reasoning)
+    ? parameters.reasoning.effort
+    : undefined;
+  const agentKwargs =
+    provider === fallbackProvider ? agentModelKwargs(agent?.model_parameters) : undefined;
+  const carriedKwargs = isPlainObject(parameters?.modelKwargs)
+    ? parameters.modelKwargs
+    : agentKwargs;
+  if (
+    typeof mergedParameters?.reasoning_effort === 'string' &&
+    typeof summaryEffort === 'string' &&
+    carriedKwargs != null &&
+    'reasoning_effort' in carriedKwargs
+  ) {
+    parameters = {
+      ...parameters,
+      modelKwargs: { ...carriedKwargs, reasoning_effort: summaryEffort },
+    };
+  }
 
   const inheritedParameters: Record<string, unknown> | undefined =
     provider === fallbackProvider ? agent?.model_parameters : undefined;

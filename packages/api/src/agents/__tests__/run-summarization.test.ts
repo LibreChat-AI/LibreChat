@@ -103,7 +103,7 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { ChatOpenAI } from '@librechat/agents/llm/openai';
+import { ChatOpenAI, AzureChatOpenAI } from '@librechat/agents/llm/openai';
 import { ChatOpenRouter } from '@librechat/agents/llm/openrouter';
 import {
   Run,
@@ -911,6 +911,49 @@ describe('summarization reasoning effort', () => {
       expect(request).toMatchObject({ model, reasoning_effort: 'low' });
     },
   );
+
+  /** The SDK's Azure client ignores `reasoning` for a deployment name without a model family. */
+  it("overrides the agent's effort on a same-deployment Azure summary", async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        azure: {
+          azureOpenAIApiKey: 'test-key',
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+        },
+        reasoningEfforts: [ReasoningEffort.low, ReasoningEffort.high],
+        modelOptions: { model: 'production-west', reasoning_effort: ReasoningEffort.high },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.AZURE,
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.azureOpenAI,
+        parameters: { reasoning_effort: 'low' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new AzureChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'low' });
+  });
 
   it('maps effort to verbosity for OpenRouter adaptive Anthropic models', async () => {
     const agents = await callAndCapture({
