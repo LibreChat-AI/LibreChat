@@ -13,6 +13,7 @@ import {
   extractDefaultParams,
   applyDefaultParams,
   takesReasoningEffort,
+  clearSamplingControls,
 } from './llm';
 
 describe('getOpenAILLMConfig', () => {
@@ -2108,5 +2109,25 @@ describe('takesReasoningEffort', () => {
     undefined,
   ])('treats %s as taking none', (model) => {
     expect(takesReasoningEffort(model)).toBe(false);
+  });
+});
+
+describe('clearSamplingControls', () => {
+  it('clears sampling controls a summary would inherit from the options under it', () => {
+    const inherited = {
+      temperature: 0.7,
+      topP: 0.9,
+      include: ['message.output_text.logprobs', 'reasoning.encrypted_content'],
+      modelKwargs: { top_logprobs: 2, max_completion_tokens: 100 },
+    };
+    const cleared = clearSamplingControls({ reasoning: { effort: 'high' } }, inherited);
+    const effective = { ...inherited, ...cleared };
+
+    expect(effective.temperature).toBeUndefined();
+    expect(effective.topP).toBeUndefined();
+    expect(effective.include).toEqual(['reasoning.encrypted_content']);
+    expect(effective.modelKwargs).toEqual({ max_completion_tokens: 100 });
+    expect(effective).toMatchObject({ reasoning: { effort: 'high' } });
+    expect(inherited.modelKwargs).toEqual({ top_logprobs: 2, max_completion_tokens: 100 });
   });
 });

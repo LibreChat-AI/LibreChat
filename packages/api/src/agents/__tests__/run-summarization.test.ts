@@ -998,6 +998,41 @@ describe('summarization reasoning effort', () => {
     expect(request.temperature).toBeUndefined();
   });
 
+  it("drops a summary's own sampling controls beside the GPT-5.1 effort it inherits", async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      { modelOptions: { model: 'gpt-5.1', reasoning_effort: ReasoningEffort.high } },
+      EModelEndpoint.openAI,
+    );
+    expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        parameters: { temperature: 0.7 },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new ChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
   it('drops inherited sampling controls when a declared Azure summary raises the effort', async () => {
     const declared = [ReasoningEffort.none, ReasoningEffort.low, ReasoningEffort.high];
     const azure = validateAzureGroups([
@@ -3991,6 +4026,16 @@ describe('built-in provider request shaping', () => {
     });
     const config = agents[0].summarizationConfig as Record<string, unknown>;
     expect(config.parameters).toBeUndefined();
+  });
+
+  it('leaves out sampling controls a GPT-5.1 summarizer rejects beside its effort', async () => {
+    const parameters = await summarizeWith(
+      { reasoning_effort: 'high', temperature: 0.7 },
+      'gpt-5.1',
+    );
+
+    expect(parameters).toMatchObject({ modelKwargs: { reasoning_effort: 'high' } });
+    expect(parameters.temperature).toBeUndefined();
   });
 
   it('routes a reasoning model the way the agent flow would', async () => {

@@ -26,6 +26,7 @@ const REQUESTS = 'Chat Completions reasoning effort';
 const AZURE = `${REQUESTS} on Azure`;
 const SUMMARY = 'summarization reasoning effort';
 const SUMMARIES = `${SUMMARY} on another model of the agent's OpenAI endpoint`;
+const SHAPING = 'built-in provider request shaping';
 
 let report: JestAssertion[] | undefined;
 
@@ -148,6 +149,14 @@ test.describe('reasoning effort on Chat Completions', () => {
     expectPassed(
       SUMMARY,
       'drops inherited sampling controls when a declared Azure summary raises the effort',
+    );
+    expectPassed(
+      SUMMARY,
+      "drops a summary's own sampling controls beside the GPT-5.1 effort it inherits",
+    );
+    expectPassed(
+      SHAPING,
+      'leaves out sampling controls a GPT-5.1 summarizer rejects beside its effort',
     );
   });
 });

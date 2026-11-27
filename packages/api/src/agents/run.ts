@@ -1617,15 +1617,27 @@ function shapeSummarizationConfig(
       modelKwargs: { ...carriedKwargs, reasoning_effort: summaryEffort },
     };
   }
-  /** A summary's own effort above `none` follows the main request's rule: a model that takes
-   *  sampling controls only at `none` cannot keep the ones it would inherit. */
+  /** The summary's effective effort, its own or the agent's it inherits, follows the main
+   *  request's rule on the OpenAI and Azure clients: a model that takes sampling controls only at
+   *  `none` cannot keep them beside another effort, whether the agent or the summary
+   *  configuration supplies them. */
+  const inheritedOptions = provider === fallbackProvider ? agent?.model_parameters : undefined;
+  const effortKwargs = isPlainObject(parameters?.modelKwargs)
+    ? parameters.modelKwargs
+    : agentModelKwargs(inheritedOptions);
+  const effortReasoning =
+    parameters != null && 'reasoning' in parameters
+      ? parameters.reasoning
+      : (inheritedOptions as Record<string, unknown> | undefined)?.reasoning;
+  const effectiveEffort =
+    (isPlainObject(effortReasoning) ? effortReasoning.effort : undefined) ??
+    effortKwargs?.reasoning_effort;
   const summaryKey =
     model === fallbackModel ? ((agent?.model as string | undefined) ?? model) : model;
   if (
-    typeof mergedParameters?.reasoning_effort === 'string' &&
-    typeof summaryEffort === 'string' &&
-    summaryEffort !== ReasoningEffort.none &&
-    provider === fallbackProvider &&
+    (provider === Providers.OPENAI || provider === Providers.AZURE) &&
+    typeof effectiveEffort === 'string' &&
+    effectiveEffort !== ReasoningEffort.none &&
     limitsSamplingToNoEffort(
       summaryKey,
       targetsAzure
@@ -1634,7 +1646,10 @@ function shapeSummarizationConfig(
         : undefined,
     )
   ) {
-    parameters = clearSamplingControls(parameters ?? {});
+    parameters = clearSamplingControls(
+      parameters ?? {},
+      inheritedOptions as Record<string, unknown> | undefined,
+    );
   }
 
   const inheritedParameters: Record<string, unknown> | undefined =

@@ -530,21 +530,26 @@ const sol62SamplingKeys = [
 
 /** Clears the sampling controls from request options layered over inherited
  * ones: an explicit undefined replaces an inherited value, and `modelKwargs`
- * is copied without them. */
+ * and `include` are copied without them. */
 export function clearSamplingControls(
   parameters: Record<string, unknown>,
+  inherited?: Record<string, unknown>,
 ): Record<string, unknown> {
+  const effective = { ...inherited, ...parameters };
   const cleared: Record<string, unknown> = { ...parameters };
   for (const key of sol62SamplingKeys) {
     cleared[key] = undefined;
   }
-  const kwargs = cleared.modelKwargs;
+  const kwargs = effective.modelKwargs;
   if (kwargs != null && typeof kwargs === 'object' && !Array.isArray(kwargs)) {
     const copy = { ...(kwargs as Record<string, unknown>) };
     for (const key of sol62SamplingKeys) {
       delete copy[key];
     }
     cleared.modelKwargs = copy;
+  }
+  if (Array.isArray(effective.include)) {
+    cleared.include = effective.include.filter((value) => value !== 'message.output_text.logprobs');
   }
   return cleared;
 }
