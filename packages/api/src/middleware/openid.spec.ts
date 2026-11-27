@@ -64,7 +64,7 @@ function makeReq({
   endpoints?: Endpoints;
   provider?: string;
   model?: string;
-  addedConvo?: { endpoint?: string; model?: string; agent_id?: string };
+  addedConvo?: { endpoint?: string; model?: string; agent_id?: string; spec?: string };
   resolvedAddedAgent?: Pick<Agent, 'provider' | 'model'>;
   authStrategy?: string;
 } = {}): ServerRequest {
@@ -301,6 +301,26 @@ describe('createOpenIDTokenRefresh', () => {
     const { run, provider } = setup(async () => FRESH);
 
     await expect(run(makeReq(options))).resolves.toBeUndefined();
+
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes for the model an enforced spec gives the added conversation', async () => {
+    const { run, provider } = setup(async () => FRESH);
+    const req = makeReq({
+      provider: 'plain',
+      endpoints: { ...ENDPOINTS, ...AZURE } as Endpoints,
+      addedConvo: { endpoint: 'azureOpenAI', model: 'gpt-west', spec: 'east' },
+    });
+    /** `loadAddedAgent` runs the preset's model, which the east group serves. */
+    (req.config as AppConfig).modelSpecs = {
+      enforce: true,
+      list: [
+        { name: 'east', label: 'East', preset: { endpoint: 'azureOpenAI', model: 'gpt-east' } },
+      ],
+    } as AppConfig['modelSpecs'];
+
+    await expect(run(req)).resolves.toBeUndefined();
 
     expect(provider).toHaveBeenCalledTimes(1);
   });
