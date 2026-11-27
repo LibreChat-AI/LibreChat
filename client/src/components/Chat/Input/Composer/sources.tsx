@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useMemo, useCallback } from 'react';
 import type {
   PaletteSources,
   PaletteSourcesInput,
@@ -17,6 +17,7 @@ import Catalog from './Catalog';
 
 /** The sections `Catalog` lists in full behind their "Show all" button. */
 const CATALOGS: readonly PaletteCatalogSection[] = ['skill', 'mcp', 'files'];
+const NO_PINS: PaletteSources['pins'] = {};
 
 /**
  * Favorites, upload destinations, recent files and the dialogs the palette hands off to.
@@ -34,6 +35,15 @@ export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
       (input.open || configDialogOpen || input.catalog === 'mcp') &&
       (mcpManager?.availableMCPServers.length ?? 0) > 0,
   });
+  /* The MCP Servers chip's pin, drawn on the MCP header: once the chip's own
+     remove button has unpinned it, that toggle is the way back. */
+  const mcpPinned = mcpManager?.isPinned === true;
+  const setMcpPinned = mcpManager?.setIsPinned;
+  const pins = useMemo(
+    () =>
+      setMcpPinned == null ? NO_PINS : { mcp: { pinned: mcpPinned, onPinChange: setMcpPinned } },
+    [mcpPinned, setMcpPinned],
+  );
   const favorites = useToolFavorites();
   const recent = useRecentFiles(
     input.mounted && input.canAttach,
@@ -71,6 +81,7 @@ export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
     favorites: true,
     favoriteKeys: favorites.keys,
     toggleFavorite: toggle,
+    pins,
     attachEntries: attach.entries,
     fileInputRef: attach.inputRef,
     onFileChange: attach.onFileChange,

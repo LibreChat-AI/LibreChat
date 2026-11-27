@@ -301,6 +301,7 @@ async function initializeReferencedAgent(
           ...(params.endpointOption ?? {}),
           endpoint: EModelEndpoint.agents,
         },
+        modelSpec: spec,
         allowedProviders: params.allowedProviders,
         useChatProjectContext: params.useChatProjectContext,
         accessibleSkillIds: scopedSkillIds,
