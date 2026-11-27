@@ -116,6 +116,8 @@ const getAssociationErrorMessage = (
       return localize('com_ui_project_file_too_large', { size: limits?.fileSizeLimit ?? '' });
     case 'CHAT_PROJECT_FILE_TYPE':
       return localize('com_ui_project_file_type');
+    case 'CHAT_PROJECT_CONFLICT':
+      return localize('com_ui_project_file_conflict');
     case 'CHAT_PROJECT_STORAGE_LIMIT':
       return localize('com_ui_project_storage_limit', { size: limits?.totalSizeLimit ?? '' });
   }

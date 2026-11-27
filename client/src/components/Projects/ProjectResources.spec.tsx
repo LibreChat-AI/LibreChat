@@ -240,6 +240,20 @@ describe('ProjectResources', () => {
     }
   });
 
+  it('says the project changed, not that it is full, when the attach lost a revision race', async () => {
+    mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+    mockAddMutateAsync.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { status: 409, data: { code: 'CHAT_PROJECT_CONFLICT' } },
+    });
+    renderResources();
+    fireEvent.change(screen.getByTestId('project-upload-input'), {
+      target: { files: [new File(['x'], 'notes.txt')] },
+    });
+
+    expect(await screen.findByText('com_ui_project_file_conflict')).toBeInTheDocument();
+  });
+
   it('leaves the last place to a valid file selected after a refused one', async () => {
     mockStartupConfig = {
       projects: { maxFiles: 1, files: { supportedMimeTypes: ['^text/plain$'] } },
