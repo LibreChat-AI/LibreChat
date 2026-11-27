@@ -52,7 +52,9 @@ test.describe('Chat Projects permissions in the client', () => {
       const projectRequests = await reloadCounting(page);
       await openSidebar(page);
       await expect(page.getByRole('button', { name: 'All projects' })).toHaveCount(0);
-      await expect(page.getByText('Projects', { exact: true })).toHaveCount(0);
+      const history = page.getByRole('region', { name: 'Chat History' });
+      await expect(history).toBeVisible();
+      await expect(history.getByText('Projects', { exact: true })).toHaveCount(0);
 
       await page.goto(`/projects/${encodeURIComponent(projectId)}`, { timeout: 10000 });
       await expect(page).toHaveURL(/\/c\/new$/);
@@ -86,7 +88,7 @@ test.describe('Chat Projects permissions in the client', () => {
 
       const { page } = member;
       await page.goto('/projects?new=1', { timeout: 10000 });
-      await expect(page.getByText(name)).toBeVisible({ timeout: 15000 });
+      await expect(page.getByRole('main').getByText(name)).toBeVisible({ timeout: 15000 });
       await expect(page.getByRole('button', { name: 'New project' })).toHaveCount(0);
       await expect(page.getByRole('dialog')).toHaveCount(0);
     } finally {
