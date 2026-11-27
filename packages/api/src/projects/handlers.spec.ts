@@ -1,3 +1,4 @@
+import { ChatProjectError } from '@librechat/data-schemas';
 import { MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH } from 'librechat-data-provider';
 import type { Response } from 'express';
 import { createProjectHandlers } from './handlers';
@@ -86,7 +87,9 @@ describe('ChatProject handlers', () => {
 
     it('answers 409 with a stable code when the user is at the cap', async () => {
       const { handlers } = setup({
-        createChatProject: jest.fn().mockRejectedValue(new Error('Project limit reached')),
+        createChatProject: jest
+          .fn()
+          .mockRejectedValue(new ChatProjectError('CHAT_PROJECT_LIMIT', 'Project limit reached')),
       });
       const { res, result } = response();
       await handlers.createProject(request({ body: { name: 'P' } }), res);

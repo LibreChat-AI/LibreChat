@@ -10,6 +10,7 @@ import type { TChatProjectsConfig } from 'librechat-data-provider';
 import type { IChatProject, IChatProjectDocument, IConversation, IMongoFile } from '~/types';
 import { buildRetentionVisibilityFilter } from '~/utils/retention';
 import { isValidObjectIdString } from '~/utils/objectId';
+import { createIndexesWithRetry } from '~/utils/retry';
 import { escapeRegExp } from '~/utils/string';
 import logger from '~/config/winston';
 
@@ -98,8 +99,20 @@ export type ChatProjectLimits = Pick<
   'maxFiles' | 'maxInstructionsLength' | 'maxDescriptionLength' | 'maxProjectsPerUser'
 >;
 
-/** Thrown by `createChatProject` when the user already owns `projects.maxProjectsPerUser`. */
-const CHAT_PROJECT_LIMIT_REACHED = 'Project limit reached';
+export type ChatProjectErrorCode = 'CHAT_PROJECT_LIMIT';
+
+/** A project write refused by a `projects` limit; `code` is the stable contract callers match. */
+export class ChatProjectError extends Error {
+  readonly code: ChatProjectErrorCode;
+  constructor(code: ChatProjectErrorCode, message: string) {
+    super(message);
+    this.name = 'ChatProjectError';
+    this.code = code;
+  }
+}
+
+const projectLimitReached = () =>
+  new ChatProjectError('CHAT_PROJECT_LIMIT', 'Project limit reached');
 
 const DUPLICATE_KEY = 11000;
 
@@ -393,6 +406,21 @@ export async function updateChatProjectLastConversationForUser(
 }
 
 export function createChatProjectMethods(mongoose: typeof import('mongoose')): ChatProjectMethods {
+  let slotIndex: Promise<void> | null = null;
+  /** The cap is only atomic with the slot index in place, and `MONGO_AUTO_INDEX=false` never
+   *  builds it, so a capped create builds it first (once per process). */
+  function ensureSlotIndex(): Promise<void> {
+    if (!slotIndex) {
+      slotIndex = createIndexesWithRetry(
+        mongoose.models.ChatProject as Model<IChatProjectDocument>,
+      ).catch((error) => {
+        slotIndex = null;
+        throw error;
+      });
+    }
+    return slotIndex;
+  }
+
   async function createChatProject(
     user: string,
     input: CreateChatProjectInput,
@@ -416,13 +444,14 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       const project = await ChatProject.create(fields);
       return project.toObject() as IChatProject;
     }
+    await ensureSlotIndex();
     /* Every project counts against the cap, including ones created before it was set (which
      * hold no slot); the slot index is what makes two concurrent creates unable to share the
      * last place. Each collision moves to a distinct slot, so cap + 1 attempts suffice. */
     for (let attempt = 0; attempt <= cap; attempt++) {
       const owned = await ChatProject.find({ user }).select('slot').lean<{ slot?: number }[]>();
       if (owned.length >= cap) {
-        throw new Error(CHAT_PROJECT_LIMIT_REACHED);
+        throw projectLimitReached();
       }
       const taken = new Set(owned.map((project) => project.slot));
       let slot = 0;
@@ -430,7 +459,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         slot++;
       }
       if (slot >= cap) {
-        throw new Error(CHAT_PROJECT_LIMIT_REACHED);
+        throw projectLimitReached();
       }
       try {
         const project = await ChatProject.create({ ...fields, slot });
@@ -441,7 +470,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         }
       }
     }
-    throw new Error(CHAT_PROJECT_LIMIT_REACHED);
+    throw projectLimitReached();
   }
 
   async function getChatProject(user: string, projectId: string): Promise<IChatProject | null> {

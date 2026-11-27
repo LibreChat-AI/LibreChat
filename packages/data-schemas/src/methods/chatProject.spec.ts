@@ -1008,8 +1008,10 @@ describe('persistent Project context', () => {
 describe('projects.maxProjectsPerUser', () => {
   const user = 'capped-user';
 
+  /* Without automatic indexing (MONGO_AUTO_INDEX=false) the slot index does not exist until a
+   * capped create builds it, so the cap must still hold from the first create on. */
   beforeAll(async () => {
-    await ChatProject.createIndexes();
+    await ChatProject.collection.dropIndex('user_1_tenantId_1_slot_1').catch(() => undefined);
   });
 
   it('refuses the project past the cap and keeps the ones under it', async () => {

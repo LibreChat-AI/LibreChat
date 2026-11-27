@@ -74,7 +74,9 @@ export default function ProjectEditor({
       }),
     },
   });
+  /* A hidden description keeps its stored value out of validation, so the name can still change. */
   const descriptionRegistration = register('description', {
+    disabled: !hasDescription,
     maxLength: {
       value: descriptionLimit,
       message: localize('com_ui_field_max_length', {
@@ -126,7 +128,7 @@ export default function ProjectEditor({
     }
 
     const trimmedName = name.trim();
-    const trimmedDescription = description.trim();
+    const trimmedDescription = (description ?? '').trim();
     if (!trimmedName) {
       return;
     }

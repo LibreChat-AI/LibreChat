@@ -647,6 +647,8 @@ export function createMethods(
   };
 }
 
+export { ChatProjectError } from './chatProject';
+export type { ChatProjectErrorCode } from './chatProject';
 export {
   InvalidAvailableProjectFilesCursorError,
   parseAvailableProjectFilesCursor,

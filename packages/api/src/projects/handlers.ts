@@ -5,6 +5,7 @@ import {
 import {
   DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT,
   InvalidAvailableProjectFilesCursorError,
+  ChatProjectError,
   MAX_AVAILABLE_PROJECT_FILES_LIMIT,
   parseAvailableProjectFilesCursor,
   logger,
@@ -33,7 +34,6 @@ const PROJECT_NOT_FOUND = 'Project not found';
 const CONVERSATION_NOT_FOUND = 'Conversation not found';
 const PROJECT_FILE_UNAVAILABLE = 'Project file unavailable';
 const PROJECT_FILE_LIMIT_REACHED = 'Project file limit reached';
-const PROJECT_LIMIT_REACHED = 'Project limit reached';
 
 const PROJECT_SORT_FIELDS = new Set<ChatProjectSortBy>(['name', 'createdAt', 'lastConversationAt']);
 
@@ -211,8 +211,8 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       );
       return res.status(201).json(project);
     } catch (error) {
-      if (error instanceof Error && error.message === PROJECT_LIMIT_REACHED) {
-        return res.status(409).json({ error: PROJECT_LIMIT_REACHED, code: 'CHAT_PROJECT_LIMIT' });
+      if (error instanceof ChatProjectError && error.code === 'CHAT_PROJECT_LIMIT') {
+        return res.status(409).json({ error: error.message, code: error.code });
       }
       logger.error('[projects] Error creating project', error);
       return res.status(500).json({ error: 'Error creating project' });
