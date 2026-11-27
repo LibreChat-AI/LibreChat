@@ -1175,6 +1175,9 @@ export type Agent = {
   edges?: GraphEdge[];
   end_after_tools?: boolean;
   hide_sequential_outputs?: boolean;
+  /** Treats the agent's model as unable to read images, so the run gives it a short text note
+   *  in place of each image. Off leaves the decision to librechat.yaml. */
+  text_only?: boolean;
   /** Per-agent opt-in for stateful code sessions (requires the app-level capability). */
   stateful_code_sessions?: boolean;
   /** Stateful workspace sharing scope. Defaults to one workspace per user. */
@@ -1268,6 +1271,7 @@ export type AgentCreateParams = {
   | 'skills_scope'
   | 'subagents'
   | 'memory_scope'
+  | 'text_only'
 >;
 
 export type AgentUpdateParams = {
@@ -1309,6 +1313,7 @@ export type AgentUpdateParams = {
   | 'skills_scope'
   | 'subagents'
   | 'memory_scope'
+  | 'text_only'
 >;
 
 /**

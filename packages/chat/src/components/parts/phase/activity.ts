@@ -19,6 +19,7 @@ import {
   getActivityLabelText,
 } from '../../../core/parts/activityLabels';
 import { getToolIconName, getToolMeta, summarizeSpan } from '../../../core/parts/outcome';
+import { CLEANUP_REGEX, INVALID_CITATION_REGEX } from '../../../core/markdown/citations';
 import { hasPendingApprovalInPart, hasPendingAuthInPart } from '../../../core/pending';
 import { getToolDisplayLabel, parseToolName } from '../../../core/parts/toolLabels';
 import { boundIntentLabel, getToolCallIntent } from '../../../react/parts/intent';
@@ -206,6 +207,21 @@ const REASONING_TAIL_CHARS = 1200;
  *  read, not to keep pace with the stream. */
 export const LIVE_REASONING_HOLD_MS = 1000;
 
+/** Where a markdown block ends: a blank line, the end of a heading's line, or
+ *  the newline before a list item or heading, whose marker may still be the
+ *  last thing written. Any other newline is a soft break inside a paragraph.
+ *  Every branch starts at a newline, so the scan stays linear. */
+const BLOCK_BREAK =
+  /\n[ \t]*\n|\n(?<=(?:^|\n)[ \t]*#{1,6}[ \t][^\n]*\n)|\n(?=[ \t]*(?:[-*+•]|\d{1,3}[.)]|#{1,6})(?:\s|$))/g;
+
+/** A bullet, a `1)` ordinal or a heading's marks opening a sentence. A `1.`
+ *  ordinal never opens one: its mark ends a sentence of its own. */
+const BLOCK_MARKER = /^(?:[-*+•]|\d{1,3}\)|#{1,6})\s+/;
+
+/** A sentence says something only if it holds a letter. A list ordinal such
+ *  as `5.` ends at a sentence mark too, and alone it says nothing. */
+const LETTER = /\p{L}/u;
+
 /**
  * The last COMPLETE sentence of a thought: the one that ends at the newest
  * sentence mark, never the one still being written. A line that grew word by
@@ -214,29 +230,67 @@ export const LIVE_REASONING_HOLD_MS = 1000;
  * until the next is finished. Undefined until the first mark lands, so the
  * header keeps its generic line rather than showing a fragment.
  *
+ * The thought is markdown, and the header is one line of plain text: a list
+ * ordinal is not a sentence, a bullet or the block above is not part of one,
+ * and citation anchors render as source chips that a line of text cannot
+ * show. Once those are gone, a mark that ends nothing worded keeps the last
+ * sentence that did.
+ *
  * Preview offsets are not activity identities: a sliding window, whitespace
  * or a resumed snapshot can move them without starting a new thought.
  */
 function lastReasoningSentence(reasoning: string): string | undefined {
-  const tail = reasoning
+  const text = reasoning
     .slice(-REASONING_TAIL_CHARS)
     .replace(/^\s*<think>\s*/, '')
-    .replace(/\s*<\/think>\s*$/, '')
-    .trimEnd();
+    .replace(/\s*<\/think>\s*$/, '');
+  /** Anchors sit right after the mark they cite, so they are removed before
+   *  the marks are read. Every anchor opens with a marker character, so a
+   *  thought without one skips both passes. */
+  const tail = (
+    text.search(CLEANUP_REGEX) === -1
+      ? text
+      : text.replace(INVALID_CITATION_REGEX, '').replace(CLEANUP_REGEX, '')
+  ).trimEnd();
   if (!tail) {
     return undefined;
   }
   /** A Latin mark closes a sentence only when followed by space or the end
-   *  of the text, so "3.5" and "v2.1" stay whole; CJK marks need no space. */
+   *  of the text, so "3.5" and "v2.1" stay whole; CJK marks need no space.
+   *  The next sentence starts where the space after a mark ends. */
   const boundary = /[.!?](?:\s+|$)|[。！？]\s*/g;
-  let start = 0;
-  let complete: string | undefined;
+  const marks: number[] = [];
+  const starts: number[] = [0];
   for (let match = boundary.exec(tail); match != null; match = boundary.exec(tail)) {
-    /** The mark itself is one code unit in both scripts. */
-    complete = tail.slice(start, match.index + 1);
-    start = match.index + match[0].length;
+    marks.push(match.index);
+    starts.push(match.index + match[0].length);
   }
-  return complete == null ? undefined : boundIntentLabel(complete);
+  /** Where each block starts: a sentence starts no earlier than the block it
+   *  ends in. Every break consumes a newline, so none is empty. */
+  const blocks: number[] = [];
+  BLOCK_BREAK.lastIndex = 0;
+  for (let found = BLOCK_BREAK.exec(tail); found != null; found = BLOCK_BREAK.exec(tail)) {
+    blocks.push(BLOCK_BREAK.lastIndex);
+  }
+  /** Read back from the newest mark, so a long thought builds one or two
+   *  candidates rather than all of them. */
+  let block = blocks.length - 1;
+  for (let index = marks.length - 1; index >= 0; index -= 1) {
+    const mark = marks[index];
+    while (block >= 0 && blocks[block] > mark) {
+      block -= 1;
+    }
+    const from = Math.max(starts[index], block >= 0 ? blocks[block] : 0);
+    /** The mark itself is one code unit in both scripts. */
+    const sentence = tail
+      .slice(from, mark + 1)
+      .trim()
+      .replace(BLOCK_MARKER, '');
+    if (LETTER.test(sentence)) {
+      return boundIntentLabel(sentence);
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -333,12 +387,11 @@ function newestLine(
       continue;
     }
     if (part.type === ContentTypes.THINK) {
-      /** Reached before any call or label, this thought IS the tail — the
-       *  model is reasoning about its next step. Its multi-line peek stays
-       *  inside the fold, so the header previews it one sentence at a time.
-       *  Unless the fold is open: the text is on screen then, and a header
-       *  repeating a line of it under the reader's eyes is noise, so the
-       *  header keeps to the thought's label. */
+      /** Reached before any call or label, this thought IS the tail: the
+       *  model is reasoning about its next step. Its generated label names it
+       *  open or collapsed, as it names the thought's own row; the deployment
+       *  asked for that summary, and a line of raw reasoning is markdown cut
+       *  out of context. */
       const think = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
       /** Encrypted reasoning has no sentence to preview, and a label generated
        *  from it before labels skipped encoded payloads describes the payload. */
@@ -346,24 +399,24 @@ function newestLine(
       /** The live header only exists while the run streams. */
       const reasoning = readableReasoning(think, true);
       const label = opaque ? undefined : part.reasoning_label?.trim();
+      if (label) {
+        return { text: label, source: `think:${position}`, comboCount: 1 };
+      }
+      /** Open, the text is on screen, and a header repeating a line of it
+       *  under the reader's eyes is noise; the generic thinking line is what
+       *  the grouped thought row itself says. */
       if (preferLabels) {
-        /** Only a generated label will do: the generic thinking line is what
-         *  the grouped thought row itself says. */
-        if (label) {
-          return { text: label, source: `think:${position}`, comboCount: 1 };
-        }
         continue;
       }
+      /** Until a label lands, or with labels off, the multi-line peek stays
+       *  inside the fold, so the header previews the thought one sentence at
+       *  a time. */
       const sentence = lastReasoningSentence(reasoning);
       if (sentence != null) {
         return { text: sentence, source: `think:${position}`, comboCount: 1 };
       }
-      if (label || think.trim()) {
-        return {
-          text: label || localize('com_ui_thinking'),
-          source: `think:${position}`,
-          comboCount: 1,
-        };
+      if (think.trim()) {
+        return { text: localize('com_ui_thinking'), source: `think:${position}`, comboCount: 1 };
       }
       continue;
     }
@@ -416,7 +469,8 @@ function newestLine(
 /**
  * The newest nameable activity in a span: the last tool call's own line (its
  * streamed intent, else the generic text its card would show), a filled batch
- * label once one lands after it, or the thought streaming after both. Later parts win, so the
+ * label once one lands after it, or the thought streaming after both (its
+ * generated label, else its newest finished sentence). Later parts win, so the
  * header always reads as the bottom line of the list it stands for. A repeat
  * count rides the generic label only, never a line that names one call.
  *

@@ -836,6 +836,7 @@ const initializeClientWithProvider = async ({
       requestBody: runtimeRequestBody,
       agent: primaryAgent,
       endpointOption,
+      modelSpec: selectedModelSpec,
       allowedProviders,
       isInitialAgent: true,
       accessibleSkillIds: primaryScopedSkillIds,
