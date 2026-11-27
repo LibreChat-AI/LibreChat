@@ -14,13 +14,10 @@ type TitlePublication = {
   ctx: ConversationWriteContext;
   conversationId: string;
   title: string;
-  convoReady?: Promise<void>;
-  signal?: AbortSignal;
-  discardSignal?: AbortSignal;
   onTitleGenerated?: (event: { conversationId: string; title: string }) => Promise<void> | void;
 };
 
-/** Explicit renames own persisted titles; an unsaved first turn can still publish eagerly. */
+/** Saves a title to an existing row; an explicit rename owns a persisted title. */
 export async function publishConversationTitle(
   {
     saveConvo,
@@ -29,80 +26,28 @@ export async function publishConversationTitle(
   }: Pick<ConversationMethods, 'saveConvo' | 'getConvo'> & {
     titleCache: TitleCache;
   },
-  {
-    ctx,
-    conversationId,
-    title,
-    convoReady,
-    signal,
-    discardSignal,
-    onTitleGenerated,
-  }: TitlePublication,
+  { ctx, conversationId, title, onTitleGenerated }: TitlePublication,
 ): Promise<void> {
-  if (discardSignal?.aborted) {
+  const saved = await saveConvo(
+    ctx,
+    { conversationId, title },
+    {
+      context: 'publishConversationTitle',
+      titleSource: 'generated',
+      noUpsert: true,
+      preserveUpdatedAt: true,
+      appendMessageIds: [],
+    },
+  );
+  if (saved != null && 'message' in saved) {
+    throw new Error('Conversation title persistence failed');
+  }
+  const current = saved ?? (await getConvo(ctx.userId, conversationId));
+  if (current?.title == null) {
     return;
   }
-  const key = `${ctx.userId}-${conversationId}`;
-  const commit = async () => {
-    const saved = await saveConvo(
-      ctx,
-      { conversationId, title },
-      {
-        context: 'publishConversationTitle',
-        titleSource: 'generated',
-        noUpsert: true,
-        preserveUpdatedAt: true,
-        appendMessageIds: [],
-      },
-    );
-    if (saved != null && 'message' in saved) {
-      throw new Error('Conversation title persistence failed');
-    }
-    return saved;
-  };
-  let publishedEarly = false;
-  if (convoReady != null) {
-    const initial = await getConvo(ctx.userId, conversationId);
-    if (
-      !discardSignal?.aborted &&
-      (initial == null ||
-        (!initial.titleSetByUser &&
-          (initial.title == null || initial.title === '' || initial.title === 'New Chat')))
-    ) {
-      await titleCache.set(key, title, 120000);
-      if (!signal?.aborted) {
-        await onTitleGenerated?.({ conversationId, title });
-      }
-      publishedEarly = true;
-    }
-    await convoReady;
-  }
-  if (discardSignal?.aborted) {
-    if (publishedEarly && (await titleCache.get(key)) === title) {
-      await titleCache.delete(key);
-    }
-    return;
-  }
-  let saved = await commit();
-  let current = saved ?? (await getConvo(ctx.userId, conversationId));
-  if (
-    saved == null &&
-    convoReady != null &&
-    current != null &&
-    !current.titleSetByUser &&
-    (current.title == null || current.title === '' || current.title === 'New Chat') &&
-    !discardSignal?.aborted
-  ) {
-    saved = await commit();
-    current = saved ?? (await getConvo(ctx.userId, conversationId));
-  }
-  if (current?.title == null || discardSignal?.aborted) {
-    return;
-  }
-  if (!publishedEarly || current.title !== title) {
-    await titleCache.set(key, current.title, 120000);
-  }
-  if (saved && !publishedEarly && !signal?.aborted) {
+  await titleCache.set(`${ctx.userId}-${conversationId}`, current.title, 120000);
+  if (saved) {
     await onTitleGenerated?.({ conversationId, title: current.title });
   }
 }

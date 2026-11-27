@@ -71,6 +71,7 @@ const namespaces = {
   [CacheKeys.ABORT_KEYS]: standardCache(CacheKeys.ABORT_KEYS, Time.TEN_MINUTES),
   [CacheKeys.TOKEN_CONFIG]: standardCache(CacheKeys.TOKEN_CONFIG, Time.THIRTY_MINUTES),
   [CacheKeys.GEN_TITLE]: standardCache(CacheKeys.GEN_TITLE, Time.TWO_MINUTES),
+  [CacheKeys.TITLE_TASKS]: standardCache(CacheKeys.TITLE_TASKS, Time.THIRTY_MINUTES),
   [CacheKeys.S3_EXPIRY_INTERVAL]: standardCache(CacheKeys.S3_EXPIRY_INTERVAL, Time.THIRTY_MINUTES),
   [CacheKeys.MODEL_QUERIES]: standardCache(CacheKeys.MODEL_QUERIES),
   [CacheKeys.AUDIO_RUNS]: standardCache(CacheKeys.AUDIO_RUNS, Time.TEN_MINUTES),

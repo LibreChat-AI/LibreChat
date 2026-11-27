@@ -98,6 +98,7 @@ const {
   initializeScheduleErasureSweep,
 } = require('./services/Schedules');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
+const { configureTitleStream } = require('./services/Endpoints/agents/titles');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions: updateInterfacePerms } = require('@librechat/api');
 const {
@@ -557,6 +558,7 @@ if (cluster.isMaster) {
     // Register configured tool-approval policy hooks (mirrors the standard startup path).
     // Honors the `enabled` kill switch; hooks are registered process-wide.
     await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
+    configureTitleStream();
     registerBackgroundTaskShutdown({
       interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
       getBudgetMs: clusterShutdownBudgetMs,

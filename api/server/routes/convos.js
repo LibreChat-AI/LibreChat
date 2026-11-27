@@ -75,6 +75,7 @@ const { importConversations } = require('~/server/utils/import');
 const { getAppConfig, getEndpointsConfig } = require('~/server/services/Config');
 const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
+const { titleTasks, titleStreamHandler } = require('~/server/services/Endpoints/agents/titles');
 const {
   pendingBackgroundToolCompletions,
 } = require('~/server/services/Endpoints/agents/backgroundCompletion');
@@ -359,6 +360,8 @@ router.get(
   }),
 );
 
+router.get('/:conversationId/title/stream', titleStreamHandler);
+
 router.get(
   '/gen_title/:conversationId',
   createGeneratedTitleHandler({
@@ -612,6 +615,10 @@ router.delete('/', configMiddleware, async (req, res) => {
           await checkpointDeletion.remember(conversationIds);
         },
       });
+      /** A late title can never recreate the row; this stops the attempt and its listeners. */
+      await titleTasks
+        .cancel({ userId: req.user.id, tenantId, conversationId: filter.conversationId })
+        .catch((error) => logger.warn('[DELETE /convos] Failed to cancel pending title', error));
     } else {
       /** An empty filter deletes every conversation this owner has, so it runs behind
        * the same admission fence as `DELETE /all` rather than a bare drain. */

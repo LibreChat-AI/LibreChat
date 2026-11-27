@@ -73,7 +73,7 @@ router.use(
 );
 
 const controller = async (req, res, next) => {
-  await AgentController(req, res, next, initializeClient, addTitle);
+  await AgentController(req, res, next, initializeClient, addTitle.generateTitle);
 };
 
 const resumeController = async (req, res, next) => {

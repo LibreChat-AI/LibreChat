@@ -56,6 +56,7 @@ jest.mock('~/server/services/Endpoints/assistants', () => require(MOCKS).assista
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () =>
   require(MOCKS).subagentThreadStore(),
 );
+jest.mock('~/server/services/Endpoints/agents/titles', () => require('~/test/helpers/titleTasks'));
 jest.mock('~/server/services/Endpoints/agents/backgroundCompletion', () => ({
   pendingBackgroundToolCompletions: { list: jest.fn() },
 }));
@@ -1648,6 +1649,17 @@ describe('Convos Routes', () => {
         'test-user-123',
         { conversationId: mockConversationId },
         expect.objectContaining({ beforeDelete: expect.any(Function) }),
+      );
+
+      /** A late title can never recreate the row; the delete also ends its pending attempt. */
+      const { titleTasks } = require('~/server/services/Endpoints/agents/titles');
+      expect(titleTasks.cancel).toHaveBeenCalledWith({
+        userId: 'test-user-123',
+        tenantId: undefined,
+        conversationId: mockConversationId,
+      });
+      expect(titleTasks.cancel.mock.invocationCallOrder[0]).toBeGreaterThan(
+        deleteConvos.mock.invocationCallOrder[0],
       );
 
       /** Verify deleteToolCalls was called */

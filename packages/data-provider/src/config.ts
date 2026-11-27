@@ -3216,6 +3216,8 @@ export const outboundTimeoutsSchema = z.object({
   actionsMs: outboundTimeoutMs,
   /** The OpenAI moderation check that runs before a chat turn. */
   moderationMs: outboundTimeoutMs,
+  /** Generating an Agent conversation title, which runs on its own after the reply. */
+  titleMs: outboundTimeoutMs,
   /** Reading a stored image, by URL or from blob storage, to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
   /** Reading a stored document, audio or video file from storage to encode it for a provider. */
@@ -5799,6 +5801,10 @@ export enum CacheKeys {
    * Key for the title generation cache.
    */
   GEN_TITLE = 'GEN_TITLE',
+  /**
+   * Key for the attempt that owns each conversation's pending title.
+   */
+  TITLE_TASKS = 'TITLE_TASKS',
   /**
    * Key for the tools cache.
    */

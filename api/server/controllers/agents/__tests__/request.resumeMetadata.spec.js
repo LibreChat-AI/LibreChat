@@ -267,6 +267,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
   describeCreatedTurn: (...args) =>
     jest.requireActual('@librechat/api').describeCreatedTurn(...args),
+  getOutboundTimeoutMs: (...args) =>
+    jest.requireActual('@librechat/api').getOutboundTimeoutMs(...args),
   getPreliminaryResponseMessageId: jest.requireActual(
     '../../../../../packages/api/src/utils/message',
   ).getPreliminaryResponseMessageId,
@@ -461,6 +463,8 @@ jest.mock('~/models', () => ({
 jest.mock('~/server/services/Endpoints/agents/eventChildLease', () => ({
   acquireEventChildGenerationLease: (...args) => mockAcquireEventChildGenerationLease(...args),
 }));
+
+jest.mock('~/server/services/Endpoints/agents/titles', () => require('~/test/helpers/titleTasks'));
 
 // Settles a triggered run that is not a schedule's; these requests are neither.
 jest.mock('~/server/services/Events/settle', () => jest.fn(async () => true));
@@ -7235,6 +7239,7 @@ describe('ResumableAgentController resume metadata', () => {
 
   describe('immediate title persistence gate', () => {
     const { Constants } = require('librechat-data-provider');
+    const { titleAttempts } = require('~/test/helpers/titleTasks');
 
     /**
      * Starts a first turn that stays mid-run until the returned `release` is
@@ -7256,11 +7261,7 @@ describe('ResumableAgentController resume metadata', () => {
       });
 
       let convoReadyResolved = false;
-      const addTitle = jest.fn(async (_req, options) => {
-        void options?.convoReady?.then(() => {
-          convoReadyResolved = true;
-        });
-      });
+      const addTitle = jest.fn(async () => undefined);
 
       let turnConversationId;
       const client = {
@@ -7313,6 +7314,10 @@ describe('ResumableAgentController resume metadata', () => {
         jest.fn().mockResolvedValue({ client }),
         addTitle,
       );
+      /** The row gate the controller handed its title attempt. */
+      void titleAttempts.at(-1)?.ready?.then(() => {
+        convoReadyResolved = true;
+      });
       await nextTick();
       await nextTick();
 
@@ -7604,26 +7609,43 @@ describe('ResumableAgentController resume metadata', () => {
         config: {},
       };
 
-      await AgentController(
-        req,
-        createResumableResponse(),
-        jest.fn(),
-        jest.fn().mockResolvedValue({ client }),
-        addTitle,
-      );
+      const res = createResumableResponse();
+      await AgentController(req, res, jest.fn(), jest.fn().mockResolvedValue({ client }), addTitle);
       await finished;
       await nextTick();
       await nextTick();
 
-      return { addTitle, getTitleSignal: () => titleSignal };
+      return { addTitle, res, getTitleSignal: () => titleSignal };
     };
+
+    it('admits the title attempt before answering the start request', async () => {
+      const { titleTasks } = require('~/test/helpers/titleTasks');
+
+      const { res } = await runFirstTurn();
+
+      expect(titleTasks.admit).toHaveBeenCalledTimes(1);
+      expect(titleTasks.admit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-123',
+          conversationId: expect.any(String),
+          ctx: expect.objectContaining({ userId: 'user-123' }),
+        }),
+      );
+      expect(titleTasks.admit.mock.invocationCallOrder[0]).toBeLessThan(
+        res.json.mock.invocationCallOrder[0],
+      );
+    });
 
     it('skips deferred title generation when an empty preempt boundary truncates the first turn', async () => {
       resolveTitleTiming.mockReturnValueOnce('final');
+      const { titleAttempts } = require('~/test/helpers/titleTasks');
 
       const { addTitle } = await runFirstTurn({ run: preemptIncompleteRun });
 
       expect(addTitle).not.toHaveBeenCalled();
+      const attempt = titleAttempts.at(-1);
+      expect(attempt.run).not.toHaveBeenCalled();
+      expect(attempt.release).toHaveBeenCalled();
     });
     it('does not re-stamp an unfinished response already persisted by BaseClient', async () => {
       const stampedAt = new Date('2026-09-07T12:00:00.000Z');
@@ -7695,13 +7717,15 @@ describe('ResumableAgentController resume metadata', () => {
       const { addTitle } = await runFirstTurn();
 
       expect(addTitle).toHaveBeenCalledTimes(1);
-      expect(addTitle).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ response: expect.anything() }),
+      const [, options] = addTitle.mock.calls[0];
+      expect(options).toEqual(
+        expect.objectContaining({ text: 'First message', client: expect.anything() }),
       );
+      expect(options.immediate).toBeUndefined();
     });
 
-    it('does not acknowledge provider drain until deferred title persistence settles', async () => {
+    /** A follow-up turn waits on this drain, so it must never wait for the title. */
+    it('acknowledges provider drain while a deferred title is still generating', async () => {
       resolveTitleTiming.mockReturnValueOnce('final');
       let resolveTitle;
       const titlePending = new Promise((resolve) => {
@@ -7710,19 +7734,16 @@ describe('ResumableAgentController resume metadata', () => {
       const addTitle = jest.fn(() => titlePending);
 
       await runFirstTurn({ addTitle });
+      await nextTick();
+      await nextTick();
 
       expect(addTitle).toHaveBeenCalledTimes(1);
-      expect(mockGenerationJobManager.markProviderExecutionDrained).not.toHaveBeenCalled();
-
-      resolveTitle();
-      await nextTick();
-      await nextTick();
-
       expect(mockGenerationJobManager.markProviderExecutionDrained).toHaveBeenCalledWith(
         expect.any(String),
         1000,
         'provider-segment-1',
       );
+      resolveTitle();
     });
 
     it('cancels an in-flight immediate title when the turn ends preempt-incomplete', async () => {

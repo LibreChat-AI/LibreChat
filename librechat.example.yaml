@@ -608,6 +608,7 @@ registration:
 #   ocrMs: 300000 # each OCR provider call
 #   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
+#   titleMs: 180000 # generating an Agent conversation title, which runs on its own after the reply
 #   imageFetchMs: 30000 # reading a stored image, by URL or from blob storage, to encode it for a provider
 #   fileFetchMs: 300000 # reading a stored document, audio or video file to encode it for a provider
 #   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)

@@ -1,7 +1,8 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useMemo } from 'react';
 import { createSSETransport } from '@librechat/chat';
 import { EndpointURLs } from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
+import { useAuthContext } from '~/hooks/AuthContext';
 import * as requests from '~/data-provider';
 
 /**
@@ -35,3 +36,13 @@ export const defaultChatTransport: Transport = {
 export const ChatTransportContext = createContext<Transport>(defaultChatTransport);
 
 export const useChatTransport = () => useContext(ChatTransportContext);
+
+/** The chat transport signed in as the current user, or `null` while signed out. */
+export function useSignedInTransport() {
+  const { token, isAuthenticated } = useAuthContext();
+  const transport = useChatTransport();
+  return useMemo(
+    () => (isAuthenticated && token != null ? transport.stream({ token }) : null),
+    [isAuthenticated, token, transport],
+  );
+}

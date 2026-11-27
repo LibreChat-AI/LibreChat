@@ -66,10 +66,13 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 import { renderHook, act } from '@testing-library/react';
+import type { ChatEvent, ChatTransport } from 'librechat-data-provider';
 import {
   useTitleGeneration,
   genTitleQueryKey,
   queueTitleGeneration,
+  TITLE_STREAM_RETRIES,
+  isTitleGenerationProcessed,
   markTitleGenerationProcessed,
 } from '../queries';
 
@@ -250,5 +253,153 @@ describe('useTitleGeneration — result handling', () => {
     rerender();
 
     expect(mockResetQueries).toHaveBeenCalledWith(genTitleQueryKey('conv-done404'));
+  });
+});
+
+/** A transport that records each title stream the hook opens and lets the test answer it. */
+const createTransport = () => {
+  const streams: Array<{ url: string; signal: AbortSignal; emit: (event: ChatEvent) => void }> = [];
+  const transport = {
+    send: jest.fn(),
+    reconnectToStream: jest.fn(
+      (
+        { url }: { url: string },
+        { signal, onEvent }: { signal: AbortSignal; onEvent: (event: ChatEvent) => void },
+      ) => {
+        streams.push({ url, signal, emit: (event) => act(() => onEvent(event)) });
+        return { closed: false };
+      },
+    ),
+  };
+  return { transport: transport as unknown as ChatTransport, streams };
+};
+
+const titleFrame = (conversationId: string, title: string): ChatEvent => ({
+  type: 'title',
+  data: { event: 'title', data: { conversationId, title } },
+});
+
+const finalFrame = (titleSettled: boolean): ChatEvent => ({
+  type: 'final',
+  data: { final: true, titleSettled },
+});
+
+describe('useTitleGeneration — title stream', () => {
+  it('waits on the title stream instead of polling, after the chat stream ends', () => {
+    const id = 'stream-late-title';
+    mockActiveJobIds = [];
+    const { transport, streams } = createTransport();
+
+    renderHook(() => useTitleGeneration(true, transport));
+    act(() => queueTitleGeneration(id));
+
+    expect(streams.map((stream) => stream.url)).toEqual([`/api/convos/${id}/title/stream`]);
+    expect(isEligible(id)).toBe(false);
+
+    streams[0].emit(titleFrame(id, 'Late Title'));
+    streams[0].emit(finalFrame(true));
+
+    const update = mockSetQueryData.mock.calls.find(([key]) => key[1] === id)?.[1];
+    expect(update({ conversationId: id, title: 'New Chat' })).toEqual({
+      conversationId: id,
+      title: 'Late Title',
+    });
+    expect(isTitleGenerationProcessed(id)).toBe(true);
+    expect(streams[0].signal.aborted).toBe(true);
+    expect(isEligible(id)).toBe(false);
+  });
+
+  it('keeps a local rename over the title the stream delivers', () => {
+    const id = 'stream-manual';
+    const owned = { title: 'My Rename', titleSetByUser: true, titleRevision: 1 };
+    mockGetQueryData.mockImplementation((key: string[]) => (key[1] === id ? owned : undefined));
+    const { transport, streams } = createTransport();
+
+    renderHook(() => useTitleGeneration(true, transport));
+    act(() => queueTitleGeneration(id));
+    streams[0].emit(titleFrame(id, 'Generated Title'));
+
+    const update = mockSetQueryData.mock.calls.find(([key]) => key[1] === id)?.[1];
+    expect(update(owned)).toEqual(owned);
+  });
+
+  it('stops without polling when the attempt settles with no title', () => {
+    const id = 'stream-no-title';
+    const { transport, streams } = createTransport();
+
+    renderHook(() => useTitleGeneration(true, transport));
+    act(() => queueTitleGeneration(id));
+    streams[0].emit(finalFrame(true));
+
+    expect(isTitleGenerationProcessed(id)).toBe(true);
+    expect(isEligible(id)).toBe(false);
+    expect(mockSetQueryData).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the server reports nothing pending', finalFrame(false)],
+    ['the server has no title stream route', { type: 'error', status: 404 } as ChatEvent],
+  ])('falls back to polling when %s', (_case, event) => {
+    const id = `stream-fallback-${event.type}`;
+    const { transport, streams } = createTransport();
+
+    renderHook(() => useTitleGeneration(true, transport));
+    act(() => queueTitleGeneration(id));
+    expect(isEligible(id)).toBe(false);
+
+    streams[0].emit(event);
+
+    expect(streams[0].signal.aborted).toBe(true);
+    expect(isEligible(id)).toBe(true);
+  });
+
+  it('reconnects a dropped stream before falling back to polling', () => {
+    jest.useFakeTimers();
+    try {
+      const id = 'stream-dropped';
+      const { transport, streams } = createTransport();
+
+      renderHook(() => useTitleGeneration(true, transport));
+      act(() => queueTitleGeneration(id));
+
+      for (let failure = 1; failure <= TITLE_STREAM_RETRIES; failure += 1) {
+        streams.at(-1)!.emit({ type: 'error', status: 0 });
+        expect(isEligible(id)).toBe(false);
+        act(() => {
+          jest.runOnlyPendingTimers();
+        });
+        expect(streams).toHaveLength(failure + 1);
+      }
+      streams.at(-1)!.emit({ type: 'error', status: 0 });
+
+      expect(isEligible(id)).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('closes the stream once a local rename delivers the title', () => {
+    const id = 'stream-renamed';
+    const { transport, streams } = createTransport();
+
+    renderHook(() => useTitleGeneration(true, transport));
+    act(() => queueTitleGeneration(id));
+    act(() => markTitleGenerationProcessed(id));
+
+    expect(streams[0].signal.aborted).toBe(true);
+    expect(isEligible(id)).toBe(false);
+  });
+
+  it('closes open title streams on sign-out', () => {
+    const id = 'stream-signed-out';
+    const { transport, streams } = createTransport();
+
+    const { rerender } = renderHook(({ enabled }) => useTitleGeneration(enabled, transport), {
+      initialProps: { enabled: true },
+    });
+    act(() => queueTitleGeneration(id));
+    rerender({ enabled: false });
+
+    expect(streams[0].signal.aborted).toBe(true);
   });
 });

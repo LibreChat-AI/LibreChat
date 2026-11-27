@@ -32,6 +32,32 @@ async function sendAndExpectReply(page: Page, label: string) {
   return { prompt, reply };
 }
 
+const TITLE_STREAM_PATH = /^\/api\/convos\/[^/]+\/title\/stream$/;
+const isTitleStream = (url: string) => TITLE_STREAM_PATH.test(new URL(url).pathname);
+const isTitlePoll = (url: string) => new URL(url).pathname.startsWith('/api/convos/gen_title/');
+
+/** Counts the page's title-stream attachments and `/gen_title` polls from here on. */
+function watchTitleRequests(page: Page) {
+  const seen = { streams: 0, polls: 0 };
+  page.on('request', (request) => {
+    if (isTitleStream(request.url())) seen.streams += 1;
+    if (isTitlePoll(request.url())) seen.polls += 1;
+  });
+  return seen;
+}
+
+/** Reads a conversation's title stream as the signed-in page; it answers at once once settled. */
+async function readTitleStream(page: Page, conversationId: string, authorization: string) {
+  const response = await page.request.get(`/api/convos/${conversationId}/title/stream`, {
+    headers: { authorization },
+  });
+  expect(response.ok()).toBeTruthy();
+  return (await response.text())
+    .split('\n\n')
+    .filter((frame) => frame.startsWith('data: '))
+    .map((frame) => JSON.parse(frame.slice('data: '.length)));
+}
+
 async function openConversationMenu(conversation: Locator) {
   await conversation.hover();
   await conversation.getByRole('button', { name: 'Conversation Menu Options' }).click();
@@ -338,11 +364,10 @@ test.describe('conversation management', () => {
           label: `Mock Titles ${titleTiming}`,
           model: `mock-titles-${titleTiming}`,
         });
-        const titleFetch = page.waitForRequest((request) =>
-          new URL(request.url()).pathname.startsWith('/api/convos/gen_title/'),
-        );
+        const titleRequests = watchTitleRequests(page);
+        const titleStream = page.waitForRequest((request) => isTitleStream(request.url()));
         const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
-        await titleFetch;
+        await titleStream;
         expect(run.ok()).toBeTruthy();
         await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
         const { conversationId } = await run.json();
@@ -383,15 +408,19 @@ test.describe('conversation management', () => {
           });
         }
         await expect.poll(async () => !!(await titleRequest())).toBe(true);
-        const published = page.waitForResponse(
-          (response) =>
-            new URL(response.url()).pathname.startsWith('/api/convos/gen_title/') &&
-            response.status() === 200,
-          { timeout: 30000 },
-        );
+        // The local rename closed the page's title stream. Read the settled result directly.
+        const authorization = await renameResponse.request().headerValue('authorization');
+        if (!authorization) throw new Error('Expected an authenticated rename request');
         await request.post(`${fixture}/__e2e/release`);
-        expect((await (await published).json()).title).toBe(renamedTitle);
         await expect.poll(async () => (await titleRequest())?.completed === true).toBe(true);
+        expect(await readTitleStream(page, conversationId, authorization)).toEqual([
+          {
+            event: 'title',
+            data: expect.objectContaining({ title: renamedTitle, titleSetByUser: true }),
+          },
+          { final: true, titleSettled: true },
+        ]);
+        expect(titleRequests.polls).toBe(0);
         await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
           timeout: 30000,
         });
@@ -404,7 +433,72 @@ test.describe('conversation management', () => {
     });
   }
 
-  test('adopts a newer remote rename from delayed final-title polling', async ({
+  test('delivers a held first-turn title after the chat closes, a follow-up and a reconnect', async ({
+    page,
+    request,
+  }) => {
+    test.skip(process.env.E2E_TITLE_CONVO !== 'true', 'Requires the title-enabled mock profile');
+    test.setTimeout(60_000);
+    const first = uniqueLabel('held-title');
+    const second = uniqueLabel('held-title-follow-up');
+    const title = `Generated ${first}`;
+    const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
+    await request.post(`${fixture}/__e2e/reset`);
+    await request.post(`${fixture}/__e2e/behavior`, {
+      data: { label: title, hold: true, holdModel: 'mock-title-model' },
+    });
+    const titleRequested = async () => {
+      const { requests } = await (await request.get(`${fixture}/__e2e/requests`)).json();
+      return requests.some(
+        (record: { model: string; prompt: string }) =>
+          record.model === 'mock-title-model' && record.prompt.includes(first),
+      );
+    };
+    const titleRequests = watchTitleRequests(page);
+    /** The first attachment drops before the attempt settles, as a proxy or a restart would. */
+    let dropped = false;
+    const dropFirstStream = async (route: Parameters<Parameters<Page['route']>[1]>[0]) => {
+      if (dropped) {
+        await route.fallback();
+        return;
+      }
+      dropped = true;
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': ping\n\n' });
+    };
+    await page.route((url) => TITLE_STREAM_PATH.test(url.pathname), dropFirstStream);
+    try {
+      await page.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(page, {
+        label: 'Mock Titles immediate',
+        model: 'mock-titles-immediate',
+      });
+      const run = await sendMessageAndWaitForCompletion(page, replyPrompt(first));
+      const { conversationId } = await run.json();
+      await expect(messagesView(page).getByText(replyText(first))).toBeVisible();
+      await expect.poll(titleRequested).toBe(true);
+      const href = new URL(`/c/${conversationId}`, page.url()).href;
+      const row = conversationRow(page, href);
+      await expect(row).toContainText('New Chat');
+
+      // A follow-up neither waits for the held title nor cancels it.
+      const followUp = await sendMessageAndWaitForCompletion(page, replyPrompt(second));
+      expect((await followUp.json()).conversationId).toBe(conversationId);
+      await expect(messagesView(page).getByText(replyText(second))).toBeVisible();
+      await expect(row).toContainText('New Chat');
+      await expect.poll(() => titleRequests.streams).toBeGreaterThanOrEqual(2);
+
+      await request.post(`${fixture}/__e2e/release`);
+      await expect(row).toContainText(title, { timeout: 15_000 });
+      await expect(page).toHaveTitle(new RegExp(title));
+      await expect(page).toHaveURL(href);
+      expect(titleRequests.polls).toBe(0);
+    } finally {
+      await unroute(page, (url) => TITLE_STREAM_PATH.test(url.pathname), dropFirstStream);
+      await request.post(`${fixture}/__e2e/reset`, { timeout: 2000 }).catch(() => undefined);
+    }
+  });
+
+  test('adopts a newer remote rename from a delayed first-turn title', async ({
     page,
     request,
   }) => {
@@ -422,10 +516,9 @@ test.describe('conversation management', () => {
     try {
       await page.goto(NEW_CHAT_PATH);
       await selectMockEndpoint(page, { label: 'Mock Titles final', model: 'mock-titles-final' });
+      const titleRequests = watchTitleRequests(page);
       const published = page.waitForResponse(
-        (response) =>
-          new URL(response.url()).pathname.startsWith('/api/convos/gen_title/') &&
-          response.status() === 200,
+        (response) => isTitleStream(response.url()) && response.status() === 200,
       );
       expect((await sendMessage(page, `E2E_SLOW_REPLY:${label}`)).ok()).toBeTruthy();
       await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
@@ -439,12 +532,9 @@ test.describe('conversation management', () => {
       await renameConversation(otherTab, conversationRow(otherTab), secondTitle);
       await expect(conversationRow(page)).toContainText(firstTitle);
       await request.post(`${fixture}/__e2e/release`);
-      expect(await (await published).json()).toEqual({
-        title: secondTitle,
-        titleSetByUser: true,
-        titleRevision: 2,
-      });
+      await (await published).finished();
       await expect(conversationRow(page)).toContainText(secondTitle);
+      expect(titleRequests.polls).toBe(0);
       await page.reload();
       await expect(conversationRow(page)).toContainText(secondTitle);
     } finally {
