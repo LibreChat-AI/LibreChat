@@ -50,6 +50,7 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { updateAttachmentCaches } from './useAttachmentHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
 import { reopenTermsOnRefusal } from '~/utils/terms';
+import { useReleaseNewConversation } from './cache';
 import { useLiveAnnouncer } from '~/Providers';
 import useLocalize from '~/hooks/useLocalize';
 import { getConvoTitle } from './turns';
@@ -181,8 +182,9 @@ export default function useEventServices({
 
 /** The app's transport, balance and terms services behind the Assistants stream. The balance
  *  observer lives here, on the one path that refreshes it after a turn. */
-export function useLegacyServices(): LegacyStreamServices {
+export function useLegacyServices(runIndex = 0): LegacyStreamServices {
   const queryClient = useQueryClient();
+  const releaseNewConversation = useReleaseNewConversation(runIndex);
   const localize = useLocalize();
   const { auth, config } = useChatSettings();
   const { token, isAuthenticated = false } = auth;
@@ -201,7 +203,16 @@ export function useLegacyServices(): LegacyStreamServices {
       reopenTermsOnRefusal: (data) =>
         reopenTermsOnRefusal(queryClient, data) ? localize('com_error_terms_not_accepted') : null,
       clearComposerDrafts,
+      releaseNewConversation,
     }),
-    [chatTransport, token, balanceEnabled, refetchBalance, queryClient, localize],
+    [
+      chatTransport,
+      token,
+      balanceEnabled,
+      refetchBalance,
+      queryClient,
+      localize,
+      releaseNewConversation,
+    ],
   );
 }

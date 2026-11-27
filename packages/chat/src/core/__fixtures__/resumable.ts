@@ -89,6 +89,7 @@ export const createHost = (
       removeConversationQueries: jest.fn(),
       queueTitleGeneration: jest.fn(),
       addOptimisticConversation: jest.fn((_conversationId, submission) => submission),
+      releaseNewConversation: jest.fn(),
     },
     queue: {
       clearSupersededMarkers: jest.fn(),

@@ -192,6 +192,12 @@ jest.mock('~/store', () => ({
   default: {},
 }));
 
+/** The pane's conversation is read only when a new chat's first turn is left mid-reply. */
+jest.mock('~/hooks/Conversations/useGetConversation', () => ({
+  __esModule: true,
+  default: () => () => null,
+}));
+
 jest.mock('~/Providers/ChatSettingsContext', () => {
   const actual = jest.requireActual('~/Providers/ChatSettingsContext');
   const settings = {

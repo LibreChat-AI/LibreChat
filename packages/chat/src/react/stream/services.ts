@@ -154,6 +154,8 @@ export type LegacyStreamServices = {
     conversationId?: string | null,
     options?: { includeNewChatDraft?: boolean },
   ) => void;
+  /** As `ResumableCache.releaseNewConversation`, for a first turn this stream was closed on. */
+  releaseNewConversation: (conversationId: string) => void;
 };
 
 /** The pane a set of event services writes for. */
