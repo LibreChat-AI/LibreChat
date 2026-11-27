@@ -127,6 +127,7 @@ jest.mock('~/models', () => ({
   getMultiplier: jest.fn(),
   getConvo: (...args) => mockGetConvo(...args),
   getChatProject: (...args) => mockGetChatProject(...args),
+  getRoleByName: async () => ({ name: 'USER', permissions: {} }),
   getProjectFiles: (...args) => mockGetFiles(...args),
   getFiles: (...args) => mockGetFiles(...args),
 }));
@@ -213,7 +214,7 @@ describe.each([
           },
         },
       },
-      user: { id: 'user-1' },
+      user: { id: 'user-1', role: 'USER' },
       body: {
         text: 'Safe current message',
         model: 'gpt-4',

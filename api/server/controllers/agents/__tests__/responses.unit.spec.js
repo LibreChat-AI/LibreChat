@@ -212,6 +212,7 @@ jest.mock('~/server/services/ApiKeys/grants', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  projectsAccessFor: () => async () => true,
   createApiModelCallbacks: (...args) =>
     jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
   createGeneratedFileQueue: (...args) =>

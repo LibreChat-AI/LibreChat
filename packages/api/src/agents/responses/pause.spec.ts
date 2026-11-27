@@ -15,7 +15,7 @@ import {
   createModels,
   createMethods,
 } from '@librechat/data-schemas';
-import type { AppConfig, ResponseStorage } from '@librechat/data-schemas';
+import type { AppConfig, IRole, ResponseStorage } from '@librechat/data-schemas';
 import type { RunInterruptResult, RunConfig } from '@librechat/agents';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { Agent } from 'librechat-data-provider';
@@ -1515,7 +1515,7 @@ it('uses production validation for a real retained question and rejects changed 
         getFiles: async () => [],
         getActions: async () => [],
         getUserMemories: async () => [],
-        getRoleByName: async () => null,
+        getRoleByName: async () => ({ name: 'USER', permissions: {} }) as IRole,
         decryptMetadata: async (metadata) => metadata,
       },
     });

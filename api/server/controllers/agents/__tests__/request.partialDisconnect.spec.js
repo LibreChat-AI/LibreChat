@@ -49,6 +49,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  projectsAccessFor: () => async () => true,
   getTrustedNewConversationId: (...args) =>
     jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   buildGenerationStartedResponse: (...args) =>
