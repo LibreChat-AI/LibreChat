@@ -359,27 +359,34 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
       return;
     }
     const availableCapacity = Math.max(0, projectFileLimit - getEffectiveFileCount());
-    const items: UploadState[] = selected.slice(0, availableCapacity).map((file) => {
+    /* Refused files never upload, so they take none of the remaining capacity. */
+    const refused: UploadState[] = [];
+    const valid: File[] = [];
+    for (const file of selected) {
       const errorMessage = getFileLimitMessage(file, fileLimits, localize);
-      return {
-        id: v4(),
-        filename: file.name,
-        file,
-        ...(errorMessage ? { errorMessage, status: 'failed' as const } : { status: 'processing' }),
-      };
-    });
-    const accepted = items.filter((item) => item.status === 'processing');
+      if (errorMessage) {
+        refused.push({ id: v4(), filename: file.name, file, errorMessage, status: 'failed' });
+      } else {
+        valid.push(file);
+      }
+    }
+    const accepted: UploadState[] = valid.slice(0, availableCapacity).map((file) => ({
+      id: v4(),
+      filename: file.name,
+      file,
+      status: 'processing' as const,
+    }));
     accepted.forEach((item) => pendingUploadIdsRef.current.add(item.id));
-    if (items.length) {
-      setUploading((current) => [...current, ...items]);
+    if (refused.length || accepted.length) {
+      setUploading((current) => [...current, ...refused, ...accepted]);
     }
     if (accepted.length) {
       void processUploads(accepted);
     }
-    if (selected.length > accepted.length) {
+    if (valid.length > accepted.length) {
       showToast({
         message: localize('com_ui_project_file_excess', {
-          count: selected.length - accepted.length,
+          count: valid.length - accepted.length,
         }),
         severity: NotificationSeverity.WARNING,
         showIcon: true,

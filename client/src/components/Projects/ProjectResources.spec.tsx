@@ -240,6 +240,30 @@ describe('ProjectResources', () => {
     }
   });
 
+  it('leaves the last place to a valid file selected after a refused one', async () => {
+    mockStartupConfig = {
+      projects: { maxFiles: 1, files: { supportedMimeTypes: ['^text/plain$'] } },
+    };
+    mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+    try {
+      renderResources();
+      fireEvent.change(screen.getByTestId('project-upload-input'), {
+        target: {
+          files: [
+            new File(['y'], 'sheet.csv', { type: 'text/csv' }),
+            new File(['x'], 'notes.txt', { type: 'text/plain' }),
+          ],
+        },
+      });
+
+      await waitFor(() => expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1));
+      const formData = mockUploadMutateAsync.mock.calls[0][0] as FormData;
+      expect((formData.get('file') as File).name).toBe('notes.txt');
+    } finally {
+      mockStartupConfig = undefined;
+    }
+  });
+
   it('reserves remaining capacity across overlapping multi-file selections', async () => {
     let finishFirstUpload!: (file: TFileUpload) => void;
     mockProjectQueryState = { ...mockProjectQueryState, data: undefined, isLoading: true };
