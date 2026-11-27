@@ -214,8 +214,34 @@ describe('usePaletteEntries', () => {
 
     const row = entries().result.current.find((item) => item.key === 'builtin:execute_code');
     expect(row).toEqual(expect.objectContaining({ active: false, pinned: true }));
-    act(() => row?.onUnpin?.());
+    act(() => row?.onPinChange?.(false));
     expect(codeInterpreter.setIsPinned).toHaveBeenCalledWith(false);
+  });
+
+  it('pins an unpinned built-in tool again through the stored pin', () => {
+    const memory = toggle(false, false);
+    mockContext = { ...fullContext(), memory };
+
+    const row = entries().result.current.find((item) => item.key === 'builtin:memory');
+    expect(row).toEqual(expect.objectContaining({ active: false, pinned: false }));
+    act(() => row?.onPinChange?.(true));
+    expect(memory.setIsPinned).toHaveBeenCalledWith(true);
+    expect(memory.debouncedChange).not.toHaveBeenCalled();
+  });
+
+  it('gives skill and server rows no pin of their own', () => {
+    mockSkills = [{ _id: 's1', name: 'writer' }];
+    const { current } = entries().result;
+    expect(keysOf({ current })).toEqual(expect.arrayContaining(['skill:s1', 'mcp:github']));
+    const pinnable = current.filter((item) => item.onPinChange != null).map((item) => item.key);
+    expect(pinnable).toEqual([
+      'builtin:web_search',
+      'builtin:execute_code',
+      'builtin:file_search',
+      'builtin:skills',
+      'builtin:memory',
+      'builtin:artifacts',
+    ]);
   });
 
   it.each([false, true])(

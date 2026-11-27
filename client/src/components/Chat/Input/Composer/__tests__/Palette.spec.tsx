@@ -71,6 +71,8 @@ jest.mock('~/Providers', () => ({
     mcpServerManager: {
       availableMCPServers: [{ serverName: 'github' }],
       getConfigDialogProps: () => ({ isOpen: false }),
+      isPinned: mockMcpPinned,
+      setIsPinned: mockSetMcpPinned,
     },
   }),
 }));
@@ -83,6 +85,9 @@ jest.mock('~/hooks', () => ({
 }));
 
 let mockFavoriteKeys: string[] = [];
+/** The MCP Servers chip's stored pin; without a setter the host offers no pin. */
+let mockMcpPinned = false;
+let mockSetMcpPinned: jest.Mock | undefined;
 let mockRecentFiles: Array<Record<string, unknown>> = [];
 let mockAttachEntries: AttachEntry[] = [];
 let mockPopupHeight = 0;
@@ -202,6 +207,8 @@ describe('Palette', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockFavoriteKeys = [];
+    mockMcpPinned = false;
+    mockSetMcpPinned = undefined;
     mockRecentFiles = [];
     mockAttachEntries = ATTACH;
 
@@ -435,6 +442,49 @@ describe('Palette', () => {
       mockFavoriteKeys = ['mcp:github'];
       renderPalette();
       expect(rows()).not.toContain('MCP Servers');
+    });
+
+    it('pins the MCP Servers chip from the MCP header, the way back after its X', async () => {
+      const user = userEvent.setup();
+      mockSetMcpPinned = jest.fn();
+      const { rerender } = renderPalette({ canAttach: false });
+
+      const pin = screen.getByRole('button', { name: 'Pin MCP Servers' });
+      expect(pin.closest('[data-row-key]')).toHaveAttribute('data-row-key', 'h:mcp');
+      expect(pin).toHaveAttribute('aria-pressed', 'false');
+      await user.click(pin);
+      expect(mockSetMcpPinned).toHaveBeenCalledWith(true);
+
+      mockMcpPinned = true;
+      rerender(
+        <RecoilRoot>
+          <div>
+            <Palette
+              index={0}
+              conversationId="convo-1"
+              conversation={{ conversationId: 'convo-1' } as TConversation}
+              files={new Map()}
+              setFiles={jest.fn()}
+              setFilesLoading={jest.fn()}
+              canAttach={false}
+              entries={ENTRIES}
+              anchorRef={{ current: document.createElement('div') }}
+            />
+          </div>
+        </RecoilRoot>,
+      );
+      const pressed = screen.getByRole('button', { name: 'Pin MCP Servers' });
+      expect(pressed).toHaveAttribute('aria-pressed', 'true');
+      await user.click(pressed);
+      expect(mockSetMcpPinned).toHaveBeenLastCalledWith(false);
+    });
+
+    it('keeps the MCP header and its pin while every server is starred', () => {
+      mockSetMcpPinned = jest.fn();
+      mockFavoriteKeys = ['mcp:github'];
+      renderPalette();
+      expect(headers()).toEqual(['Favorites', 'Attach', 'Tools', 'Skills', 'MCP Servers']);
+      expect(screen.getByRole('button', { name: 'Pin MCP Servers' })).toBeInTheDocument();
     });
 
     it('offers no upload destinations when the endpoint cannot take them', () => {
@@ -889,6 +939,30 @@ describe('Palette', () => {
       await user.keyboard(' ');
       expect(onConfigure).toHaveBeenCalledTimes(1);
       expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('exposes a named pin toggle a keyboard reaches before the star', async () => {
+      const user = userEvent.setup();
+      const onSelect = jest.fn();
+      const onPinChange = jest.fn();
+      renderPalette({
+        canAttach: false,
+        entries: [entry({ key: 'only', label: 'Only Tool', onSelect, onPinChange })],
+      });
+
+      const pin = screen.getByRole('button', { name: 'Pin Only Tool' });
+      expect(pin).toHaveAttribute('aria-pressed', 'false');
+      expect(pin.parentElement).toHaveClass('transition-none', 'opacity-100', 'no-touch:opacity-0');
+      expect(pin.closest('[role="gridcell"]')).not.toHaveAttribute('id');
+
+      await waitFor(() => expect(screen.getByTestId('composer-palette-search')).toHaveFocus());
+      await user.tab();
+      expect(pin).toHaveFocus();
+      await user.keyboard(' ');
+      expect(onPinChange).toHaveBeenCalledWith(true);
+      expect(onSelect).not.toHaveBeenCalled();
+      await user.tab();
+      expect(screen.getByRole('button', { name: 'Add to favorites' })).toHaveFocus();
     });
 
     it('exposes a touch-visible named favorite action outside the active gridcell', async () => {
