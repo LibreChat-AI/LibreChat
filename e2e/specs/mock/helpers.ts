@@ -443,8 +443,9 @@ export async function getCodeExecs(page: Page): Promise<CodeExecRecord[]> {
 }
 
 export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
-/** `hits` counts the stored copies of the file the query read. */
-export type RagQueryRecord = { file_id: string; query: string; hits: number };
+export type RagQueryRecord = { file_id: string; query: string };
+/** The owners of the stored copies of the file one file_search query read. */
+export type RagAnswerRecord = { file_id: string; owners: string[] };
 
 /** Every `/query` the fake RAG service received from file_search. */
 export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
@@ -452,6 +453,14 @@ export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
   expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
   const body = (await response.json()) as { queries: RagQueryRecord[] };
   return body.queries;
+}
+
+/** Which stored copies the fake RAG service answered each file_search query from. */
+export async function getRagAnswers(page: Page): Promise<RagAnswerRecord[]> {
+  const response = await page.request.get(`${RAG_API_BASE}/__debug/embedded`);
+  expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
+  const body = (await response.json()) as { answers: RagAnswerRecord[] };
+  return body.answers;
 }
 
 /** Files the fake code server received via /upload (proof they reached the code env). */

@@ -10,7 +10,7 @@ import {
   requestJson,
   seedRagCopy,
   messagesView,
-  getRagQueries,
+  getRagAnswers,
   getAccessToken,
   getRagEmbedded,
   resetProvisioning,
@@ -84,11 +84,11 @@ test.describe('file_search stored copies', () => {
         timeout: 10000,
       });
       await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${uniqueName('rag-hit')}`);
-      const searched = (await getRagQueries(page)).filter((q) => q.file_id === fileId);
+      const answered = (await getRagAnswers(page)).filter((answer) => answer.file_id === fileId);
       expect(
-        searched.map((q) => q.hits),
-        'RAG answers the search from both copies',
-      ).toEqual([2]);
+        answered.map((answer) => [...answer.owners].sort()),
+        "RAG answers the search from the agent's copy and the user's",
+      ).toEqual([[agentId, userId].sort()]);
 
       const view = messagesView(page);
       await view.getByRole('button', { name: /searched your files/i }).click();

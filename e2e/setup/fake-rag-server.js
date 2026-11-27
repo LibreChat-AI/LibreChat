@@ -14,7 +14,8 @@
  *   `HIT_MARKER`, the same chunk once per stored copy of the file that the RAG API
  *   would read: copies owned by the token's user or by the queried `entity_id`.
  *   Each chunk is sourced from the path its copy was embedded from, as the RAG API
- *   does. A query for `PROBE_K` chunks
+ *   does, and the owners of the copies it read are recorded under `answers`. A query
+ *   for `PROBE_K` chunks
  *   is priming's presence check, recorded under `probes` and answered from the
  *   stored embeds the way RAG authorizes chunks: a hit only when the file was
  *   embedded under the queried `entity_id`.
@@ -44,8 +45,11 @@ const HOST = '127.0.0.1';
 
 /** @type {Array<{ file_id: string; filename: string; entity_id: string; bytes: number; auth: string }>} */
 const embedded = [];
-/** @type {Array<{ file_id: string; query: string; hits: number }>} */
+/** @type {Array<{ file_id: string; query: string }>} */
 const queries = [];
+/** The owners of the stored copies each file_search query read, in query order.
+ *  @type {Array<{ file_id: string; owners: string[] }>} */
+const answers = [];
 /** @type {Array<{ file_id: string; entity_id: string; present: boolean }>} */
 const probes = [];
 /** Owner is the entity a copy was embedded for, else the user whose token embedded it.
@@ -142,7 +146,8 @@ async function handleQuery(req, res) {
     const hits = query.includes(HIT_MARKER)
       ? stored.filter((entry) => entry.file_id === body.file_id && owners.includes(entry.owner))
       : [];
-    queries.push({ file_id: body.file_id || '', query, hits: hits.length });
+    queries.push({ file_id: body.file_id || '', query });
+    answers.push({ file_id: body.file_id || '', owners: hits.map((hit) => hit.owner) });
     if (stallQueries) {
       return;
     }
@@ -213,7 +218,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (pathname === '/__debug/embedded' && req.method === 'GET') {
-      sendJson(res, 200, { embedded, queries, probes, deleted });
+      sendJson(res, 200, { embedded, queries, answers, probes, deleted });
       return;
     }
 
@@ -234,6 +239,7 @@ const server = http.createServer((req, res) => {
       stallQueries = false;
       embedded.length = 0;
       queries.length = 0;
+      answers.length = 0;
       probes.length = 0;
       deleted.length = 0;
       sendJson(res, 200, { ok: true });
