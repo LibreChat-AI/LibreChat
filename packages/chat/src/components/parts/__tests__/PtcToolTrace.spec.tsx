@@ -9,30 +9,10 @@ import { MessagePartsHostProvider, emptyToolCallChrome } from '../../../react/ho
 import { ptcTraceByToolCallId, ptcTraceKey } from '../../../react/stream/ptc';
 import { MessageContext, useMessageContext } from '../../../react/message';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import PtcToolTrace from '../PtcToolTrace';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string, values?: Record<string, unknown>): string => {
-      const translations: Record<string, string> = {
-        com_ui_ptc_trace_title: 'Tool calls',
-        com_ui_ptc_trace_running: 'running',
-        com_ui_ptc_trace_failed: 'failed',
-        com_ui_ptc_trace_done: 'done',
-        com_ui_ptc_trace_interrupted: 'interrupted',
-        com_ui_ptc_trace_earlier: `+${values?.count} earlier calls`,
-        com_ui_tool_name_code: 'Code',
-      };
-      if (key === 'com_ui_duration_seconds') {
-        return `${values?.[0]}s`;
-      }
-      return translations[key] ?? key;
-    },
-}));
-
-jest.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
+beforeAll(initEnglish);
 
 /** The app's host for this card: the trace is live state, scoped to the message the card is in. */
 const host = createMessagePartsHost({

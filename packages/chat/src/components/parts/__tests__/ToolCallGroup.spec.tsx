@@ -17,6 +17,7 @@ import { scheduleMessageContentLayoutReconcile } from '../../../react/messages/m
 import { MessagePartsHostProvider, emptyToolCallChrome } from '../../../react/host';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import PackageToolCallGroup from '../ToolCallGroup';
 import { HeaderActionSlotContext } from '../slot';
 import { FoldHeaderContext } from '../rail';
@@ -24,92 +25,7 @@ import { ToolAuthWarning } from '../auth';
 
 const mockMCPServerNames: string[] = [];
 
-function mockLocalize(key: string, values?: Record<string | number, string>): string {
-  if (key === 'com_ui_ran_n_actions') {
-    return `Ran ${values?.[0]} actions`;
-  }
-  if (key === 'com_ui_preparing_n_actions') {
-    return `Preparing ${values?.[0]} actions`;
-  }
-  if (key === 'com_ui_starting_n_subagents') {
-    return `Starting ${values?.[0]} subagents`;
-  }
-  if (key === 'com_ui_running_n_agents') {
-    return `Running ${values?.[0]} agents`;
-  }
-  if (key === 'com_ui_running_n_actions') {
-    return `Running ${values?.[0]} actions`;
-  }
-  if (key === 'com_ui_n_searches') {
-    return `${values?.[0]} searches`;
-  }
-  if (key === 'com_ui_background_tasks_checked') {
-    return 'Checked background tasks';
-  }
-  if (key === 'com_ui_background_tasks_checking') {
-    return 'Checking background tasks';
-  }
-  if (key === 'com_ui_background_tasks_n_checks') {
-    return `${values?.[0]} checks`;
-  }
-  if (key === 'com_ui_n_of_n_actions_failed') {
-    return `${values?.[0]}/${values?.[1]} failed`;
-  }
-  if (key === 'com_ui_n_actions_cancelled') {
-    return `${values?.[0]} cancelled`;
-  }
-  if (key === 'com_ui_one_action_cancelled') {
-    return '1 cancelled';
-  }
-  if (key === 'com_ui_web_searched') {
-    return 'Searched the web';
-  }
-  if (key === 'com_ui_web_searching') {
-    return 'Searching the web';
-  }
-  if (key === 'com_ui_retrieved_files') {
-    return 'Searched your files';
-  }
-  if (key === 'com_ui_searching_files') {
-    return 'Searching your files';
-  }
-  if (key === 'com_ui_searched_web_and_files') {
-    return 'Searched web and files';
-  }
-  if (key === 'com_ui_searching_web_and_files') {
-    return 'Searching web and files';
-  }
-  if (key === 'com_ui_asked_n_questions') {
-    return `Asked ${values?.[0]} questions`;
-  }
-  if (key === 'com_ui_asking_n_questions') {
-    return `Asking ${values?.[0]} questions`;
-  }
-  if (key === 'com_ui_asked_one_question') {
-    return 'Asked 1 question';
-  }
-  if (key === 'com_ui_asking_one_question') {
-    return 'Asking 1 question';
-  }
-  if (key === 'com_ui_subagent_complete') {
-    return 'Ran agent';
-  }
-  if (key === 'com_ui_subagent_running') {
-    return 'Running agent';
-  }
-  if (key === 'com_ui_via_server') {
-    return `via ${values?.[0]}`;
-  }
-  if (key === 'com_assistants_allow_sites_you_trust') {
-    return 'Only allow sites you trust';
-  }
-  return key;
-}
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => mockLocalize,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../../react/messages/messageLayout', () => ({
   ...jest.requireActual('../../../react/messages/messageLayout'),
@@ -330,7 +246,7 @@ describe('ToolCallGroup folded-in thought', () => {
 
   it('streams the thought at the tail of the group that holds the message cursor', () => {
     renderGroup({ ...baseProps, isLast: true });
-    expect(screen.getByRole('button', { name: 'com_ui_thinking' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Thinking...' })).toHaveAttribute(
       'aria-expanded',
       'false',
     );
@@ -339,7 +255,7 @@ describe('ToolCallGroup folded-in thought', () => {
 
   it('settles the thought at the tail of a body the run has moved past', () => {
     renderGroup({ ...baseProps, isLast: false });
-    expect(screen.getByRole('button', { name: 'com_ui_thoughts' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Thoughts' })).toBeInTheDocument();
     expect(screen.queryByTestId('streaming-thought-peek')).not.toBeInTheDocument();
   });
 });
@@ -507,7 +423,7 @@ describe('ToolCallGroup image hoisting', () => {
       renderPart: (_part, idx) => <ToolAuthWarning key={idx} />,
     });
 
-    expect(screen.getAllByText('Only allow sites you trust')).toHaveLength(1);
+    expect(screen.getAllByText('Only allow sites you trust.')).toHaveLength(1);
   });
 
   it('keeps the trust warning for a persisted incomplete authentication call', () => {
@@ -518,7 +434,7 @@ describe('ToolCallGroup image hoisting', () => {
       renderPart: () => <ToolAuthWarning key="auth-persisted" />,
     });
 
-    expect(screen.getByText('Only allow sites you trust')).toBeInTheDocument();
+    expect(screen.getByText('Only allow sites you trust.')).toBeInTheDocument();
   });
 
   it('does not render a shared trust warning for completed authentication calls', () => {
@@ -529,7 +445,7 @@ describe('ToolCallGroup image hoisting', () => {
       renderPart: () => null,
     });
 
-    expect(screen.queryByText('Only allow sites you trust')).not.toBeInTheDocument();
+    expect(screen.queryByText('Only allow sites you trust.')).not.toBeInTheDocument();
   });
 
   it('keeps the real header action target stable while the group updates', () => {
@@ -741,7 +657,7 @@ describe('ToolCallGroup image hoisting', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
 
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_thoughts' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Thoughts' })).not.toBeInTheDocument();
   });
 
   it('delegates an encrypted-reasoning part to the standalone renderer', () => {
@@ -763,7 +679,7 @@ describe('ToolCallGroup image hoisting', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
 
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_thoughts' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Thoughts' })).not.toBeInTheDocument();
   });
 
   it('unmounts tool bodies after a collapsed group finishes transitioning', () => {
@@ -1133,9 +1049,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Ran Code/ })).toBeInTheDocument();
   });
 
   it('names a lone running code call by what it is doing', () => {
@@ -1146,7 +1060,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Running Code/ })).toBeInTheDocument();
   });
 
   it('keeps a multi-call group in the running tense while one detached task runs', () => {
@@ -1229,7 +1143,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^Running Code/ })).toHaveAttribute(
       'aria-expanded',
       'true',
     );
@@ -1258,7 +1172,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Running Code/ })).toBeInTheDocument();
   });
 
   const handleOutput = JSON.stringify({
@@ -1281,7 +1195,7 @@ describe('ToolCallGroup image hoisting', () => {
     ].backgroundTask = { cancelled: true };
     renderGroup({ ...baseProps, parts: [{ part: cancelled, idx: 0 }], lastContentIdx: 0 });
 
-    expect(screen.getByRole('button', { name: /^com_ui_cancelled/ })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^Cancelled/ })).toHaveAttribute(
       'aria-expanded',
       'false',
     );
@@ -1310,9 +1224,7 @@ describe('ToolCallGroup image hoisting', () => {
 
     rerender(tree([settled]));
 
-    expect(
-      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).toHaveFocus();
+    expect(screen.getByRole('button', { name: /^Ran Code/ })).toHaveFocus();
   });
 
   it('does not call a failed lone code call "ran"', () => {
@@ -1333,9 +1245,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran Code/ })).not.toBeInTheDocument();
   });
 
   it('does not call a failed lone code call "running"', () => {
@@ -1356,9 +1266,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.queryByRole('button', { name: /^com_assistants_running_var/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Running Code/ })).not.toBeInTheDocument();
   });
 
   it('does not claim a lone code call ran when an interrupted legacy record has no success signal', () => {
@@ -1380,9 +1288,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran Code/ })).not.toBeInTheDocument();
   });
 
   it('does not claim a lone code call ran when an interrupted legacy record kept partial output', () => {
@@ -1404,9 +1310,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran Code/ })).not.toBeInTheDocument();
   });
 
   it('does not claim a lone code call ran when a legacy record has output but no progress field', () => {
@@ -1427,9 +1331,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran Code/ })).not.toBeInTheDocument();
   });
 
   it('calls a lone legacy code call ran once its progress reaches 1', () => {
@@ -1451,9 +1353,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Ran Code/ })).toBeInTheDocument();
   });
 
   it('does not call a stopped lone code call "ran"', () => {
@@ -1474,9 +1374,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran Code/ })).not.toBeInTheDocument();
   });
 
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
@@ -1925,7 +1823,7 @@ describe('ToolCallGroup failure fast path', () => {
     const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).toHaveAttribute('aria-expanded', 'false');
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 failed call out of 2 calls' }));
 
     expect(header).toHaveAttribute('aria-expanded', 'true');
     /** Once per row the group rendered, after those rows mounted. */
@@ -1992,7 +1890,7 @@ describe('ToolCallGroup failure fast path', () => {
     renderGroup(props(jest.fn()));
     const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).not.toHaveTextContent('1/2 failed');
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1 failed');
   });
 
   it('hides the redundant failure count inside a phase', () => {

@@ -8,15 +8,10 @@ import { MessagePartsHostProvider, emptyToolCallChrome } from '../../../react/ho
 import { MessageContext, useMessageContext } from '../../../react/message';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import BackgroundTaskCall from '../BackgroundTaskCall';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string): string =>
-      key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../../react/parts/useProgress', () => ({
   __esModule: true,
@@ -149,14 +144,14 @@ describe('BackgroundTaskCall', () => {
   it('presents a completed code task as a native result without leaking its JSON envelope', () => {
     renderCall(JSON.stringify(completed));
     const header = screen.getByTestId('task-header');
-    expect(header).toHaveTextContent('com_ui_background_tasks_checked');
+    expect(header).toHaveTextContent('Checked background tasks');
     expect(header).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByTestId('task-output')).not.toBeInTheDocument();
 
     fireEvent.click(header);
     const card = screen.getByTestId('background-task-card');
     expect(within(card).getByText('Code')).toBeInTheDocument();
-    expect(within(card).getByText('com_ui_background_tasks_completed')).toBeInTheDocument();
+    expect(within(card).getByText('Completed')).toBeInTheDocument();
     expect(within(card).getByTestId('tool-icon')).toHaveTextContent('bash_tool');
     expect(within(card).getByTestId('task-output')).toHaveTextContent('checked at=2026-09-27');
     expect(within(card).getByTestId('task-output').textContent).toContain('{\n  "checks": []\n}');
@@ -172,8 +167,10 @@ describe('BackgroundTaskCall', () => {
     renderCall(JSON.stringify({ tasks: [], outstanding: 0, partial: true, warning: 'Try again.' }));
     expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'failed');
     fireEvent.click(screen.getByTestId('task-header'));
-    expect(screen.getByText('com_ui_background_tasks_empty')).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_background_tasks_incomplete');
+    expect(screen.getByText('No background tasks yet')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Some background results may not be shown. Check again later.',
+    );
     expect(screen.queryByText('Try again.')).not.toBeInTheDocument();
   });
 
@@ -195,18 +192,13 @@ describe('BackgroundTaskCall', () => {
       { args: '{}' },
     );
     fireEvent.click(screen.getByTestId('task-header'));
-    expect(screen.getByRole('list', { name: 'com_ui_background_tasks' })).toHaveAttribute(
-      'tabindex',
-      '0',
-    );
+    expect(screen.getByRole('list', { name: 'Background tasks' })).toHaveAttribute('tabindex', '0');
     const [running, pending] = screen.getAllByTestId('background-task-card');
     expect(within(running).getByText('Web Search')).toBeInTheDocument();
-    expect(within(running).getByText('com_ui_background_tasks_running')).toBeInTheDocument();
-    expect(within(pending).getByText('com_ui_background_tasks_result_pending')).toBeInTheDocument();
-    expect(
-      within(pending).getByText('com_ui_background_tasks_result_available'),
-    ).toBeInTheDocument();
-    expect(within(pending).queryByText('com_ui_background_tasks_no_output')).toBeNull();
+    expect(within(running).getByText('Running')).toBeInTheDocument();
+    expect(within(pending).getByText('Result pending')).toBeInTheDocument();
+    expect(within(pending).getByText('Result available on request')).toBeInTheDocument();
+    expect(within(pending).queryByText('No output returned')).toBeNull();
   });
 
   it('shows an error with a failed task outcome and its actual error text', () => {
@@ -215,7 +207,7 @@ describe('BackgroundTaskCall', () => {
     );
     expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'failed');
     fireEvent.click(screen.getByTestId('task-header'));
-    expect(screen.getByText('com_ui_failed')).toBeInTheDocument();
+    expect(screen.getByText('Failed')).toBeInTheDocument();
     expect(screen.getByText('Disk full')).toBeInTheDocument();
   });
 
@@ -231,9 +223,9 @@ describe('BackgroundTaskCall', () => {
     );
     fireEvent.click(screen.getByTestId('task-header'));
     const card = screen.getByTestId('background-task-card');
-    expect(within(card).getByText('com_ui_background_tasks_control_queued')).toBeInTheDocument();
+    expect(within(card).getByText('Control queued')).toBeInTheDocument();
     expect(within(card).getByText('researcher')).toBeInTheDocument();
-    expect(within(card).queryByText('com_ui_background_tasks_completed')).toBeNull();
+    expect(within(card).queryByText('Completed')).toBeNull();
     expect(screen.queryByText(/control-42/)).not.toBeInTheDocument();
   });
 
@@ -250,9 +242,9 @@ describe('BackgroundTaskCall', () => {
     );
     fireEvent.click(screen.getByTestId('task-header'));
     const card = screen.getByTestId('background-task-card');
-    expect(within(card).getByText('com_ui_background_tasks_result_claimed')).toBeInTheDocument();
-    expect(within(card).queryByText('com_ui_subagent_status_finished')).toBeNull();
-    expect(within(card).queryByText('com_ui_background_tasks_result_available')).toBeNull();
+    expect(within(card).getByText('Result claimed')).toBeInTheDocument();
+    expect(within(card).queryByText('Finished')).toBeNull();
+    expect(within(card).queryByText('Result available on request')).toBeNull();
   });
 
   it('marks an interrupted subagent poll as failed even when the poll run step succeeded', () => {
@@ -268,17 +260,26 @@ describe('BackgroundTaskCall', () => {
     expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'failed');
     fireEvent.click(screen.getByTestId('task-header'));
     const card = screen.getByTestId('background-task-card');
-    expect(within(card).getByText('com_ui_subagent_thread_status_interrupted')).toBeInTheDocument();
+    expect(within(card).getByText('Interrupted')).toBeInTheDocument();
     expect(within(card).getByText('Server restarted before completion.')).toBeInTheDocument();
   });
 
   it.each([
-    ['invalid', 'com_ui_background_tasks_notice_invalid'],
-    ['rejected', 'com_ui_background_tasks_notice_rejected'],
-    ['unavailable', 'com_ui_background_tasks_notice_unavailable'],
-    ['not_found', 'com_ui_background_tasks_notice_not_found'],
-    ['outcome_unknown', 'com_ui_background_tasks_notice_outcome_unknown'],
-    ['result_unavailable', 'com_ui_background_tasks_notice_result_unavailable'],
+    ['invalid', 'Invalid background-task request. Check the task ID or control arguments.'],
+    ['rejected', 'The request was rejected. Check raw details before trying again.'],
+    [
+      'unavailable',
+      'Task or control temporarily unavailable. Check again; do not assume the task stopped or its result will not arrive.',
+    ],
+    ['not_found', 'No background task with that ID was found in this conversation.'],
+    [
+      'outcome_unknown',
+      "The task's outcome is unknown. Inspect the target system before repeating an action.",
+    ],
+    [
+      'result_unavailable',
+      'The result is temporarily unavailable. Check again later; do not automatically repeat a mutating action.',
+    ],
   ])(
     'announces a %s warning notice as a failed check even if the tool step succeeded',
     (status, label) => {
@@ -306,8 +307,14 @@ describe('BackgroundTaskCall', () => {
       }),
     );
     fireEvent.click(screen.getByTestId('task-header'));
-    expect(screen.getByText('com_ui_background_tasks_running_elsewhere')).toBeInTheDocument();
-    expect(screen.getAllByText('com_ui_background_tasks_subagent_wakeup_guidance')).toHaveLength(2);
+    expect(
+      screen.getByText('Still running outside this turn. Its result may arrive as a new turn.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        'This subagent will automatically resume the agent when it finishes; there is no need to poll it repeatedly.',
+      ),
+    ).toHaveLength(2);
     expect(screen.queryByText(note)).not.toBeInTheDocument();
     expect(screen.queryByText(message)).not.toBeInTheDocument();
   });
@@ -323,12 +330,12 @@ describe('BackgroundTaskCall', () => {
     });
     renderCall(raw);
     fireEvent.click(screen.getByTestId('task-header'));
-    expect(screen.getByText('com_ui_background_tasks_more_in_raw_details')).toBeInTheDocument();
+    expect(screen.getByText('More information in raw task details.')).toBeInTheDocument();
     expect(
       screen.getByText('Tool-created output remains visible in its own language.'),
     ).toBeInTheDocument();
     expect(screen.queryByText(note)).not.toBeInTheDocument();
-    const details = screen.getByText('com_ui_background_tasks_raw_details').closest('details');
+    const details = screen.getByText('Raw task details').closest('details');
     if (details == null) {
       throw new Error('Task details disclosure is missing');
     }
@@ -348,7 +355,9 @@ describe('BackgroundTaskCall', () => {
     );
     fireEvent.click(screen.getByTestId('task-header'));
     expect(
-      screen.getAllByText('com_ui_background_tasks_notice_delivery_scheduled').length,
+      screen.getAllByText(
+        'Result assigned to another poll or automatic delivery. It may still arrive as a new turn.',
+      ).length,
     ).toBeGreaterThan(1);
     expect(screen.queryByText('This result will arrive in a new turn.')).not.toBeInTheDocument();
     expect(screen.queryByTestId('tool-call-info')).not.toHaveAttribute('data-output');
@@ -373,7 +382,7 @@ describe('BackgroundTaskCall', () => {
     fireEvent.click(screen.getByTestId('task-header'));
     expect(screen.queryByText(/control-42/)).not.toBeInTheDocument();
 
-    const details = screen.getByText('com_ui_background_tasks_raw_details').closest('details');
+    const details = screen.getByText('Raw task details').closest('details');
     expect(details).not.toBeNull();
     if (details == null) {
       throw new Error('Task details disclosure is missing');
@@ -394,13 +403,13 @@ describe('BackgroundTaskCall', () => {
     const announcement = container.querySelector('[aria-live="polite"]');
     expect(announcement).toHaveClass('sr-only');
     expect(announcement).toHaveAttribute('aria-atomic', 'true');
-    expect(announcement).toHaveTextContent('com_ui_background_tasks_checking');
+    expect(announcement).toHaveTextContent('Checking background tasks');
     rerender(
       <Host>
         <BackgroundTaskCall args={finalArgs} output="" isSubmitting={true} initialProgress={0.1} />
       </Host>,
     );
-    expect(announcement).toHaveTextContent('com_ui_background_tasks_checking');
+    expect(announcement).toHaveTextContent('Checking background tasks');
     rerender(
       <Host>
         <BackgroundTaskCall
@@ -416,8 +425,14 @@ describe('BackgroundTaskCall', () => {
   });
 
   it.each([
-    ['delivery_scheduled', 'com_ui_background_tasks_notice_delivery_scheduled'],
-    ['result_persisting', 'com_ui_background_tasks_notice_result_persisting'],
+    [
+      'delivery_scheduled',
+      'Result assigned to another poll or automatic delivery. It may still arrive as a new turn.',
+    ],
+    [
+      'result_persisting',
+      'The result is being saved or recovered. Check again shortly; do not rerun the task.',
+    ],
   ])('announces %s as a pending state rather than a task failure', (status, label) => {
     const { container } = renderCall(
       JSON.stringify({ status, message: 'Untranslated backend status message.' }),
@@ -429,8 +444,8 @@ describe('BackgroundTaskCall', () => {
   });
 
   it.each([
-    ['failed', 'com_ui_failed_subject'],
-    ['cancelled', 'com_ui_cancelled'],
+    ['failed', 'Failed: Background tasks'],
+    ['cancelled', 'Cancelled'],
   ])('announces an explicit %s tool-run status ahead of benign output', (runStepStatus, label) => {
     const { container } = renderCall(
       JSON.stringify({ status: 'delivery_scheduled', message: 'The result will arrive later.' }),
@@ -439,7 +454,7 @@ describe('BackgroundTaskCall', () => {
     expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', runStepStatus);
     expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(label);
     expect(container.querySelector('[aria-live="polite"]')).not.toHaveTextContent(
-      'com_ui_background_tasks_notice_delivery_scheduled',
+      'Result assigned to another poll or automatic delivery. It may still arrive as a new turn.',
     );
   });
 
@@ -452,7 +467,7 @@ describe('BackgroundTaskCall', () => {
     );
     expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'cancelled');
     expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(
-      'com_ui_background_tasks_result_discarded',
+      'Finished result discarded. It will not arrive as a new turn.',
     );
   });
 
@@ -525,26 +540,24 @@ describe('BackgroundTaskCall', () => {
     const card = screen.getByTestId('background-task-card');
     expect(within(card).getByText('pr-reviewer')).toBeInTheDocument();
     const progress = screen.getByTestId('subagent-progress');
-    expect(within(progress).getByText('com_ui_subagent_progress_tool_calls')).toBeInTheDocument();
-    expect(within(progress).getByText('com_ui_subagent_progress_failed')).toBeInTheDocument();
+    expect(within(progress).getByText('9 tool calls')).toBeInTheDocument();
+    expect(within(progress).getByText('1 failed')).toBeInTheDocument();
     const rows = within(progress).getAllByRole('listitem');
     expect(rows).toHaveLength(3);
-    expect(rows[0]).toHaveTextContent('com_ui_subagent_progress_steps_range');
+    expect(rows[0]).toHaveTextContent('Steps 1–3');
     expect(within(rows[0]).getByText('Code')).toBeInTheDocument();
     expect(within(rows[0]).getByText('2')).toBeInTheDocument();
-    expect(within(rows[0]).getByRole('img', { name: 'com_ui_failed' })).toBeInTheDocument();
+    expect(within(rows[0]).getByRole('img', { name: 'Failed' })).toBeInTheDocument();
     expect(rows[1]).toHaveTextContent('read_file');
     expect(rows[2]).toHaveTextContent('Running the jest suite');
     expect(progress.querySelector('details')).toBeNull();
-    expect(
-      within(progress).getAllByRole('img', { name: 'com_ui_background_tasks_running' }),
-    ).toHaveLength(1);
+    expect(within(progress).getAllByRole('img', { name: 'Running' })).toHaveLength(1);
     expect(
       within(screen.getByTestId('background-task-card')).getByText(
-        'com_ui_background_tasks_subagent_wakeup_guidance',
+        'This subagent will automatically resume the agent when it finishes; there is no need to poll it repeatedly.',
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_wakeup_view_activity' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'View activity' })).toBeNull();
   });
 
   it('drops a malformed progress digest without losing the task card', () => {
@@ -579,7 +592,7 @@ describe('BackgroundTaskCall', () => {
       </Host>,
     );
     fireEvent.click(screen.getByTestId('task-header'));
-    const open = screen.getByRole('button', { name: 'com_ui_wakeup_view_activity' });
+    const open = screen.getByRole('button', { name: 'View activity' });
     expect(open).toHaveAttribute('data-subagent-tool-call', 'wakeup:thread-reviewer');
     fireEvent.click(open);
     expect(claimForeground).toHaveBeenCalledTimes(1);

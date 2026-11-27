@@ -10,6 +10,7 @@ import { GeneratedToolLabelContext } from '../../../react/parts/disclosure';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { FilesHostProvider } from '../../../react/files';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import RetrievalCall from '../Retrieval';
 
 const knownFiles: { current: TFile[] } = { current: [] };
@@ -30,21 +31,7 @@ const partsHost = createMessagePartsHost({
     ) : null,
 });
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => {
-    const translations: Record<string, string> = {
-      com_ui_searching_files: 'Searching your files',
-      com_ui_retrieved_files: 'Searched your files',
-      com_ui_retrieval_failed: 'failed',
-      com_ui_tool_failed: 'failed',
-      com_ui_preview: 'Preview',
-      com_ui_relevance: 'Relevance',
-      com_file_pages: 'Pages',
-    };
-    return translations[key] || key;
-  },
-}));
+beforeAll(initEnglish);
 
 jest.mock('../useExpandCollapse', () => ({
   __esModule: true,

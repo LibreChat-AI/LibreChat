@@ -11,33 +11,10 @@ import {
 } from '../../../react/parts/disclosure';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import BashCall from '../BashCall';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string, values?: Record<string, string>): string => {
-      const translations: Record<string, string> = {
-        com_ui_command_exit_code: `exit code ${values?.[0]}`,
-        com_ui_command_terminated: `terminated by ${values?.[0]}`,
-        com_ui_command_timed_out: 'timed out',
-        com_ui_writing_command: 'Writing command',
-        com_ui_running_command: 'Running command',
-        com_ui_command_finished: 'Ran command',
-        com_ui_cancelled: 'Cancelled',
-        com_ui_copy_code: 'Copy code',
-        com_ui_background_running: 'Running in background',
-        com_ui_background_finished: 'Finished in background',
-        com_ui_tool_failed: 'tool failed',
-        com_ui_copy: 'Copy output',
-        com_ui_no_output: 'No output',
-        com_ui_show_more: 'Show more',
-        com_ui_show_less: 'Show less',
-      };
-      return translations[key] ?? key;
-    },
-}));
+beforeAll(initEnglish);
 
 jest.mock('../CopyButton', () => ({
   __esModule: true,
@@ -661,7 +638,7 @@ describe('BashCall output pane', () => {
   it('copies the raw output', () => {
     const output = 'ok 1\nok 2\n';
     finished(output);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy output' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
     expect(copy).toHaveBeenCalledWith(output, { format: 'text/plain' });
   });
 
@@ -730,7 +707,7 @@ describe('BashCall exit status', () => {
     renderSettled(
       'stdout:\nsleeping\n\n[terminated by SIGKILL][timed out]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects.',
     );
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     expect(screen.getByText(/Before retrying/)).toBeInTheDocument();
   });
 

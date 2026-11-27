@@ -15,15 +15,13 @@ import type {
 import { liveAppliedSteerFamily, liveAppliedSteerIdsAtom } from '../../../react/steer/atoms';
 import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../react/host';
 import { STEER_ICON } from '../../composer/steering/identity';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SteerPart from '../SteerPart';
 
 let mockShareContext: { isSharedConvo?: boolean; shareId?: string } = {};
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../messages/MessageTimestamp', () => ({
   __esModule: true,
@@ -129,7 +127,7 @@ describe('SteerPart author label', () => {
   it('labels with the logged-in user name in the owner view (username display on)', () => {
     renderPart();
     expect(screen.getByText('Danny')).toBeInTheDocument();
-    expect(screen.queryByText('com_user_message')).toBeNull();
+    expect(screen.queryByText('You')).toBeNull();
   });
 
   it('renders on the share route, where there is no auth context and no user', () => {
@@ -141,7 +139,7 @@ describe('SteerPart author label', () => {
 
     expect(() => renderPart(undefined, null)).not.toThrow();
     expect(screen.getByText('steered words')).toBeInTheDocument();
-    expect(screen.getByText('com_user_message')).toBeInTheDocument();
+    expect(screen.getByText('You')).toBeInTheDocument();
   });
 
   it('never renders the viewer identity on a shared steer bubble', () => {
@@ -159,7 +157,7 @@ describe('SteerPart author label', () => {
     mockShareContext = { isSharedConvo: true, shareId: 'share-1' };
     renderPart();
     expect(screen.queryByText('Danny')).toBeNull();
-    expect(screen.getByText('com_user_message')).toBeInTheDocument();
+    expect(screen.getByText('You')).toBeInTheDocument();
   });
 
   it('shows the applied receipt with its explanation as the accessible label', () => {
@@ -168,7 +166,9 @@ describe('SteerPart author label', () => {
     // is the trigger's accessible label so the marks never read as bare glyphs.
     const receipt = screen.getByTestId('steer-receipt');
     expect(receipt).toHaveAttribute('data-receipt-state', 'applied');
-    expect(screen.getByLabelText('com_ui_steer_applied_info')).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Applied. The agent received this message while it was responding.'),
+    ).toBeInTheDocument();
   });
 
   it('keeps the receipt visible at rest instead of gating it behind hover', () => {
@@ -327,7 +327,9 @@ describe('SteerPart live receipt draw-in', () => {
   }
 
   const appliedChecks = () =>
-    screen.getByLabelText('com_ui_steer_applied_info').querySelector('svg');
+    screen
+      .getByLabelText('Applied. The agent received this message while it was responding.')
+      .querySelector('svg');
 
   it('animates the checks once when its applied event landed this session, then consumes the id', () => {
     renderLive(['s1', 'other']);
@@ -371,7 +373,10 @@ describe('SteerPart live receipt draw-in', () => {
 });
 
 describe('SteerPart receipt settling', () => {
-  const checks = () => screen.getByLabelText('com_ui_steer_applied_info').querySelector('svg');
+  const checks = () =>
+    screen
+      .getByLabelText('Applied. The agent received this message while it was responding.')
+      .querySelector('svg');
 
   it('keeps the steer identity while the owning response is still generating', () => {
     render(

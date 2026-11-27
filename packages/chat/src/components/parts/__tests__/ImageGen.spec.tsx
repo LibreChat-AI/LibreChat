@@ -3,27 +3,17 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import ImageGen from '../ImageGen';
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => {
-    const translations: Record<string, string> = {
-      com_ui_generating_image: 'Generating image...',
-      com_ui_image_created: 'Image created',
-      com_ui_image_gen_failed: 'Image generation failed',
-      com_ui_getting_started: 'Getting started',
-      com_ui_creating_image: 'Creating image',
-      com_ui_adding_details: 'Adding details',
-      com_ui_final_touch: 'Final touch',
-      com_ui_error: 'Error',
-    };
-    return translations[key] || key;
-  },
   PixelCard: (props: Record<string, unknown>) => (
     <div data-testid="pixel-card" data-progress={props.progress} />
   ),
 }));
+
+beforeAll(initEnglish);
 
 jest.mock('../../../react/parts/useProgress', () => ({
   __esModule: true,
@@ -218,5 +208,6 @@ describe('ImageGen - A11Y-04: screen reader status announcements', () => {
     const liveRegion = document.querySelector('[aria-live="polite"]');
     expect(liveRegion).not.toBeNull();
     expect(liveRegion!.className).toContain('sr-only');
+    expect(liveRegion).toHaveTextContent('Image created');
   });
 });

@@ -12,6 +12,7 @@ import { MessageSurfaceContext } from '../../../react/messages/surface';
 import { setDefaultMessagePartsHost } from '../../../react/host';
 import PackageActivityPhaseGroup from '../ActivityPhaseGroup';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import { FOLD_EASING } from '../PhaseLabel';
 import { useFailedReveal } from '../reveal';
 import { foldHolds } from '../fold';
@@ -19,14 +20,7 @@ import { foldHolds } from '../fold';
 const mockUseSmoothStreaming = jest.fn(() => true);
 const mockScheduleLayoutReconcile = jest.fn((_target: HTMLElement | null) => jest.fn());
 
-function mockLocalize(key: string, values?: Record<string | number, string>): string {
-  return key === 'com_ui_n_of_n_actions_failed' ? `${values?.[0]}/${values?.[1]} failed` : key;
-}
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => mockLocalize,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../../react/messages/messageLayout', () => ({
   ...jest.requireActual('../../../react/messages/messageLayout'),
@@ -552,8 +546,10 @@ describe('ActivityPhaseGroup failure fast path', () => {
       </ActivityPhaseGroup>,
     );
 
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
-    expect(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' })).toBeInTheDocument();
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1 failed');
+    expect(
+      screen.getByRole('button', { name: 'Show 1 failed call out of 3 calls' }),
+    ).toBeInTheDocument();
   });
 
   /** A closed card has drawn none of its rows, so the document cannot say which calls are in
@@ -623,8 +619,8 @@ describe('ActivityPhaseGroup failure fast path', () => {
       </ActivityPhaseGroup>,
     );
     fireEvent.click(screen.getByRole('button', { name: LABEL }));
-    const pill = screen.getByRole('button', { name: 'com_ui_show_failed_n_of_n' });
-    expect(pill).toHaveTextContent('com_ui_n_actions_failed');
+    const pill = screen.getByRole('button', { name: 'Show 2 failed calls out of 2 calls' });
+    expect(pill).toHaveTextContent('2 failed');
     fireEvent.click(pill);
     expect(onReveal).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
@@ -636,7 +632,7 @@ describe('ActivityPhaseGroup failure fast path', () => {
         <div />
       </ActivityPhaseGroup>,
     );
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1 failed');
     expect(screen.getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
   });
 
@@ -827,8 +823,8 @@ describe('ActivityPhaseGroup open live header', () => {
     fireEvent.click(screen.getByRole('button'));
     settle();
     const header = screen.getByRole('button');
-    expect(within(header).getByTitle('com_ui_running')).toBeInTheDocument();
-    expect(within(header).queryByTitle('com_ui_thinking')).toBeNull();
+    expect(within(header).getByTitle('Running...')).toBeInTheDocument();
+    expect(within(header).queryByTitle('Thinking...')).toBeNull();
   });
 
   const runningCall = (intent: string): TMessageContentParts =>
@@ -866,7 +862,7 @@ describe('ActivityPhaseGroup open live header', () => {
     settle();
     const header = screen.getByRole('button');
     expect(within(header).queryByTitle(intent)).toBeNull();
-    expect(within(header).getByTitle('com_ui_running')).toBeInTheDocument();
+    expect(within(header).getByTitle('Running...')).toBeInTheDocument();
   });
 
   test('titles an open card by the newest batch label behind a running call', () => {
@@ -900,7 +896,7 @@ describe('ActivityPhaseGroup open live header', () => {
     );
 
     const count = screen.getByTestId('live-phase-combo');
-    expect(count).toHaveTextContent(background ? 'com_ui_background_tasks_n_checks' : '×2');
+    expect(count).toHaveTextContent(background ? '2 checks' : '×2');
     expect(count).toHaveClass(background ? 'text-text-secondary' : 'sr-only');
     const header = screen.getByRole('button');
     expect(header.getAttribute('aria-labelledby')?.split(' ')).toContain(count.id);

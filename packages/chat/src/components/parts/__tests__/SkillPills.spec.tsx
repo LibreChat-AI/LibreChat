@@ -3,14 +3,10 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, params?: Record<string, unknown>) =>
-    `${key}:${params?.[0] ?? ''}`,
-}));
-
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SkillPills from '../SkillPills';
+
+beforeAll(initEnglish);
 
 describe('SkillPills', () => {
   it('renders nothing when skills is undefined', () => {
@@ -33,7 +29,7 @@ describe('SkillPills', () => {
 
   it('localizes the list aria-label (manual default)', () => {
     render(<SkillPills skills={['pptx']} />);
-    expect(screen.getByRole('list')).toHaveAttribute('aria-label', 'com_ui_skills_manual_invoked:');
+    expect(screen.getByRole('list')).toHaveAttribute('aria-label', 'Manually invoked skills');
   });
 
   it('tags each pill with data-skill-source="manual" by default', () => {
@@ -44,10 +40,7 @@ describe('SkillPills', () => {
 
   it('switches aria-label and data attribute for source="always-apply"', () => {
     render(<SkillPills skills={['legal']} source="always-apply" />);
-    expect(screen.getByRole('list')).toHaveAttribute(
-      'aria-label',
-      'com_ui_skills_always_apply_invoked:',
-    );
+    expect(screen.getByRole('list')).toHaveAttribute('aria-label', 'Auto-applied skills');
     const items = screen.getAllByRole('listitem');
     expect(items[0]).toHaveAttribute('data-skill-source', 'always-apply');
   });

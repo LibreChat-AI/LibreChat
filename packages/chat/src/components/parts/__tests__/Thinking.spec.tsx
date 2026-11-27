@@ -7,11 +7,9 @@ import '@testing-library/jest-dom';
 import { ThinkingButton, ThinkingContent, ThinkingLabel } from '../Thinking';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 /** Every activity row is set at `tool-status-text`. A reasoning header sized to the reader's
  *  body text was the one row that grew with that setting. */

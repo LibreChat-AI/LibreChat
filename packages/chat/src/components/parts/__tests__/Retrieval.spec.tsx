@@ -10,24 +10,10 @@ import type { FilesHost } from '../../../react/files';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { FilesHostProvider } from '../../../react/files';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import RetrievalCall from '../Retrieval';
 
-const TRANSLATIONS: Record<string, string> = {
-  com_ui_preview: 'Preview',
-  com_ui_relevance: 'Relevance',
-  com_file_pages: 'Pages: {{pages}}',
-  com_ui_retrieved_files: 'Searched your files',
-  com_ui_searching_files: 'Searching your files',
-};
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, string>) =>
-    Object.entries(values ?? {}).reduce(
-      (text, [name, value]) => text.replace(`{{${name}}}`, value),
-      TRANSLATIONS[key] ?? key,
-    ),
-}));
+beforeAll(initEnglish);
 
 const EXCERPT = 'Revenue grew twelve percent.';
 const OUTPUT = ['File: quarterly-report.pdf', 'Relevance: 0.92', `Content: ${EXCERPT}`].join('\n');

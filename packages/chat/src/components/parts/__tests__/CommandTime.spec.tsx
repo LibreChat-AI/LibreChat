@@ -4,17 +4,13 @@
 import { act, render, screen } from '@testing-library/react';
 import type { ToolCallPhase } from '../../../core/parts/toolCallPhase';
 import CommandTime, { useCommandClock } from '../CommandTime';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
 function Clock({ phase, durationMs }: { phase: ToolCallPhase; durationMs?: number }) {
   return <CommandTime phase={phase} ms={useCommandClock(phase, durationMs)} />;
 }
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values: Record<string, string>) =>
-    key === 'com_ui_duration_seconds' ? `${values[0]}s` : key,
-}));
-jest.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
+beforeAll(initEnglish);
 
 afterEach(() => jest.useRealTimers());
 it('ticks in tenths while running and stops once completed', () => {

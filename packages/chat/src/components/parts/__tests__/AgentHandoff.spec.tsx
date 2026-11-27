@@ -6,21 +6,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { AgentDisplay } from 'librechat-data-provider';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import AgentHandoff from '../AgentHandoff';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => {
-    const translations: Record<string, string> = {
-      com_ui_transferred_to: 'Transferred to',
-      com_ui_agent: 'Agent',
-      com_ui_handoff_instructions: 'Handoff instructions',
-      com_ui_copy_to_clipboard: 'Copy to clipboard',
-      com_ui_copied_to_clipboard: 'Copied to clipboard',
-    };
-    return translations[key] || key;
-  },
-}));
+beforeAll(initEnglish);
 
 jest.mock('../useExpandCollapse', () => ({
   __esModule: true,

@@ -5,12 +5,10 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import CodeAnalyze from '../CodeAnalyze';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../../react/parts/useProgress', () => ({
   __esModule: true,
@@ -37,11 +35,11 @@ const draw = (props: Partial<React.ComponentProps<typeof CodeAnalyze>> = {}, aut
 describe('CodeAnalyze', () => {
   it('announces that it is analyzing while the call runs, and that it finished after', () => {
     const { container, unmount } = draw({ initialProgress: 0.1 });
-    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent('com_ui_analyzing');
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent('Analyzing');
     unmount();
     const finished = draw({ initialProgress: 1 });
     expect(finished.container.querySelector('[aria-live="polite"]')).toHaveTextContent(
-      'com_ui_analyzing_finished',
+      'Finished analyzing',
     );
   });
 
@@ -55,7 +53,7 @@ describe('CodeAnalyze', () => {
     const { container } = draw({
       outputs: [{ logs: 'first' }, { image: 'file_1' }, { logs: 'second' }],
     });
-    expect(screen.getByText('com_ui_result')).toBeInTheDocument();
+    expect(screen.getByText('Result')).toBeInTheDocument();
     expect(container.querySelector('.code-analyze-block pre[dir="ltr"]')?.textContent).toBe(
       'first\nsecond\n',
     );
@@ -63,7 +61,7 @@ describe('CodeAnalyze', () => {
 
   it('has no result pane when nothing was logged', () => {
     draw({ outputs: [{ image: 'file_1' }] });
-    expect(screen.queryByText('com_ui_result')).not.toBeInTheDocument();
+    expect(screen.queryByText('Result')).not.toBeInTheDocument();
   });
 
   it('stays folded where they do not, and tells the caller when the reader opens it', () => {
@@ -71,7 +69,7 @@ describe('CodeAnalyze', () => {
     const { container } = draw({ onExpand }, false);
     expect(container.querySelector('.code-analyze-block')).toBeNull();
 
-    const toggle = screen.getByRole('button', { name: /com_ui_analyzing_finished/ });
+    const toggle = screen.getByRole('button', { name: /Finished analyzing/ });
     fireEvent.click(toggle);
     expect(container.querySelector('.code-analyze-block')).not.toBeNull();
     expect(onExpand).toHaveBeenCalledTimes(1);

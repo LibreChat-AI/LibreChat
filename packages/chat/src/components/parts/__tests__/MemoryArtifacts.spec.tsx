@@ -5,18 +5,10 @@ import React from 'react';
 import { Tools } from 'librechat-data-provider';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { TAttachment, MemoryArtifact } from 'librechat-data-provider';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import MemoryArtifacts from '../MemoryArtifacts';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => {
-    const translations: Record<string, string> = {
-      com_ui_memory_updated: 'Updated saved memory',
-      com_ui_memory_error: 'Memory Error',
-    };
-    return translations[key] || key;
-  },
-}));
+beforeAll(initEnglish);
 
 jest.mock('../useExpandCollapse', () => ({
   __esModule: true,

@@ -9,15 +9,10 @@ import { ptcTraceByToolCallId, ptcTraceKey } from '../../../react/stream/ptc';
 import { MessageContext, useMessageContext } from '../../../react/message';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import ExecuteCode from '../ExecuteCode';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string): string =>
-      key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../../react/parts/useProgress', () => ({
   __esModule: true,
@@ -72,8 +67,6 @@ jest.mock('../useLazyHighlight', () => {
   };
   return { __esModule: true, default: useMockLazyHighlight };
 });
-
-jest.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
 
 /**
  * The host these cases run under: tools open on arrival, mirroring the user who watches the code
@@ -201,12 +194,13 @@ describe('ExecuteCode programmatic tool trace', () => {
       { callId: 'a', name: 'read_file', status: 'success', args: 'path=a.ts', durationMs: 1200 },
     ]);
 
+    expect(getByText('Tool calls')).toBeInTheDocument();
     expect(getByText('path=a.ts')).toBeInTheDocument();
   });
 
   it('adds nothing to a plain code execution that made no inner calls', () => {
     const { queryByText } = renderWithTrace([]);
 
-    expect(queryByText('com_ui_ptc_trace_title')).not.toBeInTheDocument();
+    expect(queryByText('Tool calls')).not.toBeInTheDocument();
   });
 });
