@@ -125,8 +125,6 @@ export const ChatProjectFileErrors = {
   storage: 'Project storage limit reached',
 } as const;
 
-/** Attempts a capped-storage attach makes when other attaches or removals keep moving the project. */
-const STORAGE_ATTACH_ATTEMPTS = 5;
 
 const DUPLICATE_KEY = 11000;
 
@@ -761,7 +759,10 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         return null;
       }
       if (capsStorage && (current.contextRevision ?? 0) !== (project.contextRevision ?? 0)) {
-        if (attempt >= STORAGE_ATTACH_ATTEMPTS) {
+        /* Each lost race means another attach or removal landed, and a project holds at most
+         * maxFiles files, so maxFiles + 1 rounds outlast any burst of competing attaches;
+         * the bound follows maxFiles rather than adding a setting of its own. */
+        if (attempt > maxFiles) {
           throw new Error(CHAT_PROJECT_CONFLICT);
         }
         return await addChatProjectFile(user, projectId, fileId, limits, attempt + 1);
