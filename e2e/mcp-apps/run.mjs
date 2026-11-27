@@ -17,7 +17,6 @@ const runtimeSandboxUrl =
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const require = createRequire(path.join(root, 'package.json'));
-const { MongoMemoryServer } = require('mongodb-memory-server');
 const statePath = path.join(root, 'e2e/.generated/mcp-apps-state.json');
 
 const env = {
@@ -33,14 +32,43 @@ const env = {
   CREDS_IV: process.env.CREDS_IV || randomBytes(16).toString('hex'),
 };
 
-const command = (name) => (process.platform === 'win32' ? `${name}.cmd` : name);
+function quoteCmdArg(arg) {
+  if (arg === '') {
+    return '""';
+  }
+  if (/[\s"&|<>^()%!=,]/.test(arg)) {
+    return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1')}"`;
+  }
+  return arg;
+}
 
-function run(executable, args, overrides = {}) {
+/** Build a cross-platform spawn target so `.cmd` wrappers on Windows run via `cmd.exe` without `EINVAL` or `DEP0190`. */
+export function buildSpawnSpec(
+  executable,
+  args = [],
+  { platform = process.platform, comSpec = process.env.ComSpec } = {},
+) {
+  if (platform !== 'win32') {
+    return { command: executable, args: [...args], options: {} };
+  }
+
+  const cmdExecutable = /\.(cmd|bat)$/i.test(executable) ? executable : `${executable}.cmd`;
+  const cmdLine = [cmdExecutable, ...args].map(quoteCmdArg).join(' ');
+  return {
+    command: comSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', `"${cmdLine}"`],
+    options: { windowsVerbatimArguments: true },
+  };
+}
+
+export function run(executable, args, overrides = {}, spawnImpl = spawn, stdio = 'inherit') {
+  const spec = buildSpawnSpec(executable, args);
   return new Promise((resolve, reject) => {
-    const child = spawn(command(executable), args, {
+    const child = spawnImpl(spec.command, spec.args, {
       cwd: root,
       env: { ...env, ...overrides },
-      stdio: 'inherit',
+      stdio,
+      ...spec.options,
     });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
@@ -66,44 +94,58 @@ const phases = [
   },
 ];
 
-let mongo;
-try {
-  // Build like an official prebuilt image: the browser must receive its Sandbox URL at runtime.
-  await run('npm', ['run', 'e2e:prepare'], { VITE_MCP_SANDBOX_URL: '' });
-  mongo = await MongoMemoryServer.create({
-    instance: { ip: '127.0.0.1', dbName: 'LibreChat-e2e' },
-  });
-  env.E2E_USE_MEMORY_MONGO = 'false';
-  env.MONGO_URI = mongo.getUri('LibreChat-e2e');
+async function main() {
+  const { MongoMemoryServer } = require('mongodb-memory-server');
+  let mongo;
+  try {
+    // Build like an official prebuilt image: the browser must receive its Sandbox URL at runtime.
+    await run('npm', ['run', 'e2e:prepare'], { VITE_MCP_SANDBOX_URL: '' });
+    mongo = await MongoMemoryServer.create({
+      instance: { ip: '127.0.0.1', dbName: 'LibreChat-e2e' },
+    });
+    env.E2E_USE_MEMORY_MONGO = 'false';
+    env.MONGO_URI = mongo.getUri('LibreChat-e2e');
 
-  for (const phase of phases) {
-    const resultsFile = path.join(root, `e2e/.generated/mcp-apps-result-${phase.name}.json`);
-    fs.rmSync(resultsFile, { force: true });
-    await run(
-      'npx',
-      [
-        'playwright',
-        'test',
-        '--config=e2e/playwright.config.mcp-apps.ts',
-        '--reporter=line,html,json',
-      ],
-      {
-        E2E_MCP_APPS_PHASE: phase.name,
-        E2E_MCP_APPS_POLICY: phase.policy,
-        E2E_MCP_APP_RESOURCE_LIMIT: phase.E2E_MCP_APP_RESOURCE_LIMIT || '',
-        E2E_MCP_APP_TOOL_CALL_LIMIT: phase.E2E_MCP_APP_TOOL_CALL_LIMIT || '',
-        PLAYWRIGHT_HTML_OPEN: 'never',
-        PLAYWRIGHT_HTML_OUTPUT_DIR: path.join(root, `e2e/playwright-report/mcp-apps-${phase.name}`),
-        PLAYWRIGHT_JSON_OUTPUT_FILE: resultsFile,
-      },
-    );
-    const passed = assertMCPAppsPhaseResults(
-      JSON.parse(fs.readFileSync(resultsFile, 'utf8')),
-      phase.name,
-      phase.minimumPassed,
-    );
-    console.log(`MCP Apps ${phase.name}: ${passed} browser test(s) passed`);
+    for (const phase of phases) {
+      const resultsFile = path.join(root, `e2e/.generated/mcp-apps-result-${phase.name}.json`);
+      fs.rmSync(resultsFile, { force: true });
+      await run(
+        'npx',
+        [
+          'playwright',
+          'test',
+          '--config=e2e/playwright.config.mcp-apps.ts',
+          '--reporter=line,html,json',
+        ],
+        {
+          E2E_MCP_APPS_PHASE: phase.name,
+          E2E_MCP_APPS_POLICY: phase.policy,
+          E2E_MCP_APP_RESOURCE_LIMIT: phase.E2E_MCP_APP_RESOURCE_LIMIT || '',
+          E2E_MCP_APP_TOOL_CALL_LIMIT: phase.E2E_MCP_APP_TOOL_CALL_LIMIT || '',
+          PLAYWRIGHT_HTML_OPEN: 'never',
+          PLAYWRIGHT_HTML_OUTPUT_DIR: path.join(root, `e2e/playwright-report/mcp-apps-${phase.name}`),
+          PLAYWRIGHT_JSON_OUTPUT_FILE: resultsFile,
+        },
+      );
+      const passed = assertMCPAppsPhaseResults(
+        JSON.parse(fs.readFileSync(resultsFile, 'utf8')),
+        phase.name,
+        phase.minimumPassed,
+      );
+      console.log(`MCP Apps ${phase.name}: ${passed} browser test(s) passed`);
+    }
+  } finally {
+    await mongo?.stop();
   }
-} finally {
-  await mongo?.stop();
+}
+
+function isMainModule(metaUrl, argv1) {
+  if (!argv1) {
+    return false;
+  }
+  return path.resolve(fileURLToPath(metaUrl)) === path.resolve(argv1);
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) {
+  await main();
 }
