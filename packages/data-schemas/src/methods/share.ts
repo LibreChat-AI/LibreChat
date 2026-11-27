@@ -50,7 +50,12 @@ const keyFilter = (key: ShareKey): FilterQuery<t.ISharedLink> => ({
 const claimOf = ({ conversationId, targetMessageId }: ShareKey): string =>
   JSON.stringify([conversationId, targetMessageId ?? null]);
 
-/** How long a create waits for the claim index before it fails instead of holding the request. */
+/**
+ * How long a create waits for the claim index before it fails instead of holding the request.
+ * Not an operator setting: it only bounds the one-time wait for the index to exist, the same
+ * 2 s bound the resource lock gives its own index, and a longer one would only hold share
+ * requests open while an index builds.
+ */
 const CLAIM_INDEX_WAIT_MS = 2_000;
 /** Listing the indexes of a collection that does not exist yet. */
 const NAMESPACE_NOT_FOUND = 26;
