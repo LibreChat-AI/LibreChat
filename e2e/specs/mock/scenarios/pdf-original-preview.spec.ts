@@ -46,9 +46,12 @@ async function sendPdfAsText(page: Page, name: string, canary: string): Promise<
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
   const upload = waitForUpload(page);
   await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools', exact: true });
+  /** The legacy menu keeps the secondary upload choices behind a disclosure. */
+  await palette.getByRole('button', { name: 'More upload options' }).click();
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload as Text', exact: true }).click(),
+    palette.getByRole('button', { name: 'Upload as Text', exact: true }).click(),
   ]);
   await chooser.setFiles({ name, mimeType: 'application/pdf', buffer: pdf(canary) });
   const response = await upload;
@@ -73,7 +76,7 @@ test('a text-delivered PDF previews its original and its extracted text @scenari
   page,
 }) => {
   test.setTimeout(120000);
-  const canary = `E2E original preview ${randomUUID()}`;
+  const canary = `E2E-original-preview-${randomUUID()}`;
   const name = `report-${randomUUID().slice(0, 8)}.pdf`;
   await sendPdfAsText(page, name, canary);
 
@@ -117,7 +120,7 @@ test('a text-delivered PDF whose original cannot be read previews its extracted 
   page,
 }) => {
   test.setTimeout(120000);
-  const canary = `E2E missing original ${randomUUID()}`;
+  const canary = `E2E-missing-original-${randomUUID()}`;
   const name = `missing-${randomUUID().slice(0, 8)}.pdf`;
   const uploaded = await sendPdfAsText(page, name, canary);
 
