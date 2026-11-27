@@ -73,12 +73,6 @@ export default function ChatRoute() {
   const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
   const [submission, setSubmission] = useAtom(submissionByIndex(index));
   const started = submission != null && Object.keys(submission).length > 0;
-  const [routeState, setRouteState] = useState({
-    key,
-    conversationId,
-    pending:
-      conversationId !== Constants.NEW_CONVO && conversation?.conversationId !== conversationId,
-  });
   /** History navigation changes the route without running the sidebar's conversation setter.
    * Only a route change may request reconciliation: a newly submitted conversation can acquire
    * its server id before the URL catches up, and must not be reset to a new chat. Back and
@@ -88,6 +82,11 @@ export default function ChatRoute() {
   const holds =
     conversation?.conversationId === conversationId &&
     (conversationId !== Constants.NEW_CONVO || !started);
+  const [routeState, setRouteState] = useState({
+    key,
+    conversationId,
+    pending: (conversationId !== Constants.NEW_CONVO || conversation != null) && !holds,
+  });
   if (routeState.conversationId !== conversationId || routeState.key !== key) {
     const moved =
       routeState.conversationId !== conversationId || navigationType === NavigationType.Pop;
