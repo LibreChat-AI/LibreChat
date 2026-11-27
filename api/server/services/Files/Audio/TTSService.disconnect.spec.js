@@ -95,21 +95,26 @@ function post(port, path, body) {
 
 /**
  * Counts the reads automatic playback makes of `messageId`, through the real cache. A string is
- * text still being written; `{ text, complete }` is the finished message.
+ * text still being written; `{ text, complete }` is the finished message. `before` runs a step
+ * ahead of a given read: playback writes back what it read without waiting, so a change made
+ * any earlier could land first and be overwritten.
  */
 function watchReads(messageId) {
   const key = scopedCacheKey(messageId);
   const get = messages.get;
   const waiters = new Map();
+  const steps = new Map();
   const reads = { count: 0 };
-  reads.spy = jest.spyOn(messages, 'get').mockImplementation(function (...args) {
+  reads.spy = jest.spyOn(messages, 'get').mockImplementation(async function (...args) {
     if (args[0] === key) {
       reads.count++;
       waiters.get(reads.count)?.();
+      await steps.get(reads.count)?.();
     }
     return get.apply(this, args);
   });
   reads.reach = (count) => new Promise((resolve) => waiters.set(count, resolve));
+  reads.before = (count, step) => steps.set(count, step);
   reads.write = (value) => messages.set(key, value);
   return reads;
 }
@@ -138,21 +143,19 @@ describe('TTSService speech for a listener', () => {
   it('speaks every segment of a message in order to a listener who stays', async () => {
     reads = watchReads('message-stays');
     await reads.write('The first sentence is spoken.');
+    /** The second read finds nothing new; the reply finishes while playback waits. */
+    reads.before(3, () =>
+      reads.write({
+        text: 'The first sentence is spoken. The second sentence is spoken too.',
+        complete: true,
+      }),
+    );
     const { provider, app } = await serve((req, res) => service.streamAudio(req, res));
 
     const request = post(app.port, '/', { messageId: 'message-stays', voice: 'alloy' });
     const [response] = await once(request, 'response');
     let audio = '';
-    response.on('data', (chunk) => {
-      if (!audio) {
-        /** The reply finishes after its first sentence was spoken. */
-        reads.write({
-          text: 'The first sentence is spoken. The second sentence is spoken too.',
-          complete: true,
-        });
-      }
-      audio += chunk;
-    });
+    response.on('data', (chunk) => (audio += chunk));
     await once(response, 'end');
     await Promise.all(app.handled);
 
