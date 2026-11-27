@@ -1,5 +1,5 @@
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { Agent, EnvHttpProxyAgent, ProxyAgent } from 'undici';
+import { Agent, EnvHttpProxyAgent, Pool, ProxyAgent } from 'undici';
 import {
   applyAxiosProxyConfig,
   getDirectDispatcher,
@@ -8,6 +8,7 @@ import {
   getProxyDispatcher,
   getProxyEnvConfig,
   getProxyUrlForUrl,
+  getTunnelOptions,
   shouldBypassProxy,
 } from './proxy';
 
@@ -18,11 +19,13 @@ jest.mock('https-proxy-agent', () => ({
 jest.mock('undici', () => ({
   Agent: jest.fn(),
   EnvHttpProxyAgent: jest.fn(),
+  Pool: jest.fn(),
   ProxyAgent: jest.fn(),
 }));
 
 const MockAgent = Agent as jest.MockedClass<typeof Agent>;
 const MockEnvHttpProxyAgent = EnvHttpProxyAgent as jest.MockedClass<typeof EnvHttpProxyAgent>;
+const MockPool = Pool as jest.MockedClass<typeof Pool>;
 const MockProxyAgent = ProxyAgent as jest.MockedClass<typeof ProxyAgent>;
 const MockHttpsProxyAgent = HttpsProxyAgent as jest.MockedClass<typeof HttpsProxyAgent>;
 
@@ -163,6 +166,71 @@ describe('proxy helpers', () => {
       uri: proxy,
       bodyTimeout: 0,
       headersTimeout: 300_000,
+    });
+  });
+
+  describe('CONNECT tunnel client', () => {
+    const proxy = 'http://tunnel-proxy:8080';
+
+    it('builds the tunnel client with the headers timeout and the connector undici hands it', () => {
+      const origin = new URL(proxy);
+      const connect = jest.fn();
+
+      getTunnelOptions({ headersTimeout: 120_000 }).clientFactory?.(origin, { connect });
+
+      expect(MockPool).toHaveBeenCalledWith(origin, { connect, headersTimeout: 120_000 });
+    });
+
+    it.each([undefined, 0, 300_000, 900_000])(
+      'keeps undici default tunnel timeout when headersTimeout is %s',
+      (headersTimeout) => {
+        expect(getTunnelOptions({ headersTimeout })).toEqual({});
+        expect(getTunnelOptions({ bodyTimeout: 60_000, headersTimeout })).toEqual({});
+      },
+    );
+
+    it('gives explicit proxies a tunnel client that carries a tighter headers timeout', () => {
+      getProxyDispatcher(proxy, { bodyTimeout: 0, headersTimeout: 120_000 });
+
+      expect(MockProxyAgent).toHaveBeenLastCalledWith({
+        uri: proxy,
+        bodyTimeout: 0,
+        headersTimeout: 120_000,
+        clientFactory: expect.any(Function),
+      });
+    });
+
+    it('gives env proxies a tunnel client that carries a tighter headers timeout', () => {
+      process.env.PROXY = proxy;
+
+      getProxyDispatcher(undefined, { bodyTimeout: 0, headersTimeout: 120_000 });
+
+      expect(MockEnvHttpProxyAgent).toHaveBeenLastCalledWith({
+        httpProxy: proxy,
+        httpsProxy: proxy,
+        noProxy: undefined,
+        bodyTimeout: 0,
+        headersTimeout: 120_000,
+        clientFactory: expect.any(Function),
+      });
+    });
+
+    it('adds no tunnel client when the headers timeout is the default or disabled', () => {
+      getProxyDispatcher(proxy, { bodyTimeout: 0, headersTimeout: 0 });
+      expect(MockProxyAgent).toHaveBeenLastCalledWith({
+        uri: proxy,
+        bodyTimeout: 0,
+        headersTimeout: 0,
+      });
+
+      process.env.PROXY = proxy;
+      getProxyDispatcher(undefined, { headersTimeout: 300_000 });
+      expect(MockEnvHttpProxyAgent).toHaveBeenLastCalledWith({
+        httpProxy: proxy,
+        httpsProxy: proxy,
+        noProxy: undefined,
+        headersTimeout: 300_000,
+      });
     });
   });
 

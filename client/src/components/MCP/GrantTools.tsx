@@ -1,11 +1,7 @@
 import { useId, useState } from 'react';
 import { Label, Button, Checkbox } from '@librechat/client';
 import { Tools, Constants, AgentCapabilities, normalizeServerName } from 'librechat-data-provider';
-import type {
-  ScheduledMCPTarget,
-  ScheduleMCPConsentView,
-  ConfirmScheduleMCPConsent,
-} from 'librechat-data-provider';
+import type { RunGrantTarget, RunGrantView, ConfirmRunGrant } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize } from '~/hooks';
 
@@ -48,7 +44,7 @@ export function splitToolKey(
 }
 
 /** Every tool on offer for a server, whichever agents selected it. */
-function offeredTools(target: ScheduledMCPTarget): string[] {
+function offeredTools(target: RunGrantTarget): string[] {
   return [...new Set(target.permittedTools.flatMap((selection) => selection.tools))].sort();
 }
 
@@ -74,6 +70,24 @@ function spread(offered: readonly string[], ticked: string[]): string[] {
 }
 
 /**
+ * The offer starts from the whole agent: a new grant that can be made for it, or a stored one
+ * that was. Its boxes then start ticked, every one of them, so that choosing tool by tool
+ * takes away what the owner unticks and nothing else. A grant for the whole agent stores a
+ * consent for each declared server and lists none of the other tools, which would otherwise
+ * show the first ticked and the second not.
+ */
+function startsWhole(data: RunGrantView): boolean {
+  return data.offer?.everything === true && (data.revision == null || data.everything);
+}
+
+/** The other tools ticked where the offer starts, kept to the ones still on offer. */
+function initialOther(data: RunGrantView): string[] {
+  return startsWhole(data)
+    ? data.tools.offered
+    : data.tools.allowed.filter((tool) => data.tools.offered.includes(tool));
+}
+
+/**
  * The owner's starting point: what the stored grant already allows and is still on offer.
  * A tool whose definition changed starts unticked, so allowing the new one is a decision.
  *
@@ -81,7 +95,8 @@ function spread(offered: readonly string[], ticked: string[]): string[] {
  * grant never named, those start ticked too: they are authorized now, and confirming as shown
  * must not take them away.
  */
-function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
+function initialChoice(data: RunGrantView): Record<string, string[]> {
+  const whole = startsWhole(data);
   return Object.fromEntries(
     data.targets.map((target) => {
       const offered = offeredTools(target);
@@ -93,7 +108,7 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
           offered,
           offered.filter(
             (tool) =>
-              (allowed.includes(tool) || allowed.includes(Constants.mcp_all)) &&
+              (whole || allowed.includes(tool) || allowed.includes(Constants.mcp_all)) &&
               unmarked(tool, changed),
           ),
         ),
@@ -119,10 +134,7 @@ interface Edited {
  * as changed since the owner last ticked anything, or marked under another grant, loses its
  * tick, so allowing the new definition is something the owner does with the warning in view.
  */
-function currentChoice(
-  data: ScheduleMCPConsentView,
-  edited: Edited | null,
-): Record<string, string[]> {
+function currentChoice(data: RunGrantView, edited: Edited | null): Record<string, string[]> {
   const initial = initialChoice(data);
   if (!edited) return initial;
   return Object.fromEntries(
@@ -141,6 +153,16 @@ function currentChoice(
         ),
       ];
     }),
+  );
+}
+
+/** Tools by server in one spelling, whatever order they were ticked in. */
+function canonical(tools: Record<string, string[]>): string {
+  return JSON.stringify(
+    Object.entries(tools)
+      .filter(([, names]) => names.length > 0)
+      .map(([serverName, names]): [string, string[]] => [serverName, [...names].sort()])
+      .sort(([a], [b]) => a.localeCompare(b)),
   );
 }
 
@@ -168,8 +190,13 @@ export interface GrantChoice {
   keepsAsking: boolean;
   /** Something is allowed, so there is a grant to confirm. */
   some: boolean;
+  /**
+   * The choice is where the offer starts: nothing ticked, unticked or asked about differently.
+   * With a grant in force, that is the grant itself, so confirming would store nothing new.
+   */
+  pristine: boolean;
   /** What a confirmation sends for this choice. */
-  request: Pick<ConfirmScheduleMCPConsent, 'allow' | 'ask' | 'tools' | 'everything'>;
+  request: Pick<ConfirmRunGrant, 'allow' | 'ask' | 'tools' | 'everything'>;
   setEverything: (everything: boolean) => void;
   setKeepsAsking: (keeps: boolean) => void;
   setTools: (serverName: string, tools: string[]) => void;
@@ -181,7 +208,7 @@ export interface GrantChoice {
 }
 
 /** The owner's choice from an offer: what is ticked now, starting from what the offer says. */
-export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantChoice {
+export function useGrantChoice(data: RunGrantView | undefined): GrantChoice {
   /** Null until the owner changes a box, so a refetch cannot overwrite a choice in progress. */
   const [edited, setEdited] = useState<Edited | null>(null);
   const choice = data ? currentChoice(data, edited) : {};
@@ -211,8 +238,7 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
   const offeredOther = data?.tools.offered ?? [];
   const other = (
     (editedOther?.revision === data?.revision ? editedOther?.tools : undefined) ??
-    data?.tools.allowed ??
-    []
+    (data ? initialOther(data) : [])
   ).filter((tool) => offeredOther.includes(tool));
   /** Null until the owner ticks or unticks the whole agent, with the grant it was changed against. */
   const [editedWhole, setEditedWhole] = useState<{
@@ -227,7 +253,7 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
   const everything =
     standing &&
     ((editedWhole?.revision === data?.revision ? editedWhole?.value : undefined) ??
-      (data?.revision == null ? true : data.everything));
+      (data ? startsWhole(data) : true));
   /** Null until the owner changes it, with the grant it was changed against. */
   const [editedKeeps, setEditedKeeps] = useState<{
     revision: string | null;
@@ -276,6 +302,13 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
       })
       .filter(([, tools]) => tools.length > 0),
   );
+  const pristine =
+    data != null &&
+    everything === startsWhole(data) &&
+    keepsAsking &&
+    canonical(choice) === canonical(initialChoice(data)) &&
+    canonical(asking) === canonical(data.asking) &&
+    canonical({ other }) === canonical({ other: initialOther(data) });
   return {
     choice,
     ask,
@@ -288,6 +321,7 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
     everything,
     keepsAsking,
     some: everything || chosenCount > 0,
+    pristine,
     // The whole agent names nothing, and says nothing about asking unless the owner stops it:
     // left out, the server keeps what the stored grant asks about. Otherwise `ask` and `tools`
     // are always sent, since left out the server would keep the stored grant's choice of both.
@@ -320,7 +354,7 @@ export default function GrantTools({
   state,
   busy,
 }: {
-  data: ScheduleMCPConsentView;
+  data: RunGrantView;
   choosing: boolean;
   state: GrantChoice;
   busy: boolean;
@@ -347,6 +381,10 @@ export default function GrantTools({
     setOther,
     allowEverything,
   } = state;
+  /** A tool that can be set to "ask me first" is on offer: one named on a declared server. */
+  const askable = data.targets.some((target) =>
+    offeredTools(target).some((tool) => tool !== Constants.mcp_all),
+  );
   /** What the stored grant asks about, which a whole-agent confirmation keeps. */
   const kept = [...new Set(Object.values(data.asking).flat())].sort();
   /**
@@ -416,6 +454,11 @@ export default function GrantTools({
       {!choosing && data.everything && (
         <p className="text-text-secondary text-sm">
           {localize('com_ui_schedule_consent_everything_allowed')}
+        </p>
+      )}
+      {choosing && canAsk && !everything && askable && (
+        <p className="text-text-secondary text-sm">
+          {localize('com_ui_schedule_consent_ask_note')}
         </p>
       )}
       {!(choosing && everything) && (
@@ -659,72 +702,74 @@ function ToolChoice({
           </Label>
         </div>
       )}
-      <ul className="space-y-1 pl-6">
-        {named.map((tool) => {
-          const warned = changed.includes(tool);
-          const described = [
-            covered ? `${everyId}-label` : undefined,
-            warned ? `${groupId}-${tool}-changed` : undefined,
-          ].filter(Boolean);
-          return (
-            <li key={tool}>
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id={`${groupId}-${tool}`}
-                  checked={chosen.includes(tool)}
-                  disabled={disabled || covered}
-                  aria-labelledby={`${groupId}-${tool}-label`}
-                  aria-describedby={described.length > 0 ? described.join(' ') : undefined}
-                  onCheckedChange={(checked) =>
-                    onChange(
-                      checked === true
-                        ? offered.filter((name) => name === tool || chosen.includes(name))
-                        : chosen.filter((name) => name !== tool),
-                    )
-                  }
-                />
-                <Label
-                  id={`${groupId}-${tool}-label`}
-                  htmlFor={`${groupId}-${tool}`}
-                  className="text-xs break-all"
-                >
-                  {tool}
-                </Label>
-                {askable.includes(tool) && chosen.includes(tool) && (
-                  <span className="ml-auto flex shrink-0 items-center gap-2">
-                    <Checkbox
-                      id={`${groupId}-${tool}-ask`}
-                      checked={asking.includes(tool)}
-                      disabled={disabled}
-                      aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
-                      aria-describedby={askNoteId}
-                      onCheckedChange={(checked) =>
-                        onAskingChange(
-                          checked === true
-                            ? [...asking, tool]
-                            : asking.filter((name) => name !== tool),
-                        )
-                      }
-                    />
-                    <Label
-                      htmlFor={`${groupId}-${tool}-ask`}
-                      variant="secondary"
-                      className="text-xs"
-                    >
-                      {localize('com_ui_schedule_consent_ask_first')}
-                    </Label>
-                  </span>
+      {named.length > 0 && (
+        <ul className="space-y-1 pl-6">
+          {named.map((tool) => {
+            const warned = changed.includes(tool);
+            const described = [
+              covered ? `${everyId}-label` : undefined,
+              warned ? `${groupId}-${tool}-changed` : undefined,
+            ].filter(Boolean);
+            return (
+              <li key={tool}>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${groupId}-${tool}`}
+                    checked={chosen.includes(tool)}
+                    disabled={disabled || covered}
+                    aria-labelledby={`${groupId}-${tool}-label`}
+                    aria-describedby={described.length > 0 ? described.join(' ') : undefined}
+                    onCheckedChange={(checked) =>
+                      onChange(
+                        checked === true
+                          ? offered.filter((name) => name === tool || chosen.includes(name))
+                          : chosen.filter((name) => name !== tool),
+                      )
+                    }
+                  />
+                  <Label
+                    id={`${groupId}-${tool}-label`}
+                    htmlFor={`${groupId}-${tool}`}
+                    className="text-xs break-all"
+                  >
+                    {tool}
+                  </Label>
+                  {askable.includes(tool) && chosen.includes(tool) && (
+                    <span className="ml-auto flex shrink-0 items-center gap-2">
+                      <Checkbox
+                        id={`${groupId}-${tool}-ask`}
+                        checked={asking.includes(tool)}
+                        disabled={disabled}
+                        aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
+                        aria-describedby={askNoteId}
+                        onCheckedChange={(checked) =>
+                          onAskingChange(
+                            checked === true
+                              ? [...asking, tool]
+                              : asking.filter((name) => name !== tool),
+                          )
+                        }
+                      />
+                      <Label
+                        htmlFor={`${groupId}-${tool}-ask`}
+                        variant="secondary"
+                        className="text-xs"
+                      >
+                        {localize('com_ui_schedule_consent_ask_first')}
+                      </Label>
+                    </span>
+                  )}
+                </div>
+                {warned && (
+                  <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
+                    {localize('com_ui_schedule_consent_tool_changed')}
+                  </p>
                 )}
-              </div>
-              {warned && (
-                <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
-                  {localize('com_ui_schedule_consent_tool_changed')}
-                </p>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </fieldset>
   );
 }

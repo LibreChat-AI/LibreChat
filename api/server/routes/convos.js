@@ -40,7 +40,10 @@ const {
   createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
+  createFileExclusionHandler,
+  createFileExclusionReadHandler,
   createGetConversationHandler,
+  createSavedSpecTargetResolver,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -69,7 +72,8 @@ const { forkConversation, duplicateConversation } = require('~/server/utils/impo
 const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const { importConversations } = require('~/server/utils/import');
-const { getAppConfig } = require('~/server/services/Config');
+const { getAppConfig, getEndpointsConfig } = require('~/server/services/Config');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const {
   pendingBackgroundToolCompletions,
@@ -206,6 +210,12 @@ const markConvoSeenHandler = createMarkConvoSeenHandler({ markConvoSeen: db.mark
 const markConvoUnreadHandler = createMarkConvoUnreadHandler({
   markConvoUnread: db.markConvoUnread,
 });
+const fileExclusionHandler = createFileExclusionHandler({
+  setConvoFileExclusion: db.setConvoFileExclusion,
+});
+const fileExclusionReadHandler = createFileExclusionReadHandler({
+  getConvoExcludedFiles: db.getConvoExcludedFiles,
+});
 const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
 const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
   registry: backgroundTaskRegistry,
@@ -320,6 +330,8 @@ router.post(
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
 router.post('/pull-requests', conversationPullRequestsHandler);
 router.get('/:conversationId/pull-request', conversationPullRequestHandler);
+router.get('/:conversationId/files/exclusion', fileExclusionReadHandler);
+router.post('/:conversationId/files/exclusion', fileExclusionHandler);
 router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
 router.post(
   '/:conversationId/background-tasks/cancel',
@@ -335,7 +347,16 @@ router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandl
 
 router.get(
   '/:conversationId',
-  createGetConversationHandler({ getConvo: db.getConvo, jobs: GenerationJobManager, logger }),
+  createGetConversationHandler({
+    getConvo: db.getConvo,
+    jobs: GenerationJobManager,
+    logger,
+    resolveTarget: createSavedSpecTargetResolver({
+      getAppConfig,
+      getEndpointsConfig,
+      getEndpointModelsConfig,
+    }),
+  }),
 );
 
 router.get(

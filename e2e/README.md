@@ -78,6 +78,12 @@ npm run e2e:email-change:disabled
 
 Override `E2E_SMTP_PORT` or `E2E_MAILBOX_PORT` if ports 1025 or 8025 are already in use. The mailbox binds only to `127.0.0.1` and is discarded with the test process.
 
+## Harness address
+
+The mock profile starts its own LibreChat at `http://localhost:3180` (a two-replica run also
+uses 3181 and 3182), so it can run beside a normal deployment on 3080, and it never reuses a
+server already listening on its port. Set `E2E_BASE_URL` to move it.
+
 ## Stream Stores and Shards
 
 The mock profile uses the in-memory generation stream store by default. To exercise the same browser scenarios through a real Redis job store and pub/sub transport, start Redis on port 6379 and run:
@@ -88,18 +94,44 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-Pull request CI runs the complete mock suite in memory mode across fifteen shards, plus a
+Pull request CI runs the complete mock suite in memory mode across forty shards, plus a
 focused Redis transport suite across two. The Redis suite covers streaming fidelity, steering,
 interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/15
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/40
 npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes, across fifteen memory shards and ten Redis shards. Every shard keeps one worker so tests do not contend for its
-authenticated user and database.
+modes, across forty memory shards and ten Redis shards.
+
+The mock config runs one worker unless you pass `--workers`:
+
+```sh
+npx playwright test --config=e2e/playwright.config.mock.ts --project=chromium --workers=4 sidebar bookmarks
+npx playwright test --config=e2e/playwright.config.mock.ts --project=chromium-serial sidebar bookmarks
+```
+
+- Global setup signs in one account per worker (`e2e/setup/global-setup.mock.ts`), each with
+  the role of worker 0's account, which is the deployment's first and so an admin.
+  `getE2EUser()` and `getSecondaryE2EUser()` return the account of the worker they run in, and
+  the config points each worker's `storageState` at its own file. Worker 0 keeps
+  `testuser@example.com`, so a one-worker run uses the accounts it always has.
+- A spec file is the unit of parallelism (`fullyParallel: false`): its tests run in order on one
+  worker.
+- Spec files that change what every worker sees belong to a second project, `<profile>-serial`
+  (`chrome-serial` in CI): specs that spawn tooling, rewrite the server's base config, override
+  config for a whole role or group, or set, reset or read a fake harness server's behavior and
+  request log (label, code, RAG, assistants, git host, Flux, MCP app), which every worker's
+  requests share, or start the management OIDC fixture, whose one port, user and tenant every
+  management spec uses. `e2e/setup/serial.ts` finds them by those patterns, so a new spec that does
+  any of this is serial without being listed. A spec that touches only its user's data, a
+  tenant of its own, or a throwaway account runs beside any other. With one worker the serial
+  project simply runs last. With more, run the two projects as two commands, as above: in one
+  command Playwright can start the first serial file while the last parallel one is still
+  running. The second command replaces the first one's HTML report and test results, so open or
+  copy them in between.
 
 CI retries a failed test, twice on the memory shards and three times on the Redis transport
 suite, so the report carries a trace of each failed attempt and shows whether the failure
@@ -112,12 +144,12 @@ to the least-loaded shard by recorded seconds. A spec with no recorded time is e
 test count, so new specs need nothing.
 
 The timings keep themselves current. On each push to `dev`, `.github/workflows/playwright-timings.yml`
-rebuilds them from the three most recent green runs on `dev` and saves the result to the Actions
-cache. The `Shard timings` job of a later run restores the newest entry once and hands the same
-copy to every shard, because shards that planned from different timings would run a spec twice
-or not at all. `e2e/timings.mock.json` is the fallback whenever no entry can be read, such as
-the nightly on the default branch or an evicted cache, so it only needs rebuilding if those runs
-drift apart. Rebuilding it is the command the workflow runs: each shard's report artifact
+rebuilds them from the three most recent green runs on `dev` and publishes the result as an
+`e2e-shard-timings` artifact, kept for 90 days. The `Shard timings` job of a later run on any
+branch, stacked pull requests and the nightly included, downloads the newest one built on `dev`
+and hands the same copy to every shard, because shards that planned from different timings would
+run a spec twice or not at all. `e2e/timings.mock.json` is the fallback whenever no artifact can be
+read, so it only needs rebuilding if the published timings stop being refreshed. Rebuilding it is the command the workflow runs: each shard's report artifact
 carries a `results.json`, so download the `playwright-report-memory-*` artifacts of a few recent
 runs and rebuild the file from them. A spec measured by several runs is recorded at their mean,
 which keeps one slow runner from skewing it:
@@ -157,6 +189,37 @@ or `socket hang up`. The harness therefore runs LibreChat with `HTTP_KEEP_ALIVE_
 every fixture server the mock profiles start as a `webServer` passes its server through `keepIdleConnections()` from
 `e2e/setup/keepalive.js`. A new fixture server that specs reach from Node does the same.
 `fixtures.spec.ts` checks that each harness server answers without an idle deadline.
+
+## Count budgets for a long thread
+
+`e2e/specs/mock/scenarios/thread-budgets.spec.ts` opens a generated 250-row agent conversation and
+holds what it costs the page to budgets. Every figure is a count taken from the built client, so
+it is the same on a busy runner as on a quiet one, where a duration is not:
+
+| Budget      | What it counts                                                  | What going over means                            |
+| ----------- | --------------------------------------------------------------- | ------------------------------------------------ |
+| `opened`    | Elements in the thread once it has mounted                      | Rows far from the reader hold more than they did |
+| `read`      | Elements after scrolling back through every row                 | Every row is heavier                             |
+| `step`      | Rows added in one frame while the thread mounts                 | The thread arrives in fewer, longer commits      |
+| `listeners` | Listeners on `document` and `window` after reading every row    | Something listens once per row                   |
+| `frame`     | Component renders in one streamed frame of a reply              | Each frame of a reply renders more               |
+| `around`    | Of those, the renders outside every row                         | The page around the thread renders per frame     |
+| `earlier`   | Renders inside rows that were already there, over a whole reply | Rows that did not change render again            |
+
+The thread comes from `buildThread(rows)` in `e2e/specs/mock/thread.ts`: the same parts in the
+same order on every machine, in the mix of a real working session (mostly tool calls under
+activity labels and phases, reasoning between them, user turns long enough to collapse).
+`seedThread(rows)` stores it as a conversation on the mock provider. The counting helpers are in
+`e2e/specs/mock/counts.ts`; `installCounts(page)` has to run before the page loads. Elements are
+counted inside the thread only, and the scenarios clear the user's other conversations first:
+what the sidebar holds depends on the tests that ran before, and each conversation listed there
+listens on the window.
+
+A run prints `thread budgets (measured/budget): ...` and records each figure as an annotation on
+the test. Each budget sits a little above today's figure. When a change goes over one, find out
+what it added before touching the number: raise a budget only for a cost the change means to add,
+and say so in the pull request. Lower a budget in the change that brings its figure down, so the
+gain is kept.
 
 ## Property-based browser testing
 

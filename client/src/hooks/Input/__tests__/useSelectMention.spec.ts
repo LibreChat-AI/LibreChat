@@ -90,4 +90,29 @@ describe('useSelectMention', () => {
     mockStoredModularChat = false;
     expect(pick()).toBe('new');
   });
+
+  it('hands every pick made in the unsent chat over as a change of its target', () => {
+    const newConversation = jest.fn();
+    const { result } = renderHook(() =>
+      useSelectMention({
+        presets: [{ presetId: 'p-1', endpoint: EModelEndpoint.google }] as TPreset[],
+        modelSpecs: [
+          { name: 'fast', preset: { endpoint: EModelEndpoint.anthropic } },
+        ] as TModelSpec[],
+        endpointsConfig,
+        newConversation,
+        getConversation: () =>
+          ({ conversationId: 'new', endpoint: EModelEndpoint.openAI }) as TConversation,
+      }),
+    );
+
+    result.current.onSelectMention?.(option('endpoint', EModelEndpoint.google));
+    result.current.onSelectMention?.(option('modelSpec', 'fast'));
+    result.current.onSelectMention?.(option('preset', 'p-1'));
+
+    expect(newConversation).toHaveBeenCalledTimes(3);
+    for (const [options] of newConversation.mock.calls) {
+      expect(options).toEqual(expect.objectContaining({ retarget: true }));
+    }
+  });
 });

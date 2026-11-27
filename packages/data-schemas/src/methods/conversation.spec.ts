@@ -20,6 +20,7 @@ import type {
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
+import { MAX_EXCLUDED_FILES } from '~/types/convo';
 import { createResponseStorage } from './response';
 import { waitForPause } from './test-helpers';
 import { createModels } from '../models';
@@ -1392,6 +1393,197 @@ describe('Conversation Operations', () => {
         expect(result).toBeNull();
         const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
         expect(stored?.pinned).toBeUndefined();
+      });
+    });
+
+    describe('setConvoFileExclusion', () => {
+      const anchor = new Date('2026-03-05T22:17:14.997Z');
+
+      const seedConvo = async (user = 'user123', excludedFiles?: string[]) => {
+        const conversationId = uuidv4();
+        await Conversation.collection.insertOne({
+          conversationId,
+          user,
+          title: 'Quarterly Figures',
+          endpoint: EModelEndpoint.agents,
+          files: ['file-a', 'file-b', 'file-c'],
+          ...(excludedFiles == null ? {} : { excludedFiles }),
+          messages: [],
+          createdAt: anchor,
+          updatedAt: anchor,
+        });
+        return conversationId;
+      };
+
+      it('leaves files out and reports the whole list', async () => {
+        const conversationId = await seedConvo();
+
+        const first = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-a'],
+          true,
+        );
+        const second = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-a', 'file-b'],
+          true,
+        );
+
+        expect(first).toEqual({ ok: true, value: ['file-a'] });
+        expect(second).toEqual({ ok: true, value: ['file-a', 'file-b'] });
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual(['file-a', 'file-b']);
+      });
+
+      it('takes files back in', async () => {
+        const conversationId = await seedConvo('user123', ['file-a', 'file-b']);
+
+        const result = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-a', 'file-never-listed'],
+          false,
+        );
+
+        expect(result).toEqual({ ok: true, value: ['file-b'] });
+      });
+
+      it('changes neither the timestamps nor the conversation files', async () => {
+        const conversationId = await seedConvo();
+
+        await methods.setConvoFileExclusion('user123', conversationId, ['file-a'], true);
+
+        const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+        expect(new Date(stored?.updatedAt ?? 0).toISOString()).toBe(anchor.toISOString());
+        expect(stored?.files).toEqual(['file-a', 'file-b', 'file-c']);
+        expect(getMessages).not.toHaveBeenCalled();
+      });
+
+      it('reads the list only for its owner when a user is named', async () => {
+        const conversationId = await seedConvo('user123', ['file-a']);
+
+        expect(await methods.getConvoExcludedFiles(conversationId, 'user123')).toEqual(['file-a']);
+        expect(await methods.getConvoExcludedFiles(conversationId, 'other-user')).toEqual([]);
+      });
+
+      it('reads no list for a conversation that never left a file out', async () => {
+        const conversationId = await seedConvo();
+
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual([]);
+        expect(await methods.getConvoExcludedFiles(uuidv4())).toEqual([]);
+      });
+
+      it('does not store a list on a conversation saved without one', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(
+          { userId: 'user123' },
+          { conversationId, endpoint: EModelEndpoint.agents, title: 'New' },
+        );
+
+        const stored = await Conversation.collection.findOne({ conversationId });
+        expect(stored).not.toHaveProperty('excludedFiles');
+      });
+
+      it('answers not found for an unknown id and for another user’s conversation', async () => {
+        const theirs = await seedConvo('other-user');
+
+        const unknown = await methods.setConvoFileExclusion('user123', uuidv4(), ['file-a'], true);
+        const foreign = await methods.setConvoFileExclusion('user123', theirs, ['file-a'], true);
+        const foreignInclude = await methods.setConvoFileExclusion(
+          'user123',
+          theirs,
+          ['file-a'],
+          false,
+        );
+
+        expect(unknown).toEqual({ ok: false, error: { code: 'not_found' } });
+        expect(foreign).toEqual({ ok: false, error: { code: 'not_found' } });
+        expect(foreignInclude).toEqual({ ok: false, error: { code: 'not_found' } });
+        expect(await methods.getConvoExcludedFiles(theirs)).toEqual([]);
+      });
+
+      it('is not replaced or cleared by a generic save', async () => {
+        const conversationId = await seedConvo('user123', ['file-a']);
+
+        await saveConvo(
+          { userId: 'user123' },
+          { conversationId, title: 'Renamed', excludedFiles: ['file-b', 'file-c'] },
+          { unsetFields: { excludedFiles: 1 } },
+        );
+
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual(['file-a']);
+        expect((await getConvo('user123', conversationId))?.title).toBe('Renamed');
+      });
+
+      it('keeps the list bounded and says so', async () => {
+        const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
+        const conversationId = await seedConvo('user123', full);
+        const roomy = await seedConvo('user123', full.slice(0, MAX_EXCLUDED_FILES - 1));
+
+        const overFull = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['one-more'],
+          true,
+        );
+        const lastSlot = await methods.setConvoFileExclusion('user123', roomy, ['one-more'], true);
+        const tooMany = await methods.setConvoFileExclusion('user123', roomy, ['a', 'b'], true);
+
+        expect(overFull).toEqual({ ok: false, error: { code: 'limit_exceeded' } });
+        expect(lastSlot.ok && lastSlot.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(tooMany).toEqual({ ok: false, error: { code: 'limit_exceeded' } });
+        expect(await methods.getConvoExcludedFiles(conversationId)).toHaveLength(
+          MAX_EXCLUDED_FILES,
+        );
+      });
+
+      it('gives ids already on the list no room of their own, so a repeat still lands', async () => {
+        const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
+        const fullId = await seedConvo('user123', full);
+        const roomy = await seedConvo('user123', full.slice(0, MAX_EXCLUDED_FILES - 1));
+
+        const repeat = await methods.setConvoFileExclusion('user123', fullId, ['file-0'], true);
+        const overlap = await methods.setConvoFileExclusion(
+          'user123',
+          roomy,
+          ['file-0', 'one-more'],
+          true,
+        );
+        const wholeListAgain = await methods.setConvoFileExclusion('user123', fullId, full, true);
+
+        expect(repeat.ok && repeat.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(overlap.ok && overlap.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(wholeListAgain.ok && wholeListAgain.value).toHaveLength(MAX_EXCLUDED_FILES);
+      });
+
+      it('refuses more ids than the list can hold whatever is stored', async () => {
+        const conversationId = await seedConvo();
+        const tooMany = Array.from({ length: MAX_EXCLUDED_FILES + 1 }, (_, index) => `f-${index}`);
+
+        const result = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          tooMany,
+          true,
+        );
+
+        expect(result).toEqual({ ok: false, error: { code: 'limit_exceeded' } });
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual([]);
+      });
+
+      it('lets a full list shrink', async () => {
+        const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
+        const conversationId = await seedConvo('user123', full);
+
+        const result = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-0'],
+          false,
+        );
+
+        expect(result.ok && result.value).toHaveLength(MAX_EXCLUDED_FILES - 1);
       });
     });
   });
@@ -2896,6 +3088,42 @@ describe('Conversation Operations', () => {
       expect(result?.convoMap[legacyTemporaryConvoId]).toBeUndefined();
       expect(result?.convoMap[expiredRetainedConvo.conversationId]).toBeUndefined();
       expect(result?.convoMap[tempConvo.conversationId]).toBeUndefined();
+    });
+
+    it('omits the embedded messages array from getConvosQueried rows and keeps the metadata', async () => {
+      const base = Date.now();
+      const ids = [uuidv4(), uuidv4(), uuidv4()];
+      for (const [index, conversationId] of ids.entries()) {
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          title: `Queried ${index}`,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-4o',
+          messages: [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()],
+        });
+        await Conversation.collection.updateOne(
+          { conversationId },
+          { $set: { updatedAt: new Date(base - index * 1000) } },
+        );
+      }
+      const wanted = ids.map((conversationId) => ({ conversationId }));
+
+      const first = await getConvosQueried('user123', wanted, null, 2);
+
+      expect(first.conversations.map((c) => c.conversationId)).toEqual([ids[0], ids[1]]);
+      expect(first.nextCursor).toBe(new Date(base - 1000).toISOString());
+      for (const convo of first.conversations) {
+        expect(convo).not.toHaveProperty('messages');
+        expect(convo.title).toMatch(/^Queried/);
+        expect(convo.model).toBe('gpt-4o');
+        expect(convo.endpoint).toBe(EModelEndpoint.openAI);
+        expect(first.convoMap[convo.conversationId]).not.toHaveProperty('messages');
+      }
+
+      const second = await getConvosQueried('user123', wanted, first.nextCursor, 2);
+      expect(second.conversations.map((c) => c.conversationId)).toEqual([ids[2]]);
+      expect(second.nextCursor).toBeNull();
     });
 
     it('hides durable subagent threads from conversation lists and search results', async () => {
@@ -5398,13 +5626,13 @@ describe('Conversation Operations', () => {
         shareId: `share-${uuidv4()}`,
       });
 
-      process.env.ALLOW_SHARED_LINKS = 'false';
-      try {
-        const result = await methods.getConvosByCursor('user123', { limit: 25 });
-        expect(result.conversations[0].isShared).toBeUndefined();
-      } finally {
-        delete process.env.ALLOW_SHARED_LINKS;
-      }
+      const disabled = createConversationMethods(mongoose, {
+        getMessages,
+        deleteMessages,
+        allowSharedLinks: false,
+      });
+      const result = await disabled.getConvosByCursor('user123', { limit: 25 });
+      expect(result.conversations[0].isShared).toBeUndefined();
 
       await SharedLink.deleteMany({ user: 'user123' });
       await Conversation.deleteMany({ user: 'user123' });
@@ -8278,16 +8506,16 @@ describe('Conversation Operations', () => {
         awaitTerminalHandling: true,
       });
 
-      /** The first raw page contains no expired receipt. It must still keep
-       * discovery active, without querying delivery protection for an empty ID set.
-       * The second is protected, and only the third reaches removable work. */
+      /** The first raw page contains no expired receipt. It is not work, so it
+       * reports no activity and does not query delivery protection for an empty
+       * ID set. The second is protected, and only the third reaches removable work. */
       const activity = { found: false };
       const protection = jest.spyOn(Delivery, 'find');
       try {
         await expect(methods.expireLegacyAgentEventActorReceipts(now, 1, activity)).resolves.toBe(
           0,
         );
-        expect(activity.found).toBe(true);
+        expect(activity.found).toBe(false);
         expect(protection).not.toHaveBeenCalled();
       } finally {
         protection.mockRestore();
@@ -8308,6 +8536,54 @@ describe('Conversation Operations', () => {
           .select('+agentEventActorReconciliations')
           .lean(),
       ).resolves.toMatchObject({ agentEventActorReconciliations: [] });
+    });
+
+    it('reports no activity for full pages of live conversations across a whole sweep', async () => {
+      /** A full page with nothing to expire is not work. Reporting it held the
+       * caller's idle back-off at its base interval for as long as the collection
+       * spans more than one page, and the sweep restarts at the end, so an install
+       * with a few dozen conversations never went idle. */
+      const now = new Date();
+      await Conversation.create(
+        [0, 1, 2, 3, 4].map((index) => {
+          const conversationId = uuidv4();
+          return {
+            conversationId,
+            user: 'actor-live-pages-user',
+            endpoint: EModelEndpoint.agents,
+            ...(index === 4 && {
+              agentEventActorReconciliations: [
+                {
+                  invocationId: 'live-receipt',
+                  status: 'settled' as const,
+                  resolution: 'action_compensated' as const,
+                  checkpoint: {
+                    threadId: conversationId,
+                    checkpointNs: 'event-actor/live-receipt',
+                  },
+                  action: { toolName: 'submit_move' },
+                  observedAt: now,
+                },
+              ],
+            }),
+          };
+        }),
+      );
+
+      const activity = { found: false };
+      const protection = jest.spyOn(mongoose.models.AgentTriggerDelivery, 'find');
+      try {
+        /** Two full pages, one partial page, then the empty page that ends the sweep. */
+        for (let pass = 0; pass < 4; pass += 1) {
+          await expect(methods.expireLegacyAgentEventActorReceipts(now, 2, activity)).resolves.toBe(
+            0,
+          );
+          expect(activity.found).toBe(false);
+        }
+        expect(protection).not.toHaveBeenCalled();
+      } finally {
+        protection.mockRestore();
+      }
     });
 
     it('clears a compensated headless lifecycle without creating a partial actor head', async () => {
@@ -9571,11 +9847,38 @@ describe('Conversation Operations', () => {
         shareId: `share-${uuidv4()}`,
       });
 
+      const disabled = createConversationMethods(mongoose, {
+        getMessages,
+        deleteMessages,
+        allowSharedLinks: false,
+      });
+      try {
+        const result = await disabled.getConvosByCursor(user, { sharedOnly: true });
+        expect(result.conversations).toEqual([]);
+      } finally {
+        await SharedLink.deleteMany({ user });
+      }
+    });
+
+    it('takes the sharing setting from its caller, not the process env', async () => {
+      const SharedLink = mongoose.models.SharedLink as mongoose.Model<{
+        conversationId: string;
+        user: string;
+        shareId: string;
+      }>;
+      const shared = await makeConvo({ title: 'shared' });
+      await SharedLink.create({
+        conversationId: shared.conversationId,
+        user,
+        shareId: `share-${uuidv4()}`,
+      });
+
       const previous = process.env.ALLOW_SHARED_LINKS;
       process.env.ALLOW_SHARED_LINKS = 'false';
       try {
         const result = await getConvosByCursor(user, { sharedOnly: true });
-        expect(result.conversations).toEqual([]);
+        expect(result.conversations.map((c) => c.conversationId)).toEqual([shared.conversationId]);
+        expect(result.conversations[0].isShared).toBe(true);
       } finally {
         if (previous === undefined) {
           delete process.env.ALLOW_SHARED_LINKS;
@@ -10137,6 +10440,197 @@ describe('laneGit', () => {
   });
 });
 
+/** A temporary chat is in no bookmark-filtered list and TTL removes it without a decrement, so a
+ * save that turns a bookmarked chat temporary must give its bookmarks up, exactly once. */
+describe('saveConvo turning a bookmarked chat temporary', () => {
+  const ephemeral = { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 24 };
+  const HOUR = 3600000;
+  let userId: string;
+  let conversationId: string;
+
+  /** Each bookmark is shared with another visible chat (count 2), so a second release shows up
+   * as a count of 0 instead of being hidden by the clamp at zero. */
+  const seedBookmarkedChat = async (fields: Record<string, unknown> = {}) => {
+    await Conversation.collection.insertOne({
+      conversationId,
+      user: userId,
+      title: 'Bookmarked before the mode',
+      endpoint: EModelEndpoint.openAI,
+      isArchived: false,
+      expiredAt: null,
+      tags: ['probe-tag'],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...fields,
+    });
+  };
+  const tagCount = async (tag = 'probe-tag') =>
+    (await ConversationTag.findOne({ user: userId, tag }).lean())?.count;
+  const stored = () => Conversation.findOne({ conversationId }).lean<IConversation>();
+  const rename = (ctx: Partial<Parameters<ConversationMethods['saveConvo']>[0]> = {}) =>
+    saveConvo(
+      { userId, isTemporary: false, interfaceConfig: ephemeral, ...ctx },
+      { conversationId, title: 'Renamed' },
+      { context: 'rename', titleSource: 'manual', appendMessageIds: [], noUpsert: true },
+    );
+  const archive = (isArchived: boolean) =>
+    saveConvo(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, isArchived },
+      { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+    );
+  const turn = () =>
+    saveConvo(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
+      { context: 'turn', appendMessageIds: [new mongoose.Types.ObjectId()] },
+    );
+  /** A converting save leaves a temporary chat without tags and its bookmark down by one. */
+  const released = { isTemporary: true, expiredAt: expect.any(Date), tags: [], count: 1 };
+  const readState = async () => {
+    const convo = await stored();
+    return {
+      isTemporary: convo?.isTemporary,
+      expiredAt: convo?.expiredAt,
+      tags: convo?.tags,
+      count: await tagCount(),
+    };
+  };
+
+  beforeEach(async () => {
+    userId = `bookmarks-${uuidv4()}`;
+    conversationId = uuidv4();
+    await ConversationTag.create({ user: userId, tag: 'probe-tag', count: 2, position: 0 });
+  });
+
+  it('releases the bookmark when a rename converts the chat', async () => {
+    await seedBookmarkedChat();
+
+    await rename();
+
+    expect((await stored())?.title).toBe('Renamed');
+    expect(await readState()).toEqual(released);
+  });
+
+  it.each([true, false])(
+    'releases the bookmark when setting isArchived to %s converts the chat',
+    async (isArchived) => {
+      await seedBookmarkedChat({ isArchived: !isArchived });
+
+      await archive(isArchived);
+
+      expect((await stored())?.isArchived).toBe(isArchived);
+      expect(await readState()).toEqual(released);
+    },
+  );
+
+  it('releases the bookmark when a turn converts the chat', async () => {
+    await seedBookmarkedChat();
+
+    await turn();
+
+    expect(await readState()).toEqual(released);
+  });
+
+  it('keeps the general-chat deadline the chat already holds while releasing', async () => {
+    const held = new Date(Date.now() + 2160 * HOUR);
+    await seedBookmarkedChat({ isTemporary: false, expiredAt: held });
+
+    await rename({ expiredAt: held });
+
+    expect(await readState()).toEqual(released);
+    expect((await stored())?.expiredAt).toEqual(held);
+  });
+
+  it.each([
+    ['the default mode', undefined],
+    [
+      'RetentionMode.ALL',
+      { retentionMode: RetentionMode.ALL, temporaryChatRetention: 1, generalChatRetention: 2160 },
+    ],
+  ] as Array<[string, AppConfig['interfaceConfig']]>)(
+    'releases the bookmark when the request marks a stored chat temporary under %s',
+    async (_name, interfaceConfig) => {
+      await seedBookmarkedChat();
+
+      await rename({ isTemporary: true, interfaceConfig });
+
+      expect(await readState()).toEqual(released);
+    },
+  );
+
+  it('releases the bookmark once across concurrent saves', async () => {
+    await seedBookmarkedChat();
+
+    await Promise.all([rename(), archive(true), turn(), turn()]);
+
+    expect(await readState()).toEqual(released);
+  });
+
+  it('releases each tag once when the chat lists it twice', async () => {
+    await ConversationTag.create({ user: userId, tag: 'second-tag', count: 2, position: 1 });
+    await seedBookmarkedChat({ tags: ['probe-tag', 'probe-tag', 'second-tag'] });
+
+    await rename();
+
+    expect(await readState()).toEqual(released);
+    expect(await tagCount('second-tag')).toBe(1);
+  });
+
+  it('does not release the bookmark again when the converted chat is deleted', async () => {
+    await seedBookmarkedChat();
+
+    await rename();
+    await deleteConvos(userId, { conversationId });
+
+    expect(await tagCount()).toBe(1);
+  });
+
+  it('converts a chat with no bookmarks without writing a count', async () => {
+    await seedBookmarkedChat({ tags: [] });
+
+    await rename();
+
+    expect((await stored())?.isTemporary).toBe(true);
+    expect(await tagCount()).toBe(2);
+  });
+
+  it.each([
+    ['the default mode', undefined],
+    [
+      'RetentionMode.ALL',
+      { retentionMode: RetentionMode.ALL, temporaryChatRetention: 1, generalChatRetention: 2160 },
+    ],
+  ] as Array<[string, AppConfig['interfaceConfig']]>)(
+    'keeps the bookmark of a chat that stays permanent under %s',
+    async (_name, interfaceConfig) => {
+      await seedBookmarkedChat();
+
+      await rename({ interfaceConfig });
+
+      const convo = await stored();
+      expect(convo?.isTemporary ?? false).toBe(false);
+      expect(convo?.tags).toEqual(['probe-tag']);
+      expect(await tagCount()).toBe(2);
+    },
+  );
+
+  it('releases nothing when the save is refused for replacing a persisted conversation id', async () => {
+    await seedBookmarkedChat();
+
+    const refused = await saveConvo(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, newConversationId: uuidv4() },
+    );
+
+    expect(refused).toEqual({ message: 'Conversation ID cannot be replaced after persistence.' });
+    const convo = await stored();
+    expect(convo?.isTemporary ?? false).toBe(false);
+    expect(convo?.tags).toEqual(['probe-tag']);
+    expect(await tagCount()).toBe(2);
+  });
+});
+
 describe('stampForcedRetention', () => {
   const ephemeral = { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 };
   let userId: string;
@@ -10209,15 +10703,25 @@ describe('stampForcedRetention', () => {
 
   it('gives a stamped message the deadline a concurrent stamp stored first', async () => {
     const winningDeadline = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const originalUpdateOne = Conversation.updateOne.bind(Conversation);
-    const updateOne = jest
-      .spyOn(Conversation, 'updateOne')
-      .mockImplementationOnce(((filter, update, options) =>
-        originalUpdateOne(
+    const originalFindOneAndUpdate = Conversation.findOneAndUpdate.bind(Conversation);
+    const findOneAndUpdate = jest.spyOn(Conversation, 'findOneAndUpdate').mockImplementationOnce(((
+      filter,
+      update,
+      options,
+    ) => {
+      const query = originalFindOneAndUpdate(filter, update, options);
+      const exec = query.exec.bind(query);
+      /** The concurrent stamp converts the chat between this stamp's read and its write. */
+      query.exec = (async () => {
+        await Conversation.updateOne(
           { conversationId },
           { $set: { isTemporary: true, expiredAt: winningDeadline, tags: [] } },
           { timestamps: false },
-        ).then(() => originalUpdateOne(filter, update, options))) as typeof Conversation.updateOne);
+        );
+        return exec();
+      }) as typeof query.exec;
+      return query;
+    }) as typeof Conversation.findOneAndUpdate);
 
     try {
       await methods.stampForcedRetention(
@@ -10225,7 +10729,7 @@ describe('stampForcedRetention', () => {
         { conversationId, messageIds: [messageId] },
       );
     } finally {
-      updateOne.mockRestore();
+      findOneAndUpdate.mockRestore();
     }
 
     const convo = await Conversation.findOne({ conversationId }).lean();

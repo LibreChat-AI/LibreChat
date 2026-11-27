@@ -547,6 +547,7 @@ describe('setupOpenId', () => {
         username: userinfo.preferred_username,
         name: `${userinfo.given_name} ${userinfo.family_name}`,
       }),
+      { role: null },
     );
   });
 
@@ -635,6 +636,7 @@ describe('setupOpenId', () => {
       expect(updateUser).toHaveBeenCalledWith(
         'winnerUserId',
         expect.objectContaining({ openidId: tokenset.claims().sub }),
+        { role: null },
       );
       expect(user).toEqual(
         expect.objectContaining({ _id: 'winnerUserId', email: tokenset.claims().email }),
@@ -663,6 +665,7 @@ describe('setupOpenId', () => {
           username: tokenset.claims().preferred_username,
           name: `${tokenset.claims().given_name} ${tokenset.claims().family_name}`,
         }),
+        { role: null },
       );
     });
 
@@ -1751,6 +1754,7 @@ describe('setupOpenId', () => {
       expect(updateUser).toHaveBeenCalledWith(
         'newUserId',
         expect.objectContaining({ role: 'STANDARD-USER' }),
+        { role: 'USER' },
       );
     });
 
@@ -1835,6 +1839,7 @@ describe('setupOpenId', () => {
       expect(updateUser).toHaveBeenCalledWith(
         'newUserId',
         expect.objectContaining({ role: 'USER' }),
+        { role: 'USER' },
       );
     });
 
@@ -1852,6 +1857,7 @@ describe('setupOpenId', () => {
       expect(updateUser).toHaveBeenCalledWith(
         'newUserId',
         expect.objectContaining({ role: 'USER' }),
+        { role: 'USER' },
       );
     });
 
@@ -1868,6 +1874,28 @@ describe('setupOpenId', () => {
 
       await expect(validate(tokenset)).rejects.toThrow(
         'OpenID role sync configured roles do not exist: STANDARD-USER',
+      );
+    });
+
+    it('rejects login and puts the role back when the synced role is deleted during the login', async () => {
+      /** The configured roles exist when sync validates them; the role is gone once written. */
+      findRolesByNames
+        .mockImplementationOnce(async (roleNames) =>
+          roleNames.map((roleName) => ({ name: roleName })),
+        )
+        .mockResolvedValueOnce([]);
+      jwtDecode.mockReturnValue({
+        roles: ['requiredRole', 'STANDARD-USER'],
+        permissions: ['not-admin'],
+      });
+
+      await expect(validate(tokenset)).rejects.toThrow(
+        'OpenID role sync configured roles do not exist: STANDARD-USER',
+      );
+      expect(updateUser).toHaveBeenLastCalledWith(
+        'newUserId',
+        { role: 'USER', roleToken: expect.any(String) },
+        { role: 'STANDARD-USER', roleToken: expect.any(String) },
       );
     });
 
@@ -1899,6 +1927,7 @@ describe('setupOpenId', () => {
       expect(updateUser).toHaveBeenCalledWith(
         existingAdminUser._id,
         expect.objectContaining({ role: 'STANDARD-USER' }),
+        { role: 'ADMIN' },
       );
     });
 
@@ -2094,10 +2123,50 @@ describe('setupOpenId', () => {
       expect.objectContaining({
         role: 'USER',
       }),
+      { role: 'ADMIN' },
     );
     expect(logger.info).toHaveBeenCalledWith(
       expect.stringContaining('demoted from admin - role no longer present in token'),
     );
+  });
+
+  it('does not audit a demotion a concurrent login already wrote', async () => {
+    const { recordAuditEntry } = require('~/models');
+    const existingAdminUser = {
+      _id: 'existingAdminId',
+      provider: 'openid',
+      email: tokenset.claims().email,
+      openidId: tokenset.claims().sub,
+      username: 'adminuser',
+      name: 'Admin User',
+      role: 'ADMIN',
+    };
+    /** The other login demoted the account after this one read it. */
+    const stored = { ...existingAdminUser, role: 'USER' };
+    findUser.mockImplementation(async (query) => {
+      if (query._id === existingAdminUser._id) {
+        return stored;
+      }
+      if (query.openidId === tokenset.claims().sub || query.email === tokenset.claims().email) {
+        return existingAdminUser;
+      }
+      return null;
+    });
+    updateUser.mockImplementation(async (id, userData, expectedState) =>
+      expectedState.role === stored.role ? { ...stored, ...userData } : null,
+    );
+    jwtDecode.mockReturnValue({ roles: ['requiredRole'], permissions: ['not-admin'] });
+
+    const { user } = await validate(tokenset);
+
+    expect(user.role).toBe('USER');
+    expect(updateUser).toHaveBeenCalledTimes(2);
+    expect(updateUser).toHaveBeenLastCalledWith(
+      existingAdminUser._id,
+      expect.objectContaining({ role: 'USER' }),
+      { role: 'USER' },
+    );
+    expect(recordAuditEntry).not.toHaveBeenCalled();
   });
 
   it('should NOT demote admin user when admin role env vars are not configured', async () => {
@@ -2141,6 +2210,7 @@ describe('setupOpenId', () => {
       expect.objectContaining({
         role: 'ADMIN',
       }),
+      { role: 'ADMIN' },
     );
   });
 
@@ -2723,10 +2793,13 @@ describe('setupOpenId', () => {
         );
         expect(getAppConfig).toHaveBeenCalledWith(roleConfigRead('USER'));
         expect(getAppConfig).toHaveBeenCalledWith(roleConfigRead('BASIC-USER'));
-        expect(findRolesByNames).toHaveBeenCalledTimes(1);
+        /** Once to validate the configured roles, once to read back the role the write assigned. */
+        expect(findRolesByNames).toHaveBeenCalledTimes(2);
+        expect(findRolesByNames).toHaveBeenLastCalledWith(['BASIC-USER'], 'name');
         expect(updateUser).toHaveBeenCalledWith(
           'newUserId',
           expect.objectContaining({ role: 'BASIC-USER' }),
+          { role: 'USER' },
         );
         expect(recordAuditEntry).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -2761,6 +2834,7 @@ describe('setupOpenId', () => {
         expect(updateUser).toHaveBeenCalledWith(
           'winnerAdminId',
           expect.objectContaining({ role: 'ADMIN' }),
+          { role: 'ADMIN' },
         );
       });
     });

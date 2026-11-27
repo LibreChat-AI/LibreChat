@@ -4,6 +4,7 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('@librechat/api', () => {
   const {
     getModelRefusalInfo,
+    recordModelTruncation,
     getModelEndUsage,
     captureResponseAccountingUsage,
     collectGoogleThoughtSignatures,
@@ -14,6 +15,7 @@ jest.mock('@librechat/api', () => {
     createToolExecuteHandler: jest.fn(),
     markSummarizationUsage: (usage) => usage,
     getModelRefusalInfo,
+    recordModelTruncation,
     getModelEndUsage,
     captureResponseAccountingUsage,
     collectGoogleThoughtSignatures,
@@ -328,5 +330,69 @@ describe('ModelEndHandler: Google thoughtSignature capture (issue #13006 follow-
 
   it('throws when collectedUsage is not an array (existing contract)', () => {
     expect(() => new ModelEndHandler(null)).toThrow('collectedUsage must be an array');
+  });
+});
+
+describe('ModelEndHandler: Gemini output budget (issue #18649)', () => {
+  const usage_metadata = { input_tokens: 68641, output_tokens: 65536, total_tokens: 134177 };
+  const metadata = { ls_model_name: 'gemini-3-pro', user_id: 'u', run_id: 'r', thread_id: 't' };
+
+  it('records a reasoning-only MAX_TOKENS call without failing the run', async () => {
+    const collectedUsage = [];
+    const truncationSink = {};
+    const handler = new ModelEndHandler(collectedUsage, {}, null, truncationSink);
+
+    await expect(
+      handler.handle(
+        'on_chat_model_end',
+        {
+          output: {
+            content: '',
+            usage_metadata,
+            additional_kwargs: { reasoning: 'Thinking about the question...' },
+            response_metadata: { index: 0, finishReason: 'MAX_TOKENS' },
+          },
+        },
+        metadata,
+        buildGraph(),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(truncationSink).toEqual({ calls: { '': 'exhausted' } });
+    expect(collectedUsage).toHaveLength(1);
+  });
+
+  it('clears an earlier truncation when a later call completes', async () => {
+    const truncationSink = { calls: { '': 'exhausted' } };
+    const handler = new ModelEndHandler([], {}, null, truncationSink);
+
+    await handler.handle(
+      'on_chat_model_end',
+      { output: { content: 'Done', usage_metadata, response_metadata: { finishReason: 'STOP' } } },
+      metadata,
+      buildGraph(),
+    );
+
+    expect(truncationSink).toEqual({ calls: { '': 'complete' } });
+  });
+
+  it('leaves the sink to answer calls when a summarization call is truncated', async () => {
+    const truncationSink = {};
+    const handler = new ModelEndHandler([], {}, null, truncationSink);
+
+    await handler.handle(
+      'on_chat_model_end',
+      {
+        output: {
+          content: '',
+          usage_metadata,
+          response_metadata: { finishReason: 'MAX_TOKENS' },
+        },
+      },
+      { ...metadata, langgraph_node: 'summarize=agent_1' },
+      buildGraph(),
+    );
+
+    expect(truncationSink).toEqual({});
   });
 });

@@ -114,7 +114,7 @@ export default function usePresets(index = 0) {
       if (data.defaultPreset && data.presetId !== _defaultPreset?.presetId) {
         message = `${toastTitle} ${localize('com_endpoint_preset_default')}`;
         setDefaultPreset(data);
-        newConversation({ preset: data, disableParams: true });
+        newConversation({ preset: data, disableParams: true, retarget: true });
       } else if (preset.defaultPreset === false) {
         setDefaultPreset(null);
         message = `${toastTitle} ${localize('com_endpoint_preset_default_removed')}`;
@@ -223,7 +223,12 @@ export default function usePresets(index = 0) {
       return;
     }
 
-    newConversation({ preset: newPreset, keepAddedConvos: isModular, disableParams });
+    newConversation({
+      preset: newPreset,
+      keepAddedConvos: isModular,
+      disableParams,
+      retarget: true,
+    });
   };
 
   const onChangePreset = (preset: TPreset) => {

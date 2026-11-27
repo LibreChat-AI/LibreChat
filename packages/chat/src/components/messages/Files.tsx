@@ -3,13 +3,19 @@ import { useLocalize } from '@librechat/client';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import type { NamedExoticComponent } from 'react';
 import { hydrateFileDeliveryMetadata, usesImagePreview } from '../../core/files';
+import { renderImage as defaultRenderImage } from '../renderers';
 import FileContainer from '../composer/files/FileContainer';
 import { useMessagePartsHost } from '../../react/host';
 
 const MessageFiles: NamedExoticComponent<{ files?: TMessage['files'] }> = memo(
   function MessageFiles({ files }: { files?: TMessage['files'] }) {
     const localize = useLocalize();
-    const { useFileMap, useShare, renderImage, renderFilePreview } = useMessagePartsHost();
+    const {
+      useShare,
+      useFileMap,
+      renderFilePreview,
+      renderImage = defaultRenderImage,
+    } = useMessagePartsHost();
     const fileMap = useFileMap();
     const { shareId } = useShare();
     const hydratedFiles = useMemo(

@@ -31,11 +31,6 @@ jest.mock('../HoverButtons', () => ({
   },
 }));
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
-
 const StructuredMessage = MessageContent;
 
 const conversation = {
@@ -239,7 +234,7 @@ describe('streaming hover actions', () => {
   ])('fades retry navigation to hover-only on %s streaming row', (_label, structured) => {
     renderStreamingRow(structured);
 
-    expect(screen.getByRole('navigation', { name: 'com_ui_sibling_navigation' })).toHaveClass(
+    expect(screen.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveClass(
       'no-touch:opacity-0',
     );
   });
@@ -285,7 +280,7 @@ describe('streaming hover actions', () => {
 
     const timer = screen.getByTestId('stream-elapsed');
     const footer = screen.getByRole('navigation', {
-      name: 'com_ui_sibling_navigation',
+      name: 'Sibling message navigation',
     }).parentElement;
 
     expect(footer?.firstElementChild).toContainElement(timer);

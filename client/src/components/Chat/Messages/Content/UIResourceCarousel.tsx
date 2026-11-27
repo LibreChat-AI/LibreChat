@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Button } from '@librechat/client';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { NAV_CLEARANCE } from '@librechat/chat/components';
 import type { UIResource } from 'librechat-data-provider';
 import UIResourceRenderer, { isSupportedUIResource } from '~/components/MCPUIResource/Renderer';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
@@ -78,7 +79,7 @@ const UIResourceCarousel: React.FC<UIResourceCarouselProps> = React.memo(({ uiRe
 
   return (
     <div
-      className="relative mb-4 pt-3"
+      className={cn('relative mb-4 pt-3', NAV_CLEARANCE.edge)}
       onMouseEnter={() => setIsContainerHovered(true)}
       onMouseLeave={() => setIsContainerHovered(false)}
     >

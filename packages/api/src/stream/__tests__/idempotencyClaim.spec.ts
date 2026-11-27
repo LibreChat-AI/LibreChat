@@ -1,13 +1,14 @@
 import {
-  REDIS_ABORT_TERMINAL_GRACE_MS,
-  REDIS_EVENT_REORDER_TIMEOUT_MS,
-  REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS,
-} from '~/stream/internal/timing';
-import {
+  PROVIDER_DRAIN_TIMEOUT_MS,
   JobCreationSupersededError,
   type CreatedJobData,
   type IEventTransport,
 } from '~/stream/interfaces/IJobStore';
+import {
+  REDIS_ABORT_TERMINAL_GRACE_MS,
+  REDIS_EVENT_REORDER_TIMEOUT_MS,
+  REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS,
+} from '~/stream/internal/timing';
 import {
   GenerationJobManagerClass,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
@@ -880,6 +881,516 @@ describe('GenerationJobManager start-generation claim', () => {
       expect.objectContaining({ createdAt: predecessor.createdAt, status: 'running' }),
     ]);
     expect(acknowledgeSpy).not.toHaveBeenCalled();
+  });
+
+  it('starts the claimed request after the drain bound when a crashed owner left its provider undrained', async () => {
+    await manager.destroy();
+    store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const transport = new InMemoryEventTransport();
+    manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+    manager.initialize();
+    const survivor = new GenerationJobManagerClass();
+    survivor.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+    survivor.initialize();
+
+    const streamId = 'stream-crashed-undrained-owner';
+    const clientRequestId = 'req-crashed-undrained-owner';
+    jest.useFakeTimers();
+    try {
+      const predecessor = await manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      const providerExecutionId = (await store.getJob(streamId))!.providerExecutionId!;
+      expect(
+        await manager.beginProviderExecution(streamId, predecessor.createdAt, providerExecutionId),
+      ).toBe(true);
+      expect(
+        await store.transitionStatus(streamId, {
+          from: 'running',
+          to: 'complete',
+          expectCreatedAt: predecessor.createdAt,
+          patch: { completedAt: Date.now() },
+        }),
+      ).toBe(true);
+      // The owner stops here: its reply is saved, and nothing will record its provider drain.
+      await jest.advanceTimersByTimeAsync(5);
+
+      const claim = await survivor.claimGeneration(
+        'user-1',
+        clientRequestId,
+        streamId,
+        streamId,
+        2,
+      );
+      const create = survivor.createJob(streamId, 'user-1', streamId, {
+        idempotencyClientRequestId: clientRequestId,
+        idempotencyClaimToken: claim.existing!.claimToken,
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      await jest.advanceTimersByTimeAsync(PROVIDER_DRAIN_TIMEOUT_MS + 1_000);
+      const started = await create;
+
+      expect(started.createdAt).toBeGreaterThan(predecessor.createdAt);
+      expect(await store.getJob(streamId)).toMatchObject({
+        status: 'running',
+        createdAt: started.createdAt,
+      });
+      await expect(
+        survivor.getGenerationAdmissionEvidence('user-1', clientRequestId, streamId),
+      ).resolves.toEqual({ generationId: streamId, generationCreatedAt: started.createdAt });
+      // A retry of the same request attaches to that generation instead of starting another.
+      const retry = await survivor.claimGeneration(
+        'user-1',
+        clientRequestId,
+        streamId,
+        streamId,
+        2,
+      );
+      expect(retry.claimed).toBe(false);
+      expect(retry.existing?.startedAt).toBe(started.createdAt);
+    } finally {
+      jest.useRealTimers();
+      await survivor.destroy();
+    }
+  });
+
+  it.each([
+    { name: 'its create reply arrived', lostReply: false },
+    { name: 'its create reply was lost', lostReply: true },
+  ])(
+    'starts a real generation on the retry of one retired before exposure ($name)',
+    async ({ lostReply }) => {
+      await manager.destroy();
+      store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+      const transport = new InMemoryEventTransport() as InMemoryEventTransport & IEventTransport;
+      let failHandoff = true;
+      transport.emitReplacedDoneConfirmed = jest.fn(async () => {
+        if (failHandoff) {
+          throw new Error('simulated Redis terminal publication failure');
+        }
+      });
+      manager = new GenerationJobManagerClass();
+      manager.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+      manager.initialize();
+
+      const streamId = `stream-unexposed-retry-${lostReply}`;
+      const clientRequestId = `req-unexposed-retry-${lostReply}`;
+      await manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      const claim = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      const createSpy = jest.spyOn(store, 'createJob');
+      if (lostReply) {
+        const actualCreate = store.createJob.bind(store);
+        createSpy.mockImplementationOnce(async (...args) => {
+          await actualCreate(...args);
+          throw new Error('simulated lost atomic create reply');
+        });
+      }
+
+      await expect(
+        manager.createJob(streamId, 'user-1', streamId, {
+          idempotencyClientRequestId: clientRequestId,
+          idempotencyClaimToken: claim.existing!.claimToken,
+          initialMetadata: { generationProtocolVersion: 2 },
+        }),
+      ).rejects.toThrow(
+        lostReply
+          ? 'simulated lost atomic create reply'
+          : 'predecessor handoff could not be confirmed',
+      );
+      const unexposed = await store.getJob(streamId);
+      expect(unexposed).toMatchObject({
+        status: 'error',
+        error: 'Generation predecessor handoff could not be confirmed',
+        idempotencyClientRequestId: clientRequestId,
+      });
+      await expect(
+        manager.getGenerationAdmissionEvidence('user-1', clientRequestId, streamId),
+      ).resolves.toBeNull();
+
+      failHandoff = false;
+      const retry = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      expect(retry.claimed).toBe(true);
+      expect(retry.existing?.claimToken).not.toBe(claim.existing!.claimToken);
+      const started = await manager.createJob(streamId, 'user-1', streamId, {
+        idempotencyClientRequestId: clientRequestId,
+        idempotencyClaimToken: retry.existing!.claimToken,
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+
+      expect(started.createdAt).toBeGreaterThan(unexposed!.createdAt);
+      expect(await store.getJob(streamId)).toMatchObject({
+        createdAt: started.createdAt,
+        status: 'running',
+      });
+      await expect(
+        manager.getGenerationAdmissionEvidence('user-1', clientRequestId, streamId),
+      ).resolves.toEqual({ generationId: streamId, generationCreatedAt: started.createdAt });
+    },
+  );
+
+  it('keeps the request a duplicate when the claim of a retired generation cannot be released', async () => {
+    await manager.destroy();
+    store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const transport = new InMemoryEventTransport() as InMemoryEventTransport & IEventTransport;
+    transport.emitReplacedDoneConfirmed = jest
+      .fn()
+      .mockRejectedValue(new Error('simulated Redis terminal publication failure'));
+    manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+    manager.initialize();
+
+    const streamId = 'stream-unexposed-release-failure';
+    const clientRequestId = 'req-unexposed-release-failure';
+    await manager.createJob(streamId, 'user-1', streamId, {
+      initialMetadata: { generationProtocolVersion: 2 },
+    });
+    const claim = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+    const releaseSpy = jest
+      .spyOn(store, 'releaseIdempotencyKey')
+      .mockRejectedValueOnce(new Error('simulated claim release failure'));
+
+    await expect(
+      manager.createJob(streamId, 'user-1', streamId, {
+        idempotencyClientRequestId: clientRequestId,
+        idempotencyClaimToken: claim.existing!.claimToken,
+        initialMetadata: { generationProtocolVersion: 2 },
+      }),
+    ).rejects.toThrow('predecessor handoff could not be confirmed');
+
+    // The legacy key is left alone once the primary one could not be released.
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    const retired = await store.getJob(streamId);
+    expect(retired).toMatchObject({ status: 'error', idempotencyClientRequestId: clientRequestId });
+    const retry = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+    expect(retry).toMatchObject({
+      claimed: false,
+      existing: { claimToken: claim.existing!.claimToken, startedAt: retired!.createdAt },
+    });
+  });
+
+  /** A predecessor owned by another process: created and started through the
+   * store alone, so this manager holds no runtime that could record its drain. */
+  async function startRemoteProvider(streamId: string): Promise<CreatedJobData> {
+    const providerExecutionId = 'remote-provider-execution';
+    const predecessor = await store.createJob(
+      streamId,
+      'user-1',
+      streamId,
+      undefined,
+      { generationProtocolVersion: 2, providerExecutionId },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'remote-predecessor-attempt',
+    );
+    await store.updateJob(streamId, { providerAbortReady: true }, predecessor.createdAt);
+    expect(
+      await store.beginProviderExecution(streamId, predecessor.createdAt, providerExecutionId),
+    ).toBe(true);
+    return predecessor;
+  }
+
+  function useRemoteHandoffManager(): InMemoryEventTransport & IEventTransport {
+    store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const transport = new InMemoryEventTransport() as InMemoryEventTransport & IEventTransport;
+    transport.emitAbortConfirmed = jest.fn().mockResolvedValue(true);
+    manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore: store, eventTransport: transport, isRedis: true });
+    manager.initialize();
+    return transport;
+  }
+
+  it('starts after the drain bound when a terminal predecessor lost its owner', async () => {
+    await manager.destroy();
+    useRemoteHandoffManager();
+
+    const streamId = 'stream-terminal-lost-owner-handoff';
+    const predecessor = await startRemoteProvider(streamId);
+    await store.updateJob(
+      streamId,
+      { status: 'complete', completedAt: Date.now() },
+      predecessor.createdAt,
+    );
+    const acknowledgeSpy = jest.spyOn(store, 'acknowledgeReplacedJobs');
+
+    jest.useFakeTimers();
+    let replacement: Awaited<ReturnType<typeof manager.createJob>>;
+    try {
+      let settled = false;
+      const creating = manager
+        .createJob(streamId, 'user-1', streamId, {
+          initialMetadata: { generationProtocolVersion: 2 },
+        })
+        .finally(() => {
+          settled = true;
+        });
+      await jest.advanceTimersByTimeAsync(PROVIDER_DRAIN_TIMEOUT_MS - 1_000);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1_100);
+      replacement = await creating;
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(replacement.createdAt).toBeGreaterThan(predecessor.createdAt);
+    expect(acknowledgeSpy).toHaveBeenCalledWith(streamId, expect.any(String), [
+      predecessor.createdAt,
+    ]);
+    const durable = (await store.getJob(streamId)) as CreatedJobData;
+    expect(durable).toMatchObject({ status: 'running', createdAt: replacement.createdAt });
+    expect(durable.replacedJobs ?? []).toEqual([]);
+
+    // The lost owner's receipt is gone, so the next turn starts without a wait.
+    const next = await manager.createJob(streamId, 'user-1', streamId, {
+      initialMetadata: { generationProtocolVersion: 2 },
+    });
+    expect(next.createdAt).toBeGreaterThan(replacement.createdAt);
+  });
+
+  it.each([
+    { name: 'completed before the bound', completed: -PROVIDER_DRAIN_TIMEOUT_MS - 1_000, wait: 0 },
+    { name: 'completed 10 s ago', completed: -10_000, wait: PROVIDER_DRAIN_TIMEOUT_MS - 10_000 },
+    { name: 'no completion time', completed: undefined, wait: PROVIDER_DRAIN_TIMEOUT_MS },
+    {
+      name: 'completion time ahead of this clock',
+      completed: 60_000,
+      wait: PROVIDER_DRAIN_TIMEOUT_MS,
+    },
+  ])(
+    'counts the drain bound of a lost terminal predecessor from its completion ($name)',
+    async ({ completed, wait }) => {
+      await manager.destroy();
+      useRemoteHandoffManager();
+      jest.useFakeTimers();
+      try {
+        const streamId = `stream-terminal-lost-owner-${wait}-${completed}`;
+        const predecessor = await startRemoteProvider(streamId);
+        await store.updateJob(
+          streamId,
+          {
+            status: 'complete',
+            ...(completed != null && { completedAt: Date.now() + completed }),
+          },
+          predecessor.createdAt,
+        );
+        const acknowledgeSpy = jest.spyOn(store, 'acknowledgeReplacedJobs');
+
+        const requested = Date.now();
+        const creating = manager
+          .createJob(streamId, 'user-1', streamId, {
+            initialMetadata: { generationProtocolVersion: 2 },
+          })
+          .then((job) => ({ createdAt: job.createdAt, waited: Date.now() - requested }));
+        await jest.advanceTimersByTimeAsync(PROVIDER_DRAIN_TIMEOUT_MS + 1_000);
+        const replacement = await creating;
+
+        expect(replacement.waited).toBeGreaterThanOrEqual(wait);
+        expect(replacement.waited).toBeLessThan(wait + 100);
+        expect(replacement.createdAt).toBeGreaterThan(predecessor.createdAt);
+        expect(acknowledgeSpy).toHaveBeenCalledWith(streamId, expect.any(String), [
+          predecessor.createdAt,
+        ]);
+        expect(await store.getJob(streamId)).toMatchObject({
+          status: 'running',
+          createdAt: replacement.createdAt,
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('fails closed when a running predecessor acknowledges the abort but never drains', async () => {
+    await manager.destroy();
+    useRemoteHandoffManager();
+
+    const streamId = 'stream-running-undrained-handoff';
+    const predecessor = await startRemoteProvider(streamId);
+    const acknowledgeSpy = jest.spyOn(store, 'acknowledgeReplacedJobs');
+
+    jest.useFakeTimers();
+    let outcome: unknown;
+    try {
+      const creating = manager
+        .createJob(streamId, 'user-1', streamId, {
+          initialMetadata: { generationProtocolVersion: 2 },
+        })
+        .then(
+          () => 'started',
+          (error: Error) => error.message,
+        );
+      await jest.advanceTimersByTimeAsync(PROVIDER_DRAIN_TIMEOUT_MS + 100);
+      outcome = await creating;
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(outcome).toBe('Generation predecessor handoff could not be confirmed');
+    const durable = (await store.getJob(streamId)) as CreatedJobData;
+    expect(durable).toMatchObject({
+      status: 'error',
+      error: 'Generation predecessor handoff could not be confirmed',
+    });
+    expect(durable.replacedJobs).toEqual([
+      expect.objectContaining({ createdAt: predecessor.createdAt, status: 'running' }),
+    ]);
+    expect(acknowledgeSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the drain of a terminal predecessor cannot be read', async () => {
+    await manager.destroy();
+    const transport = useRemoteHandoffManager();
+
+    const streamId = 'stream-terminal-unreadable-drain-handoff';
+    const predecessor = await startRemoteProvider(streamId);
+    // Already past the bound: the handoff still needs one readable drain check.
+    await store.updateJob(
+      streamId,
+      { status: 'complete', completedAt: Date.now() - PROVIDER_DRAIN_TIMEOUT_MS - 1_000 },
+      predecessor.createdAt,
+    );
+    const acknowledgeSpy = jest.spyOn(store, 'acknowledgeReplacedJobs');
+    const getJob = store.getJob.bind(store);
+    let waiting = false;
+    transport.hasProviderDrain = jest.fn(async () => {
+      waiting = true;
+      return false;
+    });
+    jest.spyOn(store, 'getJob').mockImplementation(async (id) => {
+      if (waiting) {
+        waiting = false;
+        throw new Error('simulated Redis outage');
+      }
+      return getJob(id);
+    });
+
+    await expect(
+      manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      }),
+    ).rejects.toThrow('predecessor handoff could not be confirmed');
+
+    const durable = (await store.getJob(streamId)) as CreatedJobData;
+    expect(durable.replacedJobs).toEqual([
+      expect.objectContaining({ createdAt: predecessor.createdAt, status: 'complete' }),
+    ]);
+    expect(acknowledgeSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the drain record of a terminal predecessor stays unreadable', async () => {
+    await manager.destroy();
+    const transport = useRemoteHandoffManager();
+
+    const streamId = 'stream-terminal-unreadable-record-handoff';
+    const predecessor = await startRemoteProvider(streamId);
+    await store.updateJob(
+      streamId,
+      { status: 'complete', completedAt: Date.now() },
+      predecessor.createdAt,
+    );
+    const acknowledgeSpy = jest.spyOn(store, 'acknowledgeReplacedJobs');
+    transport.hasProviderDrain = jest.fn().mockRejectedValue(new Error('simulated Redis outage'));
+
+    jest.useFakeTimers();
+    let outcome: unknown;
+    try {
+      const creating = manager
+        .createJob(streamId, 'user-1', streamId, {
+          initialMetadata: { generationProtocolVersion: 2 },
+        })
+        .then(
+          () => 'started',
+          (error: Error) => error.message,
+        );
+      await jest.advanceTimersByTimeAsync(PROVIDER_DRAIN_TIMEOUT_MS + 100);
+      outcome = await creating;
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(outcome).toBe('Generation predecessor handoff could not be confirmed');
+    const durable = (await store.getJob(streamId)) as CreatedJobData;
+    expect(durable.replacedJobs).toEqual([
+      expect.objectContaining({ createdAt: predecessor.createdAt, status: 'complete' }),
+    ]);
+    expect(acknowledgeSpy).not.toHaveBeenCalled();
+  });
+
+  it('still starts after the drain bound when one drain record read failed mid-wait', async () => {
+    await manager.destroy();
+    const transport = useRemoteHandoffManager();
+
+    const streamId = 'stream-terminal-transient-record-handoff';
+    const predecessor = await startRemoteProvider(streamId);
+    await store.updateJob(
+      streamId,
+      { status: 'complete', completedAt: Date.now() },
+      predecessor.createdAt,
+    );
+    transport.hasProviderDrain = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('simulated Redis blip'))
+      .mockResolvedValue(false);
+
+    jest.useFakeTimers();
+    let replacement: Awaited<ReturnType<typeof manager.createJob>>;
+    try {
+      const creating = manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      await jest.advanceTimersByTimeAsync(PROVIDER_DRAIN_TIMEOUT_MS + 100);
+      replacement = await creating;
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(replacement.createdAt).toBeGreaterThan(predecessor.createdAt);
+    expect(await store.getJob(streamId)).toMatchObject({
+      status: 'running',
+      createdAt: replacement.createdAt,
+    });
+  });
+
+  it('fails closed when the only drain record read of a long-lost predecessor fails', async () => {
+    await manager.destroy();
+    const transport = useRemoteHandoffManager();
+
+    const streamId = 'stream-terminal-single-read-handoff';
+    const predecessor = await startRemoteProvider(streamId);
+    await store.updateJob(
+      streamId,
+      { status: 'complete', completedAt: Date.now() - PROVIDER_DRAIN_TIMEOUT_MS - 1_000 },
+      predecessor.createdAt,
+    );
+    transport.hasProviderDrain = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('simulated Redis blip'))
+      .mockResolvedValue(false);
+
+    // Past the bound there is no later poll to retry the read.
+    await expect(
+      manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      }),
+    ).rejects.toThrow('predecessor handoff could not be confirmed');
+    const retired = (await store.getJob(streamId)) as CreatedJobData;
+    expect(retired.replacedJobs).toEqual([
+      expect.objectContaining({ createdAt: predecessor.createdAt, status: 'complete' }),
+    ]);
+
+    // The inherited receipt keeps its completion time, so the retry does not wait either.
+    const requested = Date.now();
+    const replacement = await manager.createJob(streamId, 'user-1', streamId, {
+      initialMetadata: { generationProtocolVersion: 2 },
+    });
+    expect(Date.now() - requested).toBeLessThan(PROVIDER_DRAIN_TIMEOUT_MS / 2);
+    expect(replacement.createdAt).toBeGreaterThan(retired.createdAt);
+    expect(((await store.getJob(streamId)) as CreatedJobData).replacedJobs ?? []).toEqual([]);
   });
 
   it('self-fences a provider when a missed replacement abort makes its Redis append stale', async () => {

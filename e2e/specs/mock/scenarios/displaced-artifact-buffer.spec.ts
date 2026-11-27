@@ -40,6 +40,8 @@ test('an edit another artifact displaced is kept for its own @scenario:a-displac
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
   await sendMessageAndWaitForCompletion(page, 'E2E_TWO_ARTIFACT_REPLY', { timeout: 60000 });
+  /* The reply opens the last artifact it completes. */
+  await expect(page.getByRole('region', { name: SECOND_ARTIFACT })).toBeVisible();
 
   /* Edit the first artifact and leave before its debounce has to have fired:
    * whether or not the save went out, the text has to survive. */

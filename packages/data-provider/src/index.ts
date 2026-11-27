@@ -70,6 +70,7 @@ export type {
 export * from './types/subagents';
 export * from './types/background';
 export * from './types/pullRequest';
+export * from './types/eventTypes';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';
@@ -110,7 +111,8 @@ export * from './code/worker';
 export * from './code/approval';
 export * from './code/workspace';
 
-export * from './types/scheduleConsent';
+export * from './types/runGrant';
+export * from './types/dead';
 
 export * from './approval';
 export * from './types/channels';
@@ -119,6 +121,10 @@ export * from './types/channelIdentity';
 export * from './channelLink';
 export * from './types/channelFeedback';
 export * from './types/channelRuns';
+export * from './types/connections';
+export * from './types/subscriptions';
+
+export * from './subagentGraphs';
 
 export * from './codeSetup';
 

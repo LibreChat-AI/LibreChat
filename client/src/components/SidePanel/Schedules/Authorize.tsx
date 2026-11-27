@@ -10,6 +10,11 @@ export interface Authorization {
   value: ScheduleReauthorization | null;
   /** There is something to allow, so the schedule is not created until something is. */
   owed: boolean;
+  /**
+   * The choice is not the grant the schedule has in force: saving has something to store even
+   * where no field of the schedule was edited.
+   */
+  unsaved: boolean;
 }
 
 /**
@@ -58,9 +63,15 @@ export default function Authorize({
       })
     : null;
   const owed = offer != null;
+  /** A grant that is not in force is not what the form shows, however little was touched. */
+  const unsaved = query.data?.state !== 'active' || !state.pristine || typed != null;
   useEffect(() => {
-    onChange({ value: chosen ? (JSON.parse(chosen) as ScheduleReauthorization) : null, owed });
-  }, [chosen, owed, onChange]);
+    onChange({
+      value: chosen ? (JSON.parse(chosen) as ScheduleReauthorization) : null,
+      owed,
+      unsaved,
+    });
+  }, [chosen, owed, unsaved, onChange]);
 
   if (query.isLoading && query.fetchStatus !== 'idle') return <Spinner />;
   if (query.isError)

@@ -12,4 +12,19 @@ describe('Alert', () => {
     expect(roomy).toHaveClass('px-6', 'py-4');
     expect(roomy).not.toHaveClass('px-4');
   });
+
+  it('states a quiet error in the copy color on the error border and fill', () => {
+    render(
+      <Alert variant="error-quiet" icon={false}>
+        Offline
+      </Alert>,
+    );
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveClass(
+      'border-alert-error-border',
+      'bg-alert-error-fill',
+      'text-text-secondary',
+    );
+    expect(alert).not.toHaveClass('text-status-error');
+  });
 });

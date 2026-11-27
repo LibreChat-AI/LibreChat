@@ -53,3 +53,30 @@ it.each([null, {}, 'malformed', { ...completion, invocationMode: 'autonomous' }]
     );
   },
 );
+
+const trigger = {
+  subject: { kind: 'key' as const, id: 'key-1' },
+  delivery: {
+    key: 'trigger_abc',
+    event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+  },
+};
+it('saves the subject and delivery of the trigger that started a run, and nothing else of it', () => {
+  const source = { type: 'trigger' as const, ...trigger, manual: false, resumed: false };
+  expect(sanitizeJobMetadata({ trigger: source })).toEqual({ trigger });
+  expect(sanitizeJobMetadata({ trigger: { delivery: trigger.delivery } })).toEqual({
+    trigger: { delivery: trigger.delivery },
+  });
+  expect(sanitizeJobMetadata({})).not.toHaveProperty('trigger');
+  expect(sanitizeJobMetadata({ trigger: undefined })).not.toHaveProperty('trigger');
+  // A source no trigger started, such as a remote API run's, saves none.
+  expect(
+    sanitizeJobMetadata({ trigger: { type: 'remote_api', keyId: 'key-1' } } as never),
+  ).not.toHaveProperty('trigger');
+});
+it.each([null, 'key-1', { subject: { kind: 'user', id: 'owner' } }, { delivery: {} }])(
+  'never saves a trigger it cannot read as an ordinary job: %j',
+  (value) => {
+    expect(() => sanitizeJobMetadata({ trigger: value } as never)).toThrow('run_trigger_invalid');
+  },
+);

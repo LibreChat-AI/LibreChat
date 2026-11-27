@@ -425,7 +425,8 @@ describe('createAgentEventActorDetachedActionLifecycle', () => {
 });
 
 describe('createAgentEventDetachedResumeHandler', () => {
-  it('enqueues duplicate completion wakes under one stable mailbox identity', async () => {
+  /** A settled detached action of a bound delivery, and the job of the run it suspended. */
+  function setup() {
     const envelope = {
       version: 1 as const,
       mode: 'continue' as const,
@@ -503,6 +504,11 @@ describe('createAgentEventDetachedResumeHandler', () => {
       suspension: {} as never,
       action,
     };
+    return { resume, input, action, enqueueAgentTrigger };
+  }
+
+  it('enqueues duplicate completion wakes under one stable mailbox identity', async () => {
+    const { resume, input, action, enqueueAgentTrigger } = setup();
 
     await resume(input);
     await resume(input);
@@ -528,5 +534,35 @@ describe('createAgentEventDetachedResumeHandler', () => {
       'Resume the suspended event actor with the detached tool completion supplied by the host.',
     );
     expect(first.input).not.toContain(action.result);
+  });
+
+  it('hands the continuation what the suspended run saved of its trigger', async () => {
+    const { resume, input, enqueueAgentTrigger } = setup();
+    const payload = (call: number) => enqueueAgentTrigger.mock.calls[call][0].event.payload;
+    // A job saved before jobs saved their trigger keeps nothing for the continuation.
+    await resume(input);
+    expect(payload(0)).not.toHaveProperty('trigger');
+
+    const delivered = {
+      key: 'trigger_original',
+      event: { id: 'event-1', type: 'game.move', occurredAt: 1 },
+    };
+    const subject = { kind: 'key' as const, id: 'source-1' };
+    /** The job of the suspended run, with what the server saved of its trigger. */
+    const saved = (trigger: Record<string, unknown>) => ({
+      ...input,
+      job: { ...input.job, agent_id: 'agent-1', trigger },
+    });
+    await resume(saved({ subject, delivery: delivered }));
+    expect(payload(1)).toMatchObject({
+      taskId: 'task-1',
+      trigger: { subject, origin: { agentId: 'agent-1', delivery: delivered } },
+    });
+    // A run that was itself such a continuation passes on the origin it was given.
+    const origin = { agentId: 'agent-root', delivery: delivered };
+    await resume(saved({ subject, delivery: { ...delivered, key: 'trigger_later' }, origin }));
+    expect(payload(2)).toMatchObject({
+      trigger: { subject, origin },
+    });
   });
 });

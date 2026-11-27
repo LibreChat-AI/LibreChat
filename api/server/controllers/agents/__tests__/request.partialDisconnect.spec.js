@@ -77,7 +77,9 @@ jest.mock('@librechat/api', () => ({
   persistedReasoningOverrideFields:
     jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   isScheduleFireRequest: jest.fn(() => false),
-  createScheduleExecutionContext: jest.fn(() => undefined),
+  createTriggerExecutionContext: jest.fn(() => undefined),
+  toMessageTrigger: jest.fn(() => undefined),
+  stampMessageTrigger: (_req, message) => message,
   exemptFromConcurrencyLimiter: jest.fn(() => false),
   toPendingSteer: jest.fn((item) => item),
   isSteerPreemptSupported: jest.fn(() => true),
@@ -119,6 +121,8 @@ jest.mock('@librechat/api', () => ({
     pending: new Map(),
     cleanupStarted: false,
   })),
+  createChatFinalization: (...args) =>
+    jest.requireActual('@librechat/api').createChatFinalization(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: jest.fn(),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),
@@ -135,6 +139,8 @@ jest.mock('@librechat/api', () => ({
   parseAgentEventActorDetachedCompletion: jest.fn(() => undefined),
 }));
 
+// Settles a triggered run that is not a schedule's; these requests are neither.
+jest.mock('~/server/services/Events/settle', () => jest.fn(async () => true));
 jest.mock('~/server/cleanup', () => ({
   disposeClient: jest.fn(),
 }));

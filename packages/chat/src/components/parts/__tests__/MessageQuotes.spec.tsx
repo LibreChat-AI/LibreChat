@@ -3,13 +3,10 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
-
+import { initEnglish } from '../../../__fixtures__/i18n';
 import MessageQuotes from '../MessageQuotes';
+
+beforeAll(initEnglish);
 
 describe('MessageQuotes', () => {
   it('renders nothing when quotes is undefined', () => {
@@ -32,7 +29,7 @@ describe('MessageQuotes', () => {
 
   it('localizes the list aria-label', () => {
     render(<MessageQuotes quotes={['excerpt']} />);
-    expect(screen.getByRole('list')).toHaveAttribute('aria-label', 'com_ui_referenced_quotes');
+    expect(screen.getByRole('list')).toHaveAttribute('aria-label', 'Referenced quotes');
   });
 
   it('renders duplicate quote strings as separate blocks', () => {

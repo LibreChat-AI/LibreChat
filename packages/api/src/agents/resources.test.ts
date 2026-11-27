@@ -3466,6 +3466,41 @@ describe('primeResources', () => {
       expect(result.attachments?.map((f) => f?.file_id) ?? []).not.toContain('deferred-file');
     });
 
+    it('queues an image a tool generated on an earlier turn for the code environment', async () => {
+      /* A generated image never passes through the destination chooser, so its record names
+       * no destination at all. Read as a legacy upload that declined the sandbox, it was never
+       * queued, and a later code call ran without it. */
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const generated = makeCodeFile({
+        file_id: 'generated-image',
+        filename: 'generated-image-image_gen_oai_img_abc.png',
+        type: 'image/png',
+        context: FileContext.image_generation,
+        llmDeliveryPath: undefined,
+        metadata: undefined,
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        provisionCandidates: [generated],
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual([
+        'generated-image',
+      ]);
+      /* An image is no search input, so the vector store is not asked to read it. */
+      expect(result.provisionState?.vectorDBFiles).toEqual([]);
+      expect(result.attachments?.map((f) => f?.file_id) ?? []).not.toContain('generated-image');
+    });
+
     it('does not double-queue a candidate that is already an attachment', async () => {
       process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
       const file = makeCodeFile({ file_id: 'shared-file' });
@@ -3596,5 +3631,145 @@ describe('primeResources', () => {
       expect(searchResource?.files?.map((f) => f.file_id)).toContain('embedded-attachment');
       expect(searchResource?.file_ids ?? []).not.toContain('embedded-attachment');
     });
+  });
+});
+
+describe('primeResources snapshot upload receipts', () => {
+  const sha256 = 'a'.repeat(64);
+  const receipt = {
+    kind: 'user' as const,
+    id: 'user1',
+    storage_session_id: 'upload-session',
+    file_id: 'upload-object',
+    executionProfile: 'default' as const,
+    sandboxFilename: 'chart.csv',
+    provisionedAt: 1,
+    content: { sha256, md5: 'b'.repeat(32), bytes: 12 },
+  };
+  const snapshot = (overrides: Partial<TFile> = {}): TFile => ({
+    user: 'user1',
+    file_id: 'snapshot',
+    filename: 'chart.csv',
+    filepath: '/uploads/snapshot',
+    type: 'text/csv',
+    bytes: 12,
+    object: 'file' as const,
+    usage: 0,
+    embedded: false,
+    source: FileSources.local,
+    context: FileContext.execute_code_snapshot,
+    metadata: {
+      codeDestination: true,
+      sourceDispatchedAt: 1,
+      codeOutput: { messageId: 'message', sha256 },
+      codeEnvRefs: { default: receipt },
+    },
+    ...overrides,
+  });
+  const prime = (
+    file: TFile,
+    checkSessionsAlive: jest.Mock,
+    route: { codeRouteKey?: string; codeBaseUrl?: string } = {},
+  ) =>
+    primeResources({
+      req: { user: { id: 'user1', role: 'USER' } } as unknown as ServerRequest & { user?: IUser },
+      appConfig: {
+        endpoints: { [EModelEndpoint.agents]: { capabilities: [] } as unknown as TAgentsEndpoint },
+      } as AppConfig,
+      getFiles: jest.fn(),
+      filterFiles: jest.fn().mockImplementation(({ files }) => Promise.resolve(files)),
+      tool_resources: {},
+      attachments: Promise.resolve([file]),
+      requestFileSet: new Set<string>(),
+      agentId: 'agent1',
+      enabledToolResources: new Set([EToolResources.execute_code]),
+      checkSessionsAlive,
+      ...route,
+    });
+
+  it('mounts a snapshot from its proven upload instead of queueing it again', async () => {
+    const file = snapshot();
+    const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['snapshot']));
+    const result = await prime(file, checkSessionsAlive);
+
+    expect(checkSessionsAlive).toHaveBeenCalledWith(
+      expect.objectContaining({ files: [file], routeKey: 'default' }),
+    );
+    expect(result.provisionState).toBeUndefined();
+    expect(
+      result.tool_resources?.[EToolResources.execute_code]?.files?.map((f) => f.file_id),
+    ).toEqual(['snapshot']);
+  });
+
+  it.each([
+    ['the stored object could not be proven', snapshot(), new Set<string>(), true],
+    [
+      'the receipt is for other content',
+      snapshot({
+        metadata: {
+          ...snapshot().metadata,
+          codeOutput: { messageId: 'message', sha256: 'c'.repeat(64) },
+        },
+      }),
+      new Set(['snapshot']),
+      false,
+    ],
+    [
+      'the upload recorded no digest',
+      snapshot({
+        metadata: {
+          ...snapshot().metadata,
+          codeEnvRefs: { default: { ...receipt, content: undefined } },
+        },
+      }),
+      new Set(['snapshot']),
+      false,
+    ],
+    [
+      'the receipt belongs to another identity',
+      snapshot({
+        metadata: { ...snapshot().metadata, codeEnvRefs: { default: { ...receipt, id: 'other' } } },
+      }),
+      new Set(['snapshot']),
+      true,
+    ],
+    [
+      'the receipt was filed under an agent for a file the user owns this turn',
+      snapshot({
+        metadata: {
+          ...snapshot().metadata,
+          codeEnvRefs: { default: { ...receipt, kind: 'agent' as const, id: 'agent1' } },
+        },
+      }),
+      new Set(['snapshot']),
+      true,
+    ],
+  ])('queues the stored bytes when %s', async (_label, file, alive, probed) => {
+    const checkSessionsAlive = jest.fn().mockResolvedValue(alive);
+    const result = await prime(file, checkSessionsAlive);
+
+    expect(checkSessionsAlive).toHaveBeenCalledTimes(probed ? 1 : 0);
+    expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual(['snapshot']);
+    expect(result.tool_resources?.[EToolResources.execute_code]?.files ?? []).toEqual([]);
+  });
+
+  it('queues every turn on a route whose sandbox keeps its own copy', async () => {
+    const routeKey = 'stateful:workspace';
+    const file = snapshot({
+      metadata: {
+        ...snapshot().metadata,
+        codeEnvRefs: {
+          [routeKey]: { ...receipt, executionProfile: 'stateful', executionRouteKey: routeKey },
+        },
+      },
+    });
+    const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['snapshot']));
+    const result = await prime(file, checkSessionsAlive, {
+      codeRouteKey: routeKey,
+      codeBaseUrl: 'https://code.example',
+    });
+
+    expect(checkSessionsAlive).not.toHaveBeenCalled();
+    expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual(['snapshot']);
   });
 });

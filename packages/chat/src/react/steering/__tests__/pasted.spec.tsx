@@ -3,6 +3,7 @@
  */
 import React from 'react';
 import { createStore, Provider } from 'jotai';
+import { useLocalize } from '@librechat/client';
 import { act, renderHook } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -20,10 +21,13 @@ import {
 } from '../../composer';
 import { formatPastedText, isComposerFileTaken, releaseComposerFile } from '../../../core';
 import { createTurnServices } from '../../chat/__fixtures__/services';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import { SteerHostProvider } from '../../steer/host';
 import useDuringRunActions from '../actions';
 import { useTurns } from '../../chat/turns';
 import useComposerTake from '../composer';
+
+beforeAll(initEnglish);
 
 const conversationId = 'paste-fallback-conversation';
 const reasoningStateKey = conversationId;
@@ -68,7 +72,7 @@ const createHost = (
   useFetchStreamStatus: () => async () => ({ active: false }),
   useRouteConversationId: () => undefined,
   useCodeApprovalInputs: () => ({ conversation: null, reachable: { agents: [], complete: true } }),
-  useLocalize: () => (key) => key,
+  useLocalize,
   useNotify: () => notify,
   useFileMap: () => undefined,
   useClearFilesToDelete: () => clearFilesToDelete,
@@ -233,7 +237,8 @@ describe('during-run pasted text fallback', () => {
     expect(chat.stopGenerating).not.toHaveBeenCalled();
     expect(chat.store.get(pendingQuotesByConvoId(conversationId))).toEqual(['keep this quote']);
     expect(chat.notify).toHaveBeenCalledWith({
-      message: 'com_ui_pasted_text_wait_upload',
+      message:
+        'This paste is too long to send inline during a response. Wait for its upload to finish, then try again.',
       status: 'warning',
     });
     const completed = setupSteering({

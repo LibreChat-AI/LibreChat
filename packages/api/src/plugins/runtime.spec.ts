@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import childProcess from 'node:child_process';
 import { logger } from '@librechat/data-schemas';
 import { HookRegistry, executeHooks } from '@librechat/agents';
 import {
@@ -184,11 +185,31 @@ describe('registerDeploymentPluginHooks', () => {
   });
 
   it('denies through the hook registry when the command shell cannot spawn', async () => {
-    await writePlugin('guard');
+    await writePlugin('guard', {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '^write_file$',
+            hooks: [{ type: 'command', command: 'exit 0', commandWindows: 'exit 0' }],
+          },
+        ],
+      },
+    });
     await initialize();
     const registry = new HookRegistry();
-    registerDeploymentPluginHooks({ registry, context: { sessionId: 'missing-shell' } });
-    jest.replaceProperty(process.env, 'PATH', dataDir);
+    const registered = registerDeploymentPluginHooks({
+      registry,
+      context: { sessionId: 'missing-shell' },
+    });
+    expect(registered).toBe(1);
+
+    // Let Node emit a real spawn error without relying on shell discovery.
+    const { spawn } = childProcess;
+    const start = jest
+      .spyOn(childProcess, 'spawn')
+      .mockImplementationOnce((_file, args, options) =>
+        spawn(path.join(base, 'missing-shell.exe'), args, options),
+      );
 
     const result = await executeHooks({
       registry,
@@ -201,6 +222,11 @@ describe('registerDeploymentPluginHooks', () => {
         toolUseId: 'tool-1',
       },
     });
+    expect(start).toHaveBeenCalledWith(
+      process.platform === 'win32' ? 'powershell.exe' : 'bash',
+      expect.any(Array),
+      expect.any(Object),
+    );
     expect(result).toEqual(
       expect.objectContaining({ decision: 'deny', reason: 'Plugin hook command could not start' }),
     );

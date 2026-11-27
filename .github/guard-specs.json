@@ -29,10 +29,6 @@
       "client/src/routes/ShareRoute.tsx",
       "client/src/routes/Search.tsx"
     ],
-    "client/src/__tests__/messageContentCascade.spec.ts": [
-      "client/src/style.css",
-      "packages/client/src/theme/parts.css"
-    ],
     "client/src/__tests__/loadingCanvas.spec.ts": ["client/index.html"],
     "client/src/__tests__/loadingSpinner.spec.tsx": ["client/index.html"],
     "client/src/components/Chat/Input/Composer/__tests__/semanticTokens.spec.ts": [
@@ -89,6 +85,10 @@
       "client/src/main.jsx"
     ],
     "packages/client/src/theme/defaults.spec.ts": ["packages/client/src/theme/defaults.css"],
+    "packages/client/src/theme/prose.spec.ts": [
+      "client/src/style.css",
+      "packages/client/src/theme/"
+    ],
     "packages/client/src/theme/parts.spec.ts": [
       "client/src/style.css",
       "packages/client/src/theme/parts.css",
@@ -109,7 +109,8 @@
     "packages/client/src/theme/semanticTokens.spec.ts": [
       "client/src/style.css",
       "packages/client/src/components/",
-      "packages/client/src/theme/defaults.css"
+      "packages/client/src/theme/defaults.css",
+      "packages/client/src/theme/syntax.css"
     ],
     "packages/client/src/theme/tailwind.spec.js": [
       "client/src/style.css",

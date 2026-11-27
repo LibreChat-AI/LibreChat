@@ -2,6 +2,7 @@ import { Constants, ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TActivityLabelEvent, TMessageContentParts } from 'librechat-data-provider';
 import { findResponseMessageIndex } from '../steer';
 import { hasParallelLanes } from '../lanes';
+import { sameItems } from '../same';
 
 type ActivityLabelPart = Extract<TMessageContentParts, { type: ContentTypes.ACTIVITY_LABEL }> & {
   activity_label_type?: 'phase';
@@ -35,6 +36,52 @@ export type ActivityPhaseSegment =
        *  header is resolved at render from the newest activity in `content`. */
       live?: boolean;
     };
+
+function sameSegment(a: ActivityPhaseSegment, b: ActivityPhaseSegment): boolean {
+  if (
+    a.type !== b.type ||
+    a.startIndex !== b.startIndex ||
+    !sameItems(a.content, b.content) ||
+    !sameItems(a.contentIndices, b.contentIndices)
+  ) {
+    return false;
+  }
+  if (a.type !== 'phase' || b.type !== 'phase') {
+    return true;
+  }
+  return (
+    a.labelPart === b.labelPart &&
+    a.labelIndex === b.labelIndex &&
+    a.hasContent === b.hasContent &&
+    a.synthesized === b.synthesized &&
+    a.live === b.live
+  );
+}
+
+/**
+ * Carries the segments of the previous grouping over into the next one wherever a segment at the
+ * same position came out the same: same parts by identity, same indexes, same marker. A streamed
+ * update changes the tail of a message, so every settled segment keeps the object it had, and a
+ * component memoized on its segment is skipped. Returns `previous` itself when nothing changed.
+ */
+export function shareActivitySegments(
+  previous: ActivityPhaseSegment[] | undefined,
+  next: ActivityPhaseSegment[],
+): ActivityPhaseSegment[] {
+  if (previous == null) {
+    return next;
+  }
+  let reused = 0;
+  const shared = next.map((segment, index) => {
+    const earlier = previous[index];
+    if (earlier != null && sameSegment(earlier, segment)) {
+      reused += 1;
+      return earlier;
+    }
+    return segment;
+  });
+  return reused === next.length && previous.length === next.length ? previous : shared;
+}
 
 function isVisibleContentPart(part: TMessageContentParts | undefined): boolean {
   return (

@@ -315,9 +315,7 @@ test.describe('desktop', () => {
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await sendMessageAndWaitForCompletion(page, 'E2E_HTML_ARTIFACT_REPLY', { timeout: 60000 });
     await expect(page).toHaveURL(/\/c\/(?!new)/);
-    await messagesView(page)
-      .getByRole('button', { name: new RegExp(HTML_ARTIFACT) })
-      .click();
+    /* The reply opens its artifact as it arrives. */
     const panel = page.getByRole('region', { name: HTML_ARTIFACT });
     await expect(panel).toBeVisible({ timeout: 30000 });
     await expect(page.locator('html')).not.toHaveAttribute('dir', 'rtl');

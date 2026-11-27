@@ -43,9 +43,11 @@ jest.mock('../../../../packages/api/src/mcp/oauth/cleanup', () => ({
   prepareMCPServerOAuthDeletion: jest.fn(),
 }));
 
+const mockPurgeSubscriptions = jest.fn(async () => 0);
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), info: jest.fn() },
   webSearchKeys: [],
+  createSubscriptions: () => ({ purge: mockPurgeSubscriptions }),
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -453,6 +455,7 @@ describe('deleteUserController - 2FA enforcement', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith({ message: 'User deleted' });
+    expect(mockPurgeSubscriptions).toHaveBeenCalledWith(req.user.id);
   });
 
   it('returns error when 2FA is enabled and verification fails with 400', async () => {

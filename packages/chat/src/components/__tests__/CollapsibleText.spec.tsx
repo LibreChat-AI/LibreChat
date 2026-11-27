@@ -3,14 +3,16 @@
  */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { initEnglish } from '../../__fixtures__/i18n';
 import CollapsibleText from '../CollapsibleText';
 
 let mockRemScale = 1;
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useRemScale: () => mockRemScale,
-  useLocalize: () => (key: string) => key,
 }));
+
+beforeAll(initEnglish);
 
 const longMessage = 'line\n'.repeat(80);
 const shortMessage = 'a short message';
@@ -87,7 +89,7 @@ describe('CollapsibleText', () => {
           <p>{longMessage}</p>
         </CollapsibleText>,
       );
-      const toggle = screen.getByRole('button', { name: 'com_ui_show_more' });
+      const toggle = screen.getByRole('button', { name: 'Show more' });
       expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
       // aria-controls must point at the clamped region holding the text.
@@ -101,6 +103,60 @@ describe('CollapsibleText', () => {
     } finally {
       scrollHeight.mockRestore();
     }
+  });
+
+  /**
+   * A message is not laid out at its full height first and clamped after: the thread around
+   * it would be laid out twice, and a thread still mounting rows above a reader takes the
+   * first height as the row's.
+   */
+  describe('before it has been measured', () => {
+    /** Records the region's height limit in a layout effect, which a child runs before the
+     *  component's own measuring one: what the first render put in the document. */
+    function FirstRender({ seen }: { seen: string[] }) {
+      const ref = React.useRef<HTMLSpanElement>(null);
+      React.useLayoutEffect(() => {
+        const region = ref.current?.closest<HTMLElement>('[id]');
+        seen.push(region?.style.maxHeight ?? 'none');
+      }, [seen]);
+      return <span ref={ref}>{plainMessage}</span>;
+    }
+
+    it('holds a long message to the preview height from its first render', () => {
+      const scrollHeight = stubScrollHeight(5000);
+      try {
+        const seen: string[] = [];
+        render(
+          <CollapsibleText enabled>
+            <FirstRender seen={seen} />
+          </CollapsibleText>,
+        );
+        expect(seen).toEqual(['264px']);
+        const region = screen.getByText(plainMessage).closest<HTMLElement>('[id]');
+        expect(region?.style.maxHeight).toBe('256px');
+        expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument();
+      } finally {
+        scrollHeight.mockRestore();
+      }
+    });
+
+    it('lets go of a message that fits once it has measured it', () => {
+      const scrollHeight = stubScrollHeight(100);
+      try {
+        const seen: string[] = [];
+        render(
+          <CollapsibleText enabled>
+            <FirstRender seen={seen} />
+          </CollapsibleText>,
+        );
+        expect(seen).toEqual(['264px']);
+        const region = screen.getByText(plainMessage).closest<HTMLElement>('[id]');
+        expect(region?.style.maxHeight).toBe('');
+        expect(region).not.toHaveClass('overflow-hidden');
+      } finally {
+        scrollHeight.mockRestore();
+      }
+    });
   });
 
   it('reveals the message when focus reaches clipped content', () => {
@@ -121,7 +177,7 @@ describe('CollapsibleText', () => {
       link.getBoundingClientRect = () =>
         ({ top: 300, bottom: 320, height: 20, width: 40, left: 0, right: 40 }) as DOMRect;
       fireEvent(link, new FocusEvent('focusin', { bubbles: true }));
-      expect(screen.getByRole('button', { name: 'com_ui_show_less' })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute(
         'aria-expanded',
         'true',
       );
@@ -144,7 +200,7 @@ describe('CollapsibleText', () => {
       link.getBoundingClientRect = () =>
         ({ top: 10, bottom: 30, height: 20, width: 40, left: 0, right: 40 }) as DOMRect;
       fireEvent(link, new FocusEvent('focusin', { bubbles: true }));
-      expect(screen.getByRole('button', { name: 'com_ui_show_more' })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: 'Show more' })).toHaveAttribute(
         'aria-expanded',
         'false',
       );
@@ -169,7 +225,7 @@ describe('CollapsibleText', () => {
       link.getBoundingClientRect = () =>
         ({ top: 254, bottom: 258, height: 4, width: 40, left: 0, right: 40 }) as DOMRect;
       fireEvent(link, new FocusEvent('focusin', { bubbles: true }));
-      expect(screen.getByRole('button', { name: 'com_ui_show_less' })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute(
         'aria-expanded',
         'true',
       );
@@ -226,7 +282,7 @@ describe('CollapsibleText', () => {
           right: 40,
         }) as DOMRect;
       fireEvent(link, new FocusEvent('focusin', { bubbles: true }));
-      expect(screen.getByRole('button', { name: 'com_ui_show_less' })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute(
         'aria-expanded',
         'true',
       );
@@ -252,7 +308,7 @@ describe('CollapsibleText', () => {
           <p>{plainMessage}</p>
         </CollapsibleText>,
       );
-      expect(screen.getByRole('button', { name: 'com_ui_show_more' })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: 'Show more' })).toHaveAttribute(
         'aria-expanded',
         'false',
       );
@@ -269,8 +325,8 @@ describe('CollapsibleText', () => {
           <p>{plainMessage}</p>
         </CollapsibleText>,
       );
-      fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_more' }));
-      const collapse = screen.getByRole('button', { name: 'com_ui_show_less' });
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+      const collapse = screen.getByRole('button', { name: 'Show less' });
       expect(collapse).toHaveAttribute('aria-expanded', 'true');
       expect(document.getElementById(collapse.getAttribute('aria-controls') ?? '')).toHaveStyle({
         maxHeight: '',
@@ -288,7 +344,7 @@ describe('CollapsibleText', () => {
           <p>{plainMessage}</p>
         </CollapsibleText>,
       );
-      fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_more' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
       rerender(
         <CollapsibleText enabled={false}>
           <p>{plainMessage}</p>
@@ -299,7 +355,7 @@ describe('CollapsibleText', () => {
           <p>{plainMessage}</p>
         </CollapsibleText>,
       );
-      expect(screen.getByRole('button', { name: 'com_ui_show_more' })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: 'Show more' })).toHaveAttribute(
         'aria-expanded',
         'false',
       );
@@ -319,7 +375,7 @@ it('uses the same expansion control for a server-budgeted body and requests it o
       </CollapsibleText>,
     );
     expect(reveal).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     expect(reveal).toHaveBeenCalledTimes(1);
     rerender(
       <CollapsibleText enabled onExpand={reveal}>

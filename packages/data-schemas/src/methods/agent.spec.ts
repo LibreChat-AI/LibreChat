@@ -6395,7 +6395,8 @@ describe('Support Contact Field', () => {
         agent_ids: [agentA1.id],
         edges: [{ from: 'source', to: agentA1.id, prompt: 'Private routing prompt' }],
         subagents: {
-          enabled: true,
+          enabled: false,
+          graphsEnabled: true,
           agent_ids: [agentA1.id],
           graphs: [
             {
@@ -6417,6 +6418,7 @@ describe('Support Contact Field', () => {
       expect(defaultResult.data[0].tools).toBeUndefined();
       expect(defaultResult.data[0].code_workspace_id).toBeUndefined();
       expect(defaultResult.data[0].edges).toBeUndefined();
+      expect(defaultResult.data[0].subagents).toBeUndefined();
 
       const result = await getListAgentsByAccess({
         accessibleIds: [scopedAgent._id] as mongoose.Types.ObjectId[],
@@ -6432,7 +6434,8 @@ describe('Support Contact Field', () => {
         agent_ids: [agentA1.id],
         edges: [{ from: 'source', to: agentA1.id }],
         subagents: {
-          enabled: true,
+          enabled: false,
+          graphsEnabled: true,
           agent_ids: [agentA1.id],
           graphs: [{ agent_ids: [agentA1.id] }],
         },

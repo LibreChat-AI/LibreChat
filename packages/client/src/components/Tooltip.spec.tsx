@@ -2,7 +2,7 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import DOMPurify from 'dompurify';
 import * as Ariakit from '@ariakit/react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { TooltipAnchor } from './Tooltip';
 
 /** Counts the sanitizers built: the default export is both an instance and their factory. */
@@ -13,23 +13,67 @@ jest.mock('dompurify', () => {
 });
 
 describe('TooltipAnchor', () => {
-  /** Message rows mount hundreds of anchors in one commit; an anchor that renders its provider
-   *  tree again once its own element attaches doubles the cost of that whole commit. */
-  describe('render cost', () => {
-    test.each(['top', 'right'] as const)(
-      'renders a %s anchor once on mount in a left-to-right layout',
-      (side) => {
-        const provider = jest.spyOn(Ariakit, 'TooltipProvider');
+  /**
+   * Message rows mount hundreds of anchors in one commit, and a long thread keeps thousands
+   * mounted. An anchor nobody has touched is its element and nothing else: no tooltip store,
+   * no timer, no listener on the document.
+   */
+  describe('an anchor that has not been used', () => {
+    /** Counts the anchor element's renders through the element it is told to render. */
+    const renders = { count: 0 };
+    const Probe = React.forwardRef<HTMLButtonElement, React.ComponentProps<'button'>>(
+      function Probe(props, ref) {
+        renders.count += 1;
+        return <button type="button" ref={ref} {...props} />;
+      },
+    );
+
+    beforeEach(() => {
+      renders.count = 0;
+    });
+
+    test.each(['top', 'right'] as const)('mounts a %s anchor with no tooltip behind it', (side) => {
+      const store = jest.spyOn(Ariakit, 'useTooltipStore');
+      const listen = jest.spyOn(document, 'addEventListener');
+      const timers = jest.spyOn(window, 'setTimeout');
+      try {
         render(
-          <TooltipAnchor description="Once" aria-label="Once" side={side}>
-            <span>icon</span>
-          </TooltipAnchor>,
+          <TooltipAnchor description="Once" aria-label="Once" side={side} render={<Probe />} />,
         );
 
         expect(screen.getByLabelText('Once')).toBeInTheDocument();
-        expect(provider).toHaveBeenCalledTimes(1);
-      },
-    );
+        expect(store).not.toHaveBeenCalled();
+        expect(timers).not.toHaveBeenCalled();
+        expect(listen.mock.calls.map(([type]) => type)).not.toContain('mouseleave');
+      } finally {
+        store.mockRestore();
+        listen.mockRestore();
+        timers.mockRestore();
+      }
+    });
+
+    test('adds nothing to the document for each further anchor once one has been used', async () => {
+      render(<TooltipAnchor description="First" aria-label="First" />);
+      const first = screen.getByLabelText('First');
+      fireEvent.mouseEnter(first);
+      fireEvent.mouseMove(first);
+      await screen.findByRole('tooltip', undefined, { timeout: 3000 });
+
+      const listen = jest.spyOn(document, 'addEventListener');
+      try {
+        render(
+          <>
+            <TooltipAnchor description="Second" aria-label="Second" />
+            <TooltipAnchor description="Third" aria-label="Third" />
+          </>,
+        );
+        fireEvent.mouseEnter(screen.getByLabelText('Second'));
+        fireEvent.mouseEnter(screen.getByLabelText('Third'));
+        expect(listen.mock.calls.map(([type]) => type)).not.toContain('mouseleave');
+      } finally {
+        listen.mockRestore();
+      }
+    });
 
     test('builds no sanitizer for plain descriptions, and one for every tooltip with markup', async () => {
       const built = DOMPurify as unknown as jest.Mock;
@@ -40,6 +84,8 @@ describe('TooltipAnchor', () => {
           <TooltipAnchor description="Edit" aria-label="Edit" />
         </>,
       );
+      fireEvent.mouseEnter(screen.getByLabelText('Copy'));
+      fireEvent.mouseEnter(screen.getByLabelText('Edit'));
       expect(built).not.toHaveBeenCalled();
       plain.unmount();
 
@@ -49,34 +95,159 @@ describe('TooltipAnchor', () => {
           <TooltipAnchor description="<b>Bold</b><script>x</script>" aria-label="Bold" enableHTML />
         </>,
       );
-      /** The sanitizer is the module's, so this holds for the first markup this file renders. */
-      expect(built).toHaveBeenCalledTimes(1);
+      /** Not until a tooltip with markup is about to be shown. */
+      expect(built).not.toHaveBeenCalled();
 
+      fireEvent.mouseEnter(screen.getByLabelText('Bold'));
       const anchor = screen.getByLabelText('Docs');
       fireEvent.mouseEnter(anchor);
       fireEvent.mouseMove(anchor);
       const tooltip = await screen.findByRole('tooltip', undefined, { timeout: 3000 });
+      /** The sanitizer is the module's, so this holds for the first markup this file renders. */
+      expect(built).toHaveBeenCalledTimes(1);
       const link = tooltip.querySelector('a');
       expect(link).toHaveAttribute('target', '_blank');
       expect(link).toHaveAttribute('rel', 'noopener noreferrer');
     });
 
-    test('opens its tooltip without rendering the anchor again', async () => {
-      const provider = jest.spyOn(Ariakit, 'TooltipProvider');
-      render(
-        <TooltipAnchor description="Opens" aria-label="Opens">
-          <span>icon</span>
-        </TooltipAnchor>,
-      );
+    test('renders the anchor once more for its first use and not again as the tooltip opens', async () => {
+      render(<TooltipAnchor description="Opens" aria-label="Opens" render={<Probe />} />);
 
       const anchor = screen.getByLabelText('Opens');
+      const mounted = renders.count;
       fireEvent.mouseEnter(anchor);
       fireEvent.mouseMove(anchor);
+      expect(renders.count).toBe(mounted + 1);
 
       expect(await screen.findByRole('tooltip', undefined, { timeout: 3000 })).toHaveTextContent(
         'Opens',
       );
-      expect(provider).toHaveBeenCalledTimes(1);
+      expect(renders.count).toBe(mounted + 1);
+      /** The element is the one that was hovered: nothing was swapped under the pointer. */
+      expect(screen.getByLabelText('Opens')).toBe(anchor);
+    });
+  });
+
+  describe('showing and hiding', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+    });
+
+    const settle = (ms: number) =>
+      act(async () => {
+        jest.advanceTimersByTime(ms);
+      });
+
+    test('shows after the delay when the pointer moves over the anchor', async () => {
+      render(<TooltipAnchor description="Hovered" aria-label="Hovered" />);
+      const anchor = screen.getByLabelText('Hovered');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+      await settle(200);
+      expect(screen.queryByRole('tooltip')).toBeNull();
+
+      await settle(400);
+      expect(screen.getByRole('tooltip')).toHaveTextContent('Hovered');
+    });
+
+    /** A pointer that comes to rest on the anchor: it enters and moves in the same instant,
+     *  before the first use has mounted anything, and does not move again. */
+    test('shows for a pointer that moved onto the anchor once and stopped', async () => {
+      render(<TooltipAnchor description="Rested" aria-label="Rested" />);
+      const anchor = screen.getByLabelText('Rested');
+      act(() => {
+        fireEvent.mouseEnter(anchor);
+        fireEvent.mouseMove(anchor);
+      });
+
+      await settle(600);
+      expect(screen.getByRole('tooltip')).toHaveTextContent('Rested');
+    });
+
+    test('does not show for a pointer that entered, moved once and left at once', async () => {
+      render(<TooltipAnchor description="Passing" aria-label="Passing" />);
+      const anchor = screen.getByLabelText('Passing');
+      act(() => {
+        fireEvent.mouseEnter(anchor);
+        fireEvent.mouseMove(anchor);
+        fireEvent.mouseLeave(anchor);
+      });
+
+      await settle(1000);
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    });
+
+    test('does not show for a press that comes before the delay is up', async () => {
+      render(<TooltipAnchor description="Pressed" aria-label="Pressed" />);
+      const anchor = screen.getByLabelText('Pressed');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+      await settle(200);
+      fireEvent.click(anchor);
+
+      await settle(1000);
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    });
+
+    test('does not show once the pointer has left', async () => {
+      render(<TooltipAnchor description="Left" aria-label="Left" />);
+      const anchor = screen.getByLabelText('Left');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+      fireEvent.mouseLeave(anchor);
+
+      await settle(1000);
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    });
+
+    test('stays away on hover when the caller says so', async () => {
+      render(<TooltipAnchor description="Quiet" aria-label="Quiet" showOnHover={false} />);
+      const anchor = screen.getByLabelText('Quiet');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+
+      await settle(1000);
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    });
+
+    test('shows at once for keyboard focus, on the anchor that was untouched until then', async () => {
+      render(<TooltipAnchor description="Focused" aria-label="Focused" render={<button />} />);
+      const anchor = screen.getByLabelText('Focused');
+      fireEvent.keyDown(document.body, { key: 'Tab' });
+      act(() => anchor.focus());
+
+      await settle(50);
+      expect(screen.getByRole('tooltip')).toHaveTextContent('Focused');
+      expect(document.activeElement).toBe(anchor);
+    });
+
+    test('shows the next tooltip without its delay while one is on screen', async () => {
+      render(
+        <>
+          <TooltipAnchor description="One" aria-label="One" />
+          <TooltipAnchor description="Two" aria-label="Two" />
+        </>,
+      );
+      const one = screen.getByLabelText('One');
+      fireEvent.mouseEnter(one);
+      fireEvent.mouseMove(one);
+      await settle(600);
+      expect(screen.getByRole('tooltip')).toHaveTextContent('One');
+
+      const two = screen.getByLabelText('Two');
+      fireEvent.mouseLeave(one);
+      act(() => {
+        fireEvent.mouseEnter(two);
+        fireEvent.mouseMove(two);
+      });
+      await settle(50);
+      const shown = screen.getAllByRole('tooltip').map((tip) => tip.textContent);
+      expect(shown).toContain('Two');
     });
   });
 

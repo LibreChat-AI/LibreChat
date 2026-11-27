@@ -99,10 +99,20 @@ function readJson(req) {
   });
 }
 
+/** File names whose next `/v1/upload` reads the whole body and then answers with an error, set
+ *  through `POST /__debug/fail-uploads`, so a spec can lose an upload after it was sent. */
+const failingUploads = new Map();
+
 async function handleUpload(req, res) {
   const { fields, files } = await parseMultipart(req);
   if (files.length === 0) {
     sendJson(res, 400, { message: 'error', error: 'no file provided' });
+    return;
+  }
+  const failStatus = failingUploads.get(files[0].filename);
+  if (failStatus != null) {
+    failingUploads.delete(files[0].filename);
+    sendJson(res, failStatus, { error: 'Error uploading files' });
     return;
   }
   const apiKey = req.headers['x-api-key'] || '';
@@ -266,7 +276,15 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (pathname === '/__debug/fail-uploads' && req.method === 'POST') {
+      const { filename, status = 500 } = await readJson(req);
+      failingUploads.set(filename, status);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
     if (pathname === '/__debug/reset' && req.method === 'POST') {
+      failingUploads.clear();
       slowDownloadFiles.clear();
       closedSlowDownloads.clear();
       sessions.clear();

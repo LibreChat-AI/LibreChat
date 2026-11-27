@@ -40,6 +40,7 @@ export * from './skillDeletion';
 export * from './triggerDelivery';
 export * from './queuedTurn';
 export * from './schedule';
+export * from './triggerRun';
 /* Access Control */
 export * from './accessRole';
 export * from './aclEntry';

@@ -24,7 +24,7 @@ export default function useSharePointDownload({
   const [downloadProgress, setDownloadProgress] = useState<SharePointBatchProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { token, refetch: refetchToken } = useSharePointToken({
+  const { getToken } = useSharePointToken({
     enabled: false,
     purpose: 'Download',
   });
@@ -41,20 +41,9 @@ export default function useSharePointDownload({
       setDownloadProgress({ completed: 0, total: files.length, failed: [] });
 
       try {
-        let accessToken = token?.access_token;
+        const accessToken = (await getToken())?.access_token;
         if (!accessToken) {
-          showToast({
-            message: 'Getting SharePoint access token...',
-            status: 'info',
-            duration: 2000,
-          });
-
-          const tokenResult = await refetchToken();
-          accessToken = tokenResult.data?.access_token;
-
-          if (!accessToken) {
-            throw new Error('Failed to obtain SharePoint access token');
-          }
+          throw new Error('Failed to obtain SharePoint access token');
         }
 
         showToast({
@@ -117,7 +106,7 @@ export default function useSharePointDownload({
         throw error;
       }
     },
-    [token, showToast, batchDownloadMutation, onFilesDownloaded, onError, refetchToken],
+    [getToken, showToast, batchDownloadMutation, onFilesDownloaded, onError],
   );
 
   return {

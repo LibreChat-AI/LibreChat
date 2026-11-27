@@ -64,7 +64,9 @@ jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
 
 jest.mock('~/components/MCPUIResource', () => {
   const ReactActual = jest.requireActual('react') as typeof React;
-  const MCPAppSuppressionContext = ReactActual.createContext<ReadonlySet<TAttachment> | null>(null);
+  /** The package's context: its content renderer is what provides the suppressed set. */
+  const { AppSuppressionContext: MCPAppSuppressionContext } =
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   return {
     MCPAppSuppressionContext,
     MCPAppViews: ({
@@ -144,7 +146,8 @@ jest.mock('lucide-react', () => ({
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useMediaQuery: () => false,
-  useLocalize: () => (key: string) => key,
+  /** The tool group reads the localizer from the package, so it delegates to the `~/hooks` mock. */
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
   Button: ({
     children,
     variant: _variant,
@@ -190,7 +193,16 @@ jest.mock('../Parts', () => ({
   Reasoning: () => <div data-testid="reasoning" />,
   Summary: () => <div data-testid="summary" />,
   SteerPart: () => <div data-testid="steer" />,
-  Text: jest.fn(({ text }: { text?: string }) => <div data-testid="text">{text}</div>),
+  Text: jest.fn(function MockText({ text }: { text?: string }) {
+    const { nextType } = jest
+      .requireActual<typeof import('~/Providers/MessageContext')>('~/Providers/MessageContext')
+      .useMessageContext();
+    return (
+      <div data-testid="text" data-next-type={nextType}>
+        {text}
+      </div>
+    );
+  }),
   MemoryCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="memory-call" data-count={attachments?.length ?? 0} />
   ),
@@ -213,6 +225,85 @@ jest.mock('../Parts', () => ({
   },
 }));
 
+/**
+ * The chat package routes parts to its own cards, which it imports by module and not through
+ * `../Parts`. These stand the same stubs in for those modules, so a part draws the stub whichever
+ * side routes it.
+ */
+function mockCards() {
+  return jest.requireMock<Record<string, React.ComponentType>>('../Parts');
+}
+jest.mock('@librechat/chat/dist/components/Text.cjs', () => ({
+  __esModule: true,
+  default: mockCards().Text,
+}));
+jest.mock('@librechat/chat/dist/components/Summary.cjs', () => ({
+  __esModule: true,
+  default: mockCards().Summary,
+}));
+jest.mock('@librechat/chat/dist/components/EmptyText.cjs', () => ({
+  __esModule: true,
+  default: mockCards().EmptyText,
+}));
+jest.mock('@librechat/chat/dist/components/AgentUpdate.cjs', () => ({
+  __esModule: true,
+  default: mockCards().AgentUpdate,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Reasoning.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/Reasoning.cjs'),
+  default: mockCards().Reasoning,
+}));
+jest.mock('@librechat/chat/dist/components/parts/SteerPart.cjs', () => ({
+  __esModule: true,
+  default: mockCards().SteerPart,
+}));
+jest.mock('@librechat/chat/dist/components/parts/ExecuteCode.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/ExecuteCode.cjs'),
+  default: mockCards().ExecuteCode,
+}));
+jest.mock('@librechat/chat/dist/components/parts/ImageGen.cjs', () => ({
+  __esModule: true,
+  default: mockCards().ImageGen,
+}));
+jest.mock('@librechat/chat/dist/components/parts/SubagentCall.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/SubagentCall.cjs'),
+  __esModule: true,
+  default: mockCards().SubagentCall,
+}));
+jest.mock('@librechat/chat/dist/components/parts/MemoryCall.cjs', () => ({
+  __esModule: true,
+  default: mockCards().MemoryCall,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Retrieval.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="retrieval-call" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/AgentHandoff.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="agent-handoff" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/CodeAnalyze.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="code-analyze" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Image.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="image" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Attachment.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/Attachment.cjs'),
+  AttachmentGroup: mockCards().AttachmentGroup,
+}));
+jest.mock('@librechat/chat/dist/components/parts/MemoryArtifacts.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/MemoryArtifacts.cjs'),
+  __esModule: true,
+  default: () => <div data-testid="memory-artifacts" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Container.cjs', () => ({
+  __esModule: true,
+  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+}));
+
 jest.mock('~/components/Web/Sources', () => ({
   __esModule: true,
   default: ({ messageId, conversationId }: { messageId?: string; conversationId?: string }) => {
@@ -230,31 +321,11 @@ jest.mock('~/components/Web/Sources', () => ({
   },
 }));
 
-jest.mock('../MemoryArtifacts', () => ({
-  __esModule: true,
-  default: () => <div data-testid="memory-artifacts" />,
-}));
-
-jest.mock('../WebSearch', () => ({
-  __esModule: true,
-  default: ({ attachments }: { attachments?: TAttachment[] }) => (
+jest.mock('@librechat/chat/dist/components/parts/WebSearch.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/WebSearch.cjs'),
+  WebSearchCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="web-search" data-count={attachments?.length ?? 0} />
   ),
-}));
-
-jest.mock('../RetrievalCall', () => ({
-  __esModule: true,
-  default: () => <div data-testid="retrieval-call" />,
-}));
-
-jest.mock('../AgentHandoff', () => ({
-  __esModule: true,
-  default: () => <div data-testid="agent-handoff" />,
-}));
-
-jest.mock('../CodeAnalyze', () => ({
-  __esModule: true,
-  default: () => <div data-testid="code-analyze" />,
 }));
 
 jest.mock('../Image', () => ({
@@ -1330,7 +1401,9 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     const toggle = screen.getByRole('button', { name: /^Running 2 actions/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
-    fireEvent.click(screen.getAllByTestId('progress-text')[0]);
+    /** The first call's own row: the package's tool call card draws it. */
+    const row = document.querySelector<HTMLElement>('[data-tool-call-id]');
+    fireEvent.click(within(row as HTMLElement).getAllByRole('button')[0]);
 
     rerender(
       <RecoilRoot>
@@ -2080,6 +2153,23 @@ describe('ContentParts integration: lane groups backed by one agent', () => {
       'agent_a',
       'agent_b____1',
     ]);
+  });
+
+  it('only lets a later part in the same lane settle an artifact text part', () => {
+    const artifact = ':::artifact{identifier="report" title="Report" type="text/html"}';
+    const frame = (parts: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={parts} />
+      </RecoilRoot>
+    );
+    const primary = inLane(makeTextPart(artifact), 'agent_a');
+    const other = inLane(makeTextPart('Other model text'), 'agent_b____1');
+    const { rerender } = render(frame([primary, other]));
+    expect(screen.getByText(artifact)).not.toHaveAttribute('data-next-type');
+
+    rerender(frame([primary, other, inLane(makeTextPart('Same model text'), 'agent_a')]));
+    expect(screen.getByText(artifact)).toHaveAttribute('data-next-type', ContentTypes.TEXT);
+    expect(screen.getByText('Other model text')).not.toHaveAttribute('data-next-type');
   });
 
   it('keeps lane attribution when a phase marker leaves one agent per slice', () => {

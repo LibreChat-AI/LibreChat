@@ -30,7 +30,9 @@ describe('scoped default model discovery', () => {
     ['azureAssistants', 'getOpenAIModels', 'gpt'],
   ])('invokes only the %s source', async (endpoint, source, model) => {
     const deps = loaders();
-    await expect(loadDefaultEndpointModels(req, config, endpoint, deps)).resolves.toEqual({
+    await expect(
+      loadDefaultEndpointModels(req, config, endpoint, undefined, deps),
+    ).resolves.toEqual({
       [endpoint]: [model],
     });
     for (const [name, loader] of Object.entries(deps)) {
@@ -49,7 +51,7 @@ describe('scoped default model discovery', () => {
         },
       },
     });
-    await loadDefaultEndpointModels(req, configured, 'openAI', deps);
+    await loadDefaultEndpointModels(req, configured, 'openAI', undefined, deps);
     expect(deps.getOpenAIModels).toHaveBeenCalledWith({
       user: 'user-1',
       userObject: req.user,
@@ -68,7 +70,7 @@ describe('scoped default model discovery', () => {
         },
       },
     });
-    await loadDefaultEndpointModels(req, configured, 'anthropic', deps);
+    await loadDefaultEndpointModels(req, configured, 'anthropic', undefined, deps);
     expect(deps.getAnthropicModels).toHaveBeenCalledWith(
       expect.objectContaining({ configuredModels: ['configured'], vertexModels: ['vertex'] }),
     );
@@ -76,24 +78,37 @@ describe('scoped default model discovery', () => {
 
   it('never falls through to OpenAI discovery for Azure Assistants', async () => {
     const deps = loaders();
-    await loadDefaultEndpointModels(req, config, 'azureAssistants', deps);
+    await loadDefaultEndpointModels(req, config, 'azureAssistants', undefined, deps);
     expect(deps.getOpenAIModels).toHaveBeenCalledWith({ azure: true });
   });
 
   it('keeps the existing empty-list fallback when a provider fails', async () => {
     const deps = loaders();
     deps.getOpenAIModels.mockRejectedValue(new Error('private upstream failure'));
-    await expect(loadDefaultEndpointModels(req, config, 'openAI', deps)).resolves.toEqual({
+    await expect(
+      loadDefaultEndpointModels(req, config, 'openAI', undefined, deps),
+    ).resolves.toEqual({
       openAI: [],
     });
     expect(deps.getAnthropicModels).not.toHaveBeenCalled();
+  });
+
+  it('propagates a provider failure for strict discovery', async () => {
+    const deps = loaders();
+    const failure = new Error('provider unavailable');
+    deps.getOpenAIModels.mockRejectedValue(failure);
+    await expect(
+      loadDefaultEndpointModels(req, config, 'openAI', { strictDiscovery: true }, deps),
+    ).rejects.toBe(failure);
   });
 
   it.each(['custom', '__proto__', 'constructor'])(
     'does not discover unknown source %s',
     async (endpoint) => {
       const deps = loaders();
-      await expect(loadDefaultEndpointModels(req, config, endpoint, deps)).resolves.toEqual({});
+      await expect(
+        loadDefaultEndpointModels(req, config, endpoint, undefined, deps),
+      ).resolves.toEqual({});
       for (const loader of Object.values(deps)) {
         expect(loader).not.toHaveBeenCalled();
       }

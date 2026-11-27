@@ -222,7 +222,16 @@ function fixture() {
       } else if (path.endsWith('/commit')) {
         const intercepted = hooks.commit?.();
         if (intercepted) return intercepted;
-        state.state = 'delivered';
+        state.state = state.plan?.parts.some(
+          (part) =>
+            part.required &&
+            state.receipts.some(
+              (receipt) =>
+                receipt.operationId === part.operationId && receipt.outcome === 'permanent_failure',
+            ),
+        )
+          ? 'failed'
+          : 'delivered';
       } else throw new Error('Unexpected backend fixture path');
       return json(snapshot());
     },
@@ -250,11 +259,11 @@ function fixture() {
   const client = new ChannelClient(config, backend);
   const slack = new SlackClient(config, log, slackTransport);
   const worker = new ChannelWorker(config, client, slack, log);
-  const savedPlan = (artifacts = false) => {
+  const savedPlan = (artifacts = false, text = 'Saved final answer') => {
     state.state = 'delivering';
     state.snapshot = {
       status: 'completed',
-      text: 'Saved final answer',
+      text,
       responseId: grant.responseId,
       elapsedMs: 200,
     };
@@ -524,6 +533,71 @@ describe('durable Channels worker', () => {
     await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
     expect(f.slackRequests.some((request) => request.method === 'chat.delete')).toBe(false);
     expect(f.paths().some((path) => path.endsWith('/commit'))).toBe(false);
+  });
+
+  test.each(['delivered', 'failed'] as const)(
+    'commits an oversized reply as %s after Slack rejects its blocks',
+    async (state) => {
+      const f = fixture();
+      const text = Array.from(
+        { length: 6 },
+        (_, index) => `Section ${index}: ${'x'.repeat(2500)}`,
+      ).join('\n\n');
+      f.savedPlan(false, text);
+      f.savedProgress();
+      f.hooks.slack = async (method, body) => {
+        if (method === 'chat.update') {
+          expect(f.state.state).toBe('failed');
+          expect(body.get('ts')).toBe('123.700');
+          expect(body.get('text')).toContain('Slack could not deliver the reply');
+          return slackOK({ channel: 'C1', ts: body.get('ts') });
+        }
+        if (method === 'chat.delete') return slackOK();
+        const blocks: { text?: { text: string } }[] = JSON.parse(body.get('blocks') ?? '[]');
+        const blockCharacters = blocks.reduce(
+          (sum, block) => sum + (block.text?.text.length ?? 0),
+          0,
+        );
+        if (blockCharacters > 13_000) return json({ ok: false, error: 'msg_blocks_too_long' });
+        expect(body.get('blocks')).toBe('[]');
+        expect(body.get('text')).toContain(text);
+        expect(body.get('thread_ts')).toBe('123.456');
+        return state === 'delivered'
+          ? slackOK({ channel: 'C1', ts: '123.789' })
+          : json({ ok: false, error: 'channel_not_found' });
+      };
+      await f.execute();
+      expect(f.state.state).toBe(state);
+      expect(f.state.receipts).toEqual([
+        expect.objectContaining({
+          attempts: 1,
+          outcome: state === 'delivered' ? 'confirmed' : 'permanent_failure',
+        }),
+      ]);
+      expect(f.slackRequests.map((request) => request.method)).toEqual([
+        'chat.postMessage',
+        'chat.postMessage',
+        state === 'delivered' ? 'chat.delete' : 'chat.update',
+      ]);
+      expect(f.log.warn).toHaveBeenCalledWith(
+        'slack_api_call_failed:chat.postMessage:200:msg_blocks_too_long',
+      );
+    },
+  );
+
+  test('retries the failed terminal commit without posting again or starting optional delivery', async () => {
+    const f = fixture();
+    f.savedPlan(true);
+    f.hooks.slack = async () => json({ ok: false, error: 'channel_not_found' });
+    let commits = 0;
+    f.hooks.commit = () => (commits++ === 0 ? json({ error: 'unavailable' }, 503) : undefined);
+    await expect(f.execute()).rejects.toThrow();
+    expect(f.state.receipts[0]).toMatchObject({ attempts: 1, outcome: 'permanent_failure' });
+    await f.execute();
+    expect(f.state.state).toBe('failed');
+    expect(f.slackRequests.map((request) => request.method)).toEqual(['chat.postMessage']);
+    expect(f.paths().filter((path) => path.endsWith('/commit'))).toHaveLength(2);
+    expect(f.state.receipts.slice(1).every((receipt) => receipt.outcome === 'planned')).toBe(true);
   });
 
   test('reuses a saved immutable plan without preparing or reexecuting Responses', async () => {

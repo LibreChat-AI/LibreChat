@@ -1,3 +1,4 @@
+const { notFound, accessDenied } = require('@librechat/api');
 const { logger, ResourceCapabilityMap } = require('@librechat/data-schemas');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { checkPermission } = require('~/server/services/PermissionService');
@@ -98,10 +99,7 @@ const canAccessResource = (options) => {
 
         if (!resolutionResult) {
           logger.warn(`[canAccessResource] ${resourceType} not found: ${rawResourceId}`);
-          return res.status(404).json({
-            error: 'Not Found',
-            message: `${resourceType} not found`,
-          });
+          return res.status(404).json(notFound(resourceType));
         }
 
         // Handle different resolver return formats
@@ -148,10 +146,7 @@ const canAccessResource = (options) => {
           `(required permission: ${requiredPermission})`,
       );
 
-      return res.status(403).json({
-        error: 'Forbidden',
-        message: `Insufficient permissions to access this ${resourceType}`,
-      });
+      return res.status(403).json(accessDenied(resourceType));
     } catch (error) {
       logger.error(`[canAccessResource] Error checking access for ${resourceType}:`, error);
       return res.status(500).json({

@@ -18,14 +18,17 @@ export const repoRoot = resolve(__dirname, '../../../..');
  * runner over the checkout itself, so a second project would repeat minutes of
  * subprocess work for the same verdict and two of them would share one
  * `packages/client/dist` and one scratch tree. The repository's mock lane defines
- * a single project; a harness that adds colour-scheme or device projects runs
- * these in the first one.
+ * a single browser profile, split into a parallel project and its serial
+ * teardown (`e2e/setup/serial.ts`), where these run; a harness that adds
+ * colour-scheme or device projects runs these in the first profile.
  */
 export function inOneProject(): void {
   const info = test.info();
   const primary = info.config.projects[0]?.name;
   test.skip(
-    primary !== undefined && info.project.name !== primary,
+    primary !== undefined &&
+      info.project.name !== primary &&
+      info.project.metadata?.serialOf !== primary,
     `the lint gate has no viewport; it runs in ${primary ?? 'the first project'}`,
   );
 }
