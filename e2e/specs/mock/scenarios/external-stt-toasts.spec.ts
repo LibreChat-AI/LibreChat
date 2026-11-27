@@ -1,5 +1,7 @@
 import { expect, test } from '../fixtures';
 import type { Page } from '@playwright/test';
+import de from '../../../../client/src/locales/de/translation.json';
+import en from '../../../../client/src/locales/en/translation.json';
 import { NEW_CHAT_PATH } from '../helpers';
 
 /**
@@ -14,18 +16,24 @@ import { NEW_CHAT_PATH } from '../helpers';
  * user (`yaml-rate-limits.spec.ts`), and every project here signs in as the same user.
  */
 
-const FAILED = 'Speech could not be transcribed. Please try again.';
+type Key = keyof typeof en;
+
+/** The German text when that catalog has it, otherwise the English text i18next falls back
+ *  to, so the scenario stays right once a translation lands. */
+const german = (key: Key): string => (de as Partial<Record<Key, string>>)[key] ?? en[key];
+
 const TOO_SHORT_GUESS = 'maybe the audio was too short';
 const TRANSCRIPT = 'dictated through the external engine';
 
-type Options = { refuse?: boolean; lang?: string };
+/** `refusals` is how many microphone requests are refused before one is granted. */
+type Options = { refusals?: number; lang?: string };
 
-async function openComposer(page: Page, { refuse = false, lang }: Options = {}) {
+async function openComposer(page: Page, { refusals = 0, lang }: Options = {}) {
   await page.route('**/api/files/speech/config/get', (route) =>
     route.fulfill({ json: { sttExternal: true, engineSTT: 'external', speechToText: true } }),
   );
   await page.addInitScript(
-    ({ refused, language }) => {
+    ({ refuse, language }) => {
       const settings: Record<string, unknown> = {
         engineSTT: 'external',
         speechToText: true,
@@ -38,10 +46,12 @@ async function openComposer(page: Page, { refuse = false, lang }: Options = {}) 
       for (const [key, value] of Object.entries(settings)) {
         localStorage.setItem(key, JSON.stringify(value));
       }
+      let refused = 0;
       Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
         configurable: true,
         value: async () => {
-          if (refused) {
+          if (refused < refuse) {
+            refused += 1;
             throw new DOMException('Permission denied', 'NotAllowedError');
           }
           const context = new AudioContext();
@@ -53,7 +63,7 @@ async function openComposer(page: Page, { refuse = false, lang }: Options = {}) 
         },
       });
     },
-    { refused: refuse, language: lang ?? null },
+    { refuse: refusals, language: lang ?? null },
   );
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
 }
@@ -73,10 +83,14 @@ async function answerUploads(page: Page, reply: { status: number; json?: unknown
 
 const composer = (page: Page) => page.locator('form:has(#prompt-textarea)');
 const openToasts = (page: Page) => page.locator('.toast-root[data-state="open"]');
+const toastSaying = (page: Page, text: string) => openToasts(page).filter({ hasText: text });
 
-async function recordTake(page: Page) {
-  await composer(page).getByRole('button', { name: 'Use microphone', exact: true }).click();
-  await composer(page).getByRole('button', { name: 'Stop', exact: true }).click();
+async function recordTake(
+  page: Page,
+  labels = { start: en.com_ui_use_micrphone, stop: en.com_ui_stop },
+) {
+  await composer(page).getByRole('button', { name: labels.start, exact: true }).click();
+  await composer(page).getByRole('button', { name: labels.stop, exact: true }).click();
 }
 
 test.describe('external speech-to-text toasts', () => {
@@ -88,13 +102,13 @@ test.describe('external speech-to-text toasts', () => {
 
     await recordTake(page);
 
-    await expect(openToasts(page)).toContainText(FAILED);
+    await expect(openToasts(page)).toContainText(en.com_ui_speech_transcription_failed);
     await expect(openToasts(page)).not.toContainText(TOO_SHORT_GUESS);
     expect(uploads).toHaveLength(1);
     expect(uploads[0]).toContain('multipart/form-data');
     /* The failed take is settled, so the microphone is offered for another try. */
     await expect(
-      composer(page).getByRole('button', { name: 'Use microphone', exact: true }),
+      composer(page).getByRole('button', { name: en.com_ui_use_micrphone, exact: true }),
     ).toBeEnabled();
     await expect(page.getByTestId('text-input')).toHaveValue('');
   });
@@ -112,16 +126,26 @@ test.describe('external speech-to-text toasts', () => {
     await expect(openToasts(page)).toHaveCount(0);
   });
 
-  test('a refused microphone is reported in the UI language @scenario:external-stt-toasts-follow-ui-language', async ({
+  /* A refused microphone uses a key German already translates; a failed transcription uses a
+     new key it may not have yet, which must read as English rather than as the raw key. */
+  test('toasts read in the UI language, in English where it has no translation yet @scenario:external-stt-toasts-follow-ui-language', async ({
     page,
   }) => {
+    expect(de).toHaveProperty('com_ui_microphone_unavailable');
     const uploads = await answerUploads(page, { status: 500 });
-    await openComposer(page, { refuse: true, lang: 'de-DE' });
+    await openComposer(page, { refusals: 1, lang: 'de-DE' });
+    const labels = { start: german('com_ui_use_micrphone'), stop: german('com_ui_stop') };
 
-    await composer(page).getByRole('button', { name: 'Mikrofon verwenden', exact: true }).click();
+    await composer(page).getByRole('button', { name: labels.start, exact: true }).click();
 
-    await expect(openToasts(page)).toContainText('Mikrofon ist nicht verfügbar');
-    await expect(openToasts(page)).not.toContainText('Microphone permission not granted');
+    await expect(toastSaying(page, german('com_ui_microphone_unavailable'))).toBeVisible();
+    await expect(toastSaying(page, 'Microphone permission not granted')).toHaveCount(0);
     expect(uploads).toHaveLength(0);
+
+    await recordTake(page, labels);
+
+    await expect(toastSaying(page, german('com_ui_speech_transcription_failed'))).toBeVisible();
+    await expect(toastSaying(page, 'com_ui_speech_transcription_failed')).toHaveCount(0);
+    expect(uploads).toHaveLength(1);
   });
 });

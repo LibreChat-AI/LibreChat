@@ -1,7 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
+import { changeLanguageSafely, initializeI18n } from '~/locales/i18n';
 import useSpeechToTextExternal from '../useSpeechToTextExternal';
+import translationDe from '~/locales/de/translation.json';
 import translationEn from '~/locales/en/translation.json';
 import store from '~/store';
 
@@ -28,19 +30,16 @@ jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
-/* Returns the key, so a toast that skipped localization shows up as a sentence. */
-jest.mock('../../useLocalize', () => ({
-  __esModule: true,
-  default: () => (key: string) => key,
-}));
+type Toast = { message: string; status: string };
+type Key = keyof typeof translationEn;
 
-/** Every toast the hook raised, checked against the English catalog: a hard-coded
- *  sentence is not a key there, so it fails here in any language. */
-const toastsShown = () =>
-  mockShowToast.mock.calls.map(([toast]: [{ message: string; status: string }]) => ({
-    ...toast,
-    localized: Object.hasOwn(translationEn, toast.message),
-  }));
+const toastsShown = (): Toast[] => mockShowToast.mock.calls.map(([toast]: [Toast]) => toast);
+
+/** What a reader sees for `key`: the German text when that catalog has it, otherwise the
+ *  English text i18next falls back to, so this stays right once a translation lands. */
+const textOf = (key: Key, lang: 'en' | 'de' = 'en'): string =>
+  (lang === 'de' ? (translationDe as Partial<Record<Key, string>>)[key] : undefined) ??
+  translationEn[key];
 
 type RecorderListener = (event: BlobEvent) => void;
 
@@ -158,6 +157,10 @@ const start = async (begin: () => void) => {
 };
 
 describe('useSpeechToTextExternal', () => {
+  beforeAll(async () => {
+    await initializeI18n();
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     FakeMediaRecorder.instances = [];
@@ -188,10 +191,11 @@ describe('useSpeechToTextExternal', () => {
     window.cancelAnimationFrame = mockCancelAnimationFrame;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     jest.useRealTimers();
     window.requestAnimationFrame = originalRequestAnimationFrame;
     window.cancelAnimationFrame = originalCancelAnimationFrame;
+    await changeLanguageSafely('en');
   });
 
   it('records with a mime type the browser reports as supported', async () => {
@@ -215,7 +219,7 @@ describe('useSpeechToTextExternal', () => {
     expect(mockGetUserMedia).not.toHaveBeenCalled();
     expect(result.current.isListening).toBe(false);
     expect(toastsShown()).toEqual([
-      { message: 'com_ui_speech_recording_not_supported', status: 'error', localized: true },
+      { message: textOf('com_ui_speech_recording_not_supported'), status: 'error' },
     ]);
   });
 
@@ -235,7 +239,7 @@ describe('useSpeechToTextExternal', () => {
     expect(result.current.isListening).toBe(false);
     /* The browser's exception text is English and technical; it stays out of the toast. */
     expect(toastsShown()).toEqual([
-      { message: 'com_ui_speech_recording_start_error', status: 'error', localized: true },
+      { message: textOf('com_ui_speech_recording_start_error'), status: 'error' },
     ]);
   });
 
@@ -328,7 +332,7 @@ describe('useSpeechToTextExternal', () => {
     expect(mockProcessAudio).not.toHaveBeenCalled();
     expect(onTranscriptionSettled).toHaveBeenCalledTimes(1);
     expect(toastsShown()).toEqual([
-      { message: 'com_ui_speech_too_short', status: 'warning', localized: true },
+      { message: textOf('com_ui_speech_too_short'), status: 'warning' },
     ]);
   });
 
@@ -346,7 +350,7 @@ describe('useSpeechToTextExternal', () => {
     expect(setText).not.toHaveBeenCalled();
     expect(onTranscriptionSettled).toHaveBeenCalledTimes(1);
     expect(toastsShown()).toEqual([
-      { message: 'com_ui_speech_transcription_failed', status: 'error', localized: true },
+      { message: textOf('com_ui_speech_transcription_failed'), status: 'error' },
     ]);
   });
 
@@ -361,7 +365,7 @@ describe('useSpeechToTextExternal', () => {
 
     expect(FakeMediaRecorder.instances).toHaveLength(1);
     expect(toastsShown()).toEqual([
-      { message: 'com_ui_speech_transcription_pending', status: 'warning', localized: true },
+      { message: textOf('com_ui_speech_transcription_pending'), status: 'warning' },
     ]);
   });
 
@@ -375,7 +379,7 @@ describe('useSpeechToTextExternal', () => {
 
     expect(result.current.isListening).toBe(false);
     expect(toastsShown()).toEqual([
-      { message: 'com_ui_microphone_unavailable', status: 'error', localized: true },
+      { message: textOf('com_ui_microphone_unavailable'), status: 'error' },
     ]);
   });
 
@@ -389,9 +393,33 @@ describe('useSpeechToTextExternal', () => {
     act(() => result.current.externalStopRecording());
 
     expect(toastsShown()).toEqual([
-      { message: 'com_ui_speech_not_recording', status: 'warning', localized: true },
-      { message: 'com_ui_speech_already_recording', status: 'warning', localized: true },
-      { message: 'com_ui_speech_not_recording', status: 'error', localized: true },
+      { message: textOf('com_ui_speech_not_recording'), status: 'warning' },
+      { message: textOf('com_ui_speech_already_recording'), status: 'warning' },
+      { message: textOf('com_ui_speech_not_recording'), status: 'error' },
+    ]);
+  });
+
+  /* A key the UI language has no translation for yet reads as English, never as the key. */
+  it('shows its toasts in the UI language, in English where it has no translation', async () => {
+    await act(async () => {
+      await changeLanguageSafely('de');
+    });
+    mockGetUserMedia.mockImplementationOnce(() =>
+      Promise.reject(new DOMException('Permission denied', 'NotAllowedError')),
+    );
+    const { result } = setup();
+    await start(result.current.externalStartRecording);
+    await start(result.current.externalStartRecording);
+    const recorder = FakeMediaRecorder.instances[0];
+    act(() => recorder.emitData(new Blob(['take'], { type: 'audio/webm' })));
+    act(() => result.current.externalStopRecording());
+
+    act(() => mockProcessAudio.mock.calls[0]?.[1]?.onError?.(new Error('Request failed')));
+
+    expect(translationDe).toHaveProperty('com_ui_microphone_unavailable');
+    expect(toastsShown()).toEqual([
+      { message: textOf('com_ui_microphone_unavailable', 'de'), status: 'error' },
+      { message: textOf('com_ui_speech_transcription_failed', 'de'), status: 'error' },
     ]);
   });
 
