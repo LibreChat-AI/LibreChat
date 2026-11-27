@@ -443,7 +443,8 @@ export async function getCodeExecs(page: Page): Promise<CodeExecRecord[]> {
 }
 
 export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
-export type RagQueryRecord = { file_id: string; query: string };
+/** `hits` counts the stored copies of the file the query read. */
+export type RagQueryRecord = { file_id: string; query: string; hits: number };
 
 /** Every `/query` the fake RAG service received from file_search. */
 export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
@@ -467,6 +468,16 @@ export async function getRagEmbedded(page: Page): Promise<RagEmbedRecord[]> {
   expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
   const body = (await response.json()) as { embedded: RagEmbedRecord[] };
   return body.embedded;
+}
+
+/** Store a copy of a file's vectors in the fake RAG server under an entity or a user, as a
+ *  deployment already holding them would; nothing is recorded as embedded. */
+export async function seedRagCopy(
+  page: Page,
+  copy: { file_id: string; filename: string; entity_id?: string; user_id?: string },
+): Promise<void> {
+  const response = await page.request.post(`${RAG_API_BASE}/__debug/store`, { data: copy });
+  expect(response.ok(), 'fake RAG server /__debug/store should respond').toBeTruthy();
 }
 
 /** Clear both fake servers' recorded provisioning (call at test start for isolation). */

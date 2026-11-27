@@ -141,6 +141,11 @@ export async function executeFileSearchQuery({
   }
 
   const names = resolveNames(files);
+  /* RAG returns a passage once for every stored copy of its file the query may read: the
+   * requesting user's own copy beside the agent's, a second copy an earlier version embedded
+   * under the same namespace, or one file searched twice. The copies hold the same text, so
+   * the closest stands for the passage and the cap counts distinct passages. */
+  const seen = new Set<string>();
   const formattedResults = validResults
     .flatMap((result) =>
       result.data.map(([docInfo, distance]) => ({
@@ -157,6 +162,14 @@ export async function executeFileSearchQuery({
       })),
     )
     .sort((a, b) => a.distance - b.distance)
+    .filter((result) => {
+      const key = JSON.stringify([result.file_id, result.page, result.content]);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
     .slice(0, 10);
 
   if (formattedResults.length === 0) {
