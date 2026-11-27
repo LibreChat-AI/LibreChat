@@ -387,6 +387,14 @@ function estimateDocumentBlockTokens(
 }
 
 /**
+ * Audio and video priced by duration, inferred from the encoded size, with the margin the agents
+ * SDK's own counter adds, so the precomputed budget and the SDK's recount agree.
+ */
+function estimateTimedTokens(block: Record<string, unknown>): number {
+  return Math.ceil(estimateTimedMediaBlockTokens(block) * IMAGE_TOKEN_SAFETY_MARGIN);
+}
+
+/**
  * Google/Vertex native media blocks (`{ type: 'media', mimeType, data | fileUri }`), as built by
  * the file encoders and YouTube links. Mirrors the agents SDK's media accounting so these blocks
  * are not skipped by the precomputed context budget.
@@ -400,8 +408,7 @@ function estimateMediaBlockTokens(
   const data = typeof block.data === 'string' && block.data.length > 0 ? block.data : undefined;
 
   if (mime.startsWith('audio/') || mime.startsWith('video/')) {
-    const timed = estimateTimedMediaBlockTokens({ ...block, mimeType: mime });
-    return Math.ceil(timed * IMAGE_TOKEN_SAFETY_MARGIN);
+    return estimateTimedTokens({ ...block, mimeType: mime });
   }
   if (data == null) {
     return mime.startsWith('image/') ? 1024 : URL_DOCUMENT_FALLBACK_TOKENS;
@@ -427,7 +434,7 @@ function estimateMediaBlockTokens(
 
 /**
  * Single-pass token counter for formatted messages (plain objects with role/content/name).
- * Handles text, tool_call, image, and document content types in one iteration,
+ * Handles text, tool_call, image, document, audio and video content types in one iteration,
  * then applies Claude correction when applicable.
  */
 export function countFormattedMessageTokens(
@@ -476,6 +483,14 @@ export function countFormattedMessageTokens(
 
         if (type === 'media') {
           numTokens += estimateMediaBlockTokens(block, isClaude, countTokens);
+          continue;
+        }
+
+        /** OpenAI-compatible audio and video (OpenRouter, custom endpoints configured for media),
+         *  priced like `media`: the generic branch below skips a nested payload object and would
+         *  tokenize a bare data URL as text. */
+        if (type === ContentTypes.INPUT_AUDIO || type === ContentTypes.VIDEO_URL) {
+          numTokens += estimateTimedTokens(block);
           continue;
         }
 

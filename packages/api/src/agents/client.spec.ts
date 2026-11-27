@@ -1,7 +1,8 @@
 import { Tokenizer as AiTokenizer } from 'ai-tokenizer';
 import { Providers, StandardGraph } from '@librechat/agents';
-import { HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage, HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
 import { ContentTypes, DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS } from 'librechat-data-provider';
+import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { TMessage } from 'librechat-data-provider';
 import type { LCTool } from '@librechat/agents';
 import type { FormattedMessageWithContent } from './client';
@@ -56,6 +57,119 @@ describe('countFormattedMessageTokens media blocks', () => {
   it('counts inline images and unknown media types', () => {
     expect(added({ type: 'media', mimeType: 'image/png', data: 'AAAA' })).toBeGreaterThan(0);
     expect(added({ type: 'media', mimeType: 'text/csv', data: 'AAAA' })).toBeGreaterThan(0);
+  });
+
+  /** The parts the audio and video encoders build for OpenRouter and custom endpoints. */
+  const base64 = (megabytes: number) => Buffer.alloc(megabytes * 1024 * 1024, 7).toString('base64');
+  const inputAudio = (data?: string) => ({
+    type: 'input_audio',
+    input_audio: { data, format: 'mp3' },
+  });
+  const videoUrl = (url: string) => ({ type: 'video_url', video_url: { url } });
+  const encodings: EncodingName[] = ['o200k_base', 'claude'];
+
+  it.each(encodings)('counts OpenAI-compatible audio like Gemini media with %s', (encoding) => {
+    const data = base64(2);
+    const audio = added(inputAudio(data), encoding);
+
+    expect(audio).toBe(added({ type: 'media', mimeType: 'audio/mpeg', data }, encoding));
+    expect(audio).toBeGreaterThan(4000);
+  });
+
+  it.each(encodings)('counts an OpenAI-compatible video like Gemini media with %s', (encoding) => {
+    const data = base64(10);
+    const video = added(videoUrl(`data:video/mp4;base64,${data}`), encoding);
+
+    expect(video).toBe(added({ type: 'media', mimeType: 'video/mp4', data }, encoding));
+    expect(video).toBeGreaterThan(10_000);
+  });
+
+  it('counts a remote video link and audio without data at the duration fallback', () => {
+    const remote = 'https://cdn.example.com/clip.mp4';
+
+    expect(added(videoUrl(remote))).toBe(
+      added({ type: 'media', mimeType: 'video/mp4', fileUri: remote }),
+    );
+    expect(added(inputAudio())).toBe(
+      added({ type: 'media', mimeType: 'audio/mpeg', fileUri: 'gs://bucket/call.mp3' }),
+    );
+    expect(added({ type: 'input_audio', input_audio: null })).toBe(added(inputAudio()));
+    expect(added({ type: 'video_url', video_url: {} })).toBe(added(videoUrl(remote)));
+  });
+
+  it.each(encodings)(
+    'adds what the run token counter adds for the same part with %s',
+    async (encoding) => {
+      const counter = await createCachedTokenCounter(encoding);
+      const runAdded = (block: { type: string }) =>
+        counter(new HumanMessage({ content: [text, block] })) -
+        counter(new HumanMessage({ content: [text] }));
+      const video = `data:video/mp4;base64,${base64(10)}`;
+      const blocks = [
+        inputAudio(base64(2)),
+        videoUrl(video),
+        { type: 'video_url', video_url: video },
+        videoUrl('https://cdn.example.com/clip.mp4'),
+      ];
+
+      for (const block of blocks) {
+        expect(added(block, encoding)).toBe(runAdded(block));
+      }
+    },
+  );
+
+  it('prunes an earlier OpenRouter recording that no longer fits the context window', async () => {
+    const recording = [{ type: 'text', text: 'Transcribe this call.' }, inputAudio(base64(2))];
+    const reply = 'The caller asks about an unpaid invoice.';
+    const question = 'Which invoice was it?';
+    const history = [
+      { role: 'user', content: recording },
+      { role: 'assistant', content: reply },
+      { role: 'user', content: question },
+    ];
+    const graph = new StandardGraph({
+      runId: 'pruned-openrouter-audio',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.OPENROUTER,
+          maxContextTokens: 3000,
+          summarizationEnabled: false,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+      indexTokenCountMap: Object.fromEntries(
+        history.map((message, index) => [
+          index,
+          countFormattedMessageTokens(message, 'o200k_base'),
+        ]),
+      ),
+    });
+    graph.overrideTestModel(['Invoice 42.']);
+    const sent: BaseMessage[] = [];
+    await graph.createAgentNode('primary').invoke(
+      {
+        messages: [
+          new HumanMessage({ content: recording }),
+          new AIMessage(reply),
+          new HumanMessage(question),
+        ],
+      },
+      {
+        configurable: { thread_id: graph.runId },
+        recursionLimit: 12,
+        callbacks: [{ handleChatModelStart: (_llm, batches) => sent.push(...batches.flat()) }],
+      },
+    );
+
+    const sentAudio = sent.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type === 'input_audio'),
+    );
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sentAudio).toBe(false);
+    expect(sent[sent.length - 1]?.content).toBe(question);
   });
 
   it('counts a base64 text document by its decoded text, not its base64', () => {
