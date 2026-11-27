@@ -3,13 +3,10 @@
  */
 import { render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import EventOrigin from '../EventOrigin';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, string>) =>
-    values == null ? key : `${key}(${Object.values(values).join('|')})`,
-}));
+beforeAll(initEnglish);
 
 type Row = Pick<TMessage, 'isCreatedByUser' | 'isUserSubmitted' | 'trigger'>;
 
@@ -35,25 +32,21 @@ const URL = 'https://github.com/acme/widgets/pull/17#pullrequestreview-1';
 
 describe('EventOrigin', () => {
   it.each([
-    ['github.pull_request_review.submitted', 'com_ui_events_origin_review'],
-    ['github.pull_request_review_comment.created', 'com_ui_events_origin_review_comment'],
-    ['github.issue_comment.created', 'com_ui_events_origin_comment'],
-    ['github.check_suite.completed', 'com_ui_events_origin_checks'],
-    ['github.pull_request.closed', 'com_ui_events_origin_closed'],
-    ['github.release.published', 'com_ui_events_origin_generic'],
+    ['github.pull_request_review.submitted', 'Review submitted'],
+    ['github.pull_request_review_comment.created', 'Review comment'],
+    ['github.issue_comment.created', 'Comment'],
+    ['github.check_suite.completed', 'Checks finished'],
+    ['github.pull_request.closed', 'Pull request closed'],
+    ['github.release.published', 'GitHub event'],
   ])('labels a %s event', (type, label) => {
     render(<EventOrigin message={row(type, URL)} />);
     expect(screen.getByText(label)).toBeInTheDocument();
-    expect(screen.getByText(`com_ui_events_origin(${label}|acme/widgets#17|octocat)`)).toHaveClass(
-      'sr-only',
-    );
+    expect(screen.getByText(`${label} on acme/widgets#17 by octocat`)).toHaveClass('sr-only');
   });
 
   it('links the pull request in a new tab with a name that says where it goes', () => {
     render(<EventOrigin message={row('github.pull_request_review.submitted', URL)} />);
-    const link = screen.getByRole('link', {
-      name: 'com_ui_events_origin_open(acme/widgets#17)',
-    });
+    const link = screen.getByRole('link', { name: 'Open acme/widgets#17 on GitHub' });
     expect(link).toHaveAttribute('href', URL);
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');

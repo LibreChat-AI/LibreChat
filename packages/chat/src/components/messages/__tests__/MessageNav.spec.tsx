@@ -26,12 +26,10 @@ let mockRemScale = 1;
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string, opts?: Record<string, string | number>): string =>
-      opts ? `${key}|${JSON.stringify(opts)}` : key,
   useRemScale: () => mockRemScale,
 }));
+
+beforeAll(initEnglish);
 
 if (typeof window.ResizeObserver !== 'function') {
   window.ResizeObserver = class {
@@ -128,6 +126,7 @@ import RealMessageNav, {
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
 const host = createMessagesHost({
   useConversationMessages: (conversationId, isStreaming) =>
@@ -324,7 +323,7 @@ describe('MessageNav', () => {
       const { container } = renderNav(messages);
       const nav = container.querySelector('nav');
       expect(nav).not.toBeNull();
-      expect(nav).toHaveAttribute('aria-label', 'com_ui_message_nav');
+      expect(nav).toHaveAttribute('aria-label', 'Message navigation');
 
       const indicators = messageRibs(container);
       expect(indicators).toHaveLength(3);
@@ -412,8 +411,8 @@ describe('MessageNav', () => {
       expect(ribA.querySelector('span')?.className).not.toMatch(/bg-gray-|dark:bg-gray-/);
       expect(ribB.querySelector('span')?.className).not.toMatch(/bg-gray-|dark:bg-gray-/);
 
-      const previous = screen.getByRole('button', { name: 'com_ui_message_nav_previous' });
-      const next = screen.getByRole('button', { name: 'com_ui_message_nav_next' });
+      const previous = screen.getByRole('button', { name: 'Navigate to previous message' });
+      const next = screen.getByRole('button', { name: 'Navigate to next message' });
       expect(previous).toHaveClass('text-text-tertiary', 'high-contrast:opacity-50');
       expect(next).toHaveClass('text-text-tertiary', 'high-contrast:opacity-50');
     });
@@ -563,7 +562,7 @@ describe('MessageNav', () => {
       expect(ids).toEqual(['u1', 'a1', 'steer-s1', 'u2', 'a2']);
 
       const steerRib = container.querySelector('[data-msg-id="steer-s1"]');
-      expect(steerRib?.getAttribute('aria-label')).toMatch(/^com_ui_message_nav_go_to_user\|/);
+      expect(steerRib?.getAttribute('aria-label')).toMatch(/^Go to user message: /);
       expect(steerRib?.getAttribute('aria-label')).toContain('steer mid-run words');
       expect(steerRib?.getAttribute('aria-label')).not.toContain('Danny');
     });
@@ -671,10 +670,10 @@ describe('MessageNav', () => {
       ];
       const { container } = renderNav(messages);
 
-      expect(container.querySelector('nav')).toHaveAttribute('aria-label', 'com_ui_message_nav');
+      expect(container.querySelector('nav')).toHaveAttribute('aria-label', 'Message navigation');
 
-      const prevBtn = container.querySelector('button[aria-label="com_ui_message_nav_previous"]');
-      const nextBtn = container.querySelector('button[aria-label="com_ui_message_nav_next"]');
+      const prevBtn = container.querySelector('button[aria-label="Navigate to previous message"]');
+      const nextBtn = container.querySelector('button[aria-label="Navigate to next message"]');
       expect(prevBtn).not.toBeNull();
       expect(nextBtn).not.toBeNull();
     });
@@ -687,11 +686,9 @@ describe('MessageNav', () => {
       ];
       const { container } = renderNav(messages);
       const [userInd, assistantInd] = messageRibs(container);
-      expect(userInd.getAttribute('aria-label')).toMatch(/^com_ui_message_nav_go_to_user\|/);
+      expect(userInd.getAttribute('aria-label')).toMatch(/^Go to user message: /);
       expect(userInd.getAttribute('aria-label')).toContain('hi there');
-      expect(assistantInd.getAttribute('aria-label')).toMatch(
-        /^com_ui_message_nav_go_to_assistant\|/,
-      );
+      expect(assistantInd.getAttribute('aria-label')).toMatch(/^Go to assistant message: /);
     });
 
     it('sets aria-current on the entry the viewport has reached', () => {
@@ -839,7 +836,7 @@ describe('MessageNav', () => {
       });
 
       const prev = container.querySelector(
-        'button[aria-label="com_ui_message_nav_previous"]',
+        'button[aria-label="Navigate to previous message"]',
       ) as HTMLButtonElement;
       expect(prev.disabled).toBe(true);
       /** A theme that paints disabled controls draws it in the disabled ink at full opacity. */
@@ -869,10 +866,10 @@ describe('MessageNav', () => {
       });
 
       const prev = container.querySelector(
-        'button[aria-label="com_ui_message_nav_previous"]',
+        'button[aria-label="Navigate to previous message"]',
       ) as HTMLButtonElement;
       const next = container.querySelector(
-        'button[aria-label="com_ui_message_nav_next"]',
+        'button[aria-label="Navigate to next message"]',
       ) as HTMLButtonElement;
 
       expect(prev.disabled).toBe(true);
@@ -1848,9 +1845,9 @@ describe('MessageNav', () => {
       const ribs = container.querySelectorAll('[data-msg-id]');
       expect(ribs).toHaveLength(5);
       expect(ribs[0].getAttribute('data-msg-id')).toBe('messages-start');
-      expect(ribs[0].getAttribute('aria-label')).toBe('com_ui_scroll_to_top');
+      expect(ribs[0].getAttribute('aria-label')).toBe('Scroll to top');
       expect(ribs[4].getAttribute('data-msg-id')).toBe('messages-end');
-      expect(ribs[4].getAttribute('aria-label')).toBe('com_ui_scroll_to_bottom');
+      expect(ribs[4].getAttribute('aria-label')).toBe('Scroll to bottom');
     });
 
     it('pins the terminus outside the scrolling column, between it and the next chevron', () => {
@@ -1864,7 +1861,7 @@ describe('MessageNav', () => {
       const kids = Array.from(nav.children);
       const endIndex = kids.findIndex((k) => k.querySelector('[data-msg-id="messages-end"]'));
       const nextIndex = kids.findIndex(
-        (k) => k.getAttribute('aria-label') === 'com_ui_message_nav_next',
+        (k) => k.getAttribute('aria-label') === 'Navigate to next message',
       );
       expect(endIndex).toBe(kids.indexOf(column) + 1);
       expect(nextIndex).toBe(endIndex + 1);
@@ -2030,7 +2027,7 @@ describe('MessageNav', () => {
       const kids = Array.from(nav.children);
       const originIndex = kids.findIndex((k) => k.querySelector('[data-msg-id="messages-start"]'));
       const prevIndex = kids.findIndex(
-        (k) => k.getAttribute('aria-label') === 'com_ui_message_nav_previous',
+        (k) => k.getAttribute('aria-label') === 'Navigate to previous message',
       );
       expect(originIndex).toBe(prevIndex + 1);
       expect(originIndex).toBe(kids.indexOf(column) - 1);
@@ -2052,9 +2049,7 @@ describe('MessageNav', () => {
         fireEvent.pointerEnter(wrapper, { pointerId: 1, clientY: 5 });
         jest.advanceTimersByTime(80);
       });
-      expect(document.body.querySelector('[role="tooltip"]')).toHaveTextContent(
-        'com_ui_scroll_to_top',
-      );
+      expect(document.body.querySelector('[role="tooltip"]')).toHaveTextContent('Scroll to top');
     });
 
     it('leaves the origin out of the current mark, so only one entry is current', () => {
@@ -2095,9 +2090,7 @@ describe('MessageNav', () => {
         fireEvent.pointerEnter(wrapper, { pointerId: 1, clientY: 5 });
         jest.advanceTimersByTime(80);
       });
-      expect(document.body.querySelector('[role="tooltip"]')).toHaveTextContent(
-        'com_ui_scroll_to_bottom',
-      );
+      expect(document.body.querySelector('[role="tooltip"]')).toHaveTextContent('Scroll to bottom');
 
       act(() => {
         fireEvent.pointerLeave(wrapper, { pointerId: 1 });
@@ -2113,9 +2106,7 @@ describe('MessageNav', () => {
         endRib.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
         jest.advanceTimersByTime(80);
       });
-      expect(document.body.querySelector('[role="tooltip"]')).toHaveTextContent(
-        'com_ui_scroll_to_bottom',
-      );
+      expect(document.body.querySelector('[role="tooltip"]')).toHaveTextContent('Scroll to bottom');
 
       act(() => {
         endRib.dispatchEvent(
@@ -2164,10 +2155,10 @@ describe('MessageNav', () => {
       });
 
       const prev = container.querySelector(
-        'button[aria-label="com_ui_message_nav_previous"]',
+        'button[aria-label="Navigate to previous message"]',
       ) as HTMLButtonElement;
       const next = container.querySelector(
-        'button[aria-label="com_ui_message_nav_next"]',
+        'button[aria-label="Navigate to next message"]',
       ) as HTMLButtonElement;
 
       expect(next.disabled).toBe(true);
@@ -2256,9 +2247,7 @@ describe('MessageNav', () => {
       mockUseMessagesSubmission.mockReturnValue({ isSubmitting: true });
       const { container } = renderNav(streamingMessages());
       const pending = container.querySelector('[data-msg-id="d"]') as HTMLElement;
-      expect(pending.getAttribute('aria-label')).toBe(
-        'com_ui_message_nav_go_to_assistant|{"0":"com_ui_generating"}',
-      );
+      expect(pending.getAttribute('aria-label')).toBe('Go to assistant message: Generating...');
     });
 
     it('never opens an empty preview beside a rib with no text yet', () => {
@@ -2276,7 +2265,7 @@ describe('MessageNav', () => {
 
       const tip = document.body.querySelector('[role="tooltip"]');
       expect(tip).not.toBeNull();
-      expect(tip).toHaveTextContent('com_ui_generating');
+      expect(tip).toHaveTextContent('Generating...');
       restoreLayout();
     });
 
@@ -2287,9 +2276,7 @@ describe('MessageNav', () => {
       mockUseMessagesSubmission.mockReturnValue({ isSubmitting: false });
       const { container } = renderNav(streamingMessages());
       const settled = container.querySelector('[data-msg-id="d"]') as HTMLElement;
-      expect(settled.getAttribute('aria-label')).toBe(
-        'com_ui_message_nav_go_to_assistant|{"0":"com_ui_message_nav_no_preview"}',
-      );
+      expect(settled.getAttribute('aria-label')).toBe('Go to assistant message: No preview');
     });
 
     it('only the tail of a live submission is pending, never an earlier gap', () => {
@@ -2302,10 +2289,10 @@ describe('MessageNav', () => {
         buildMessage({ messageId: 'd', text: '', content: [] }),
       ]);
       expect(container.querySelector('[data-msg-id="b"]')?.getAttribute('aria-label')).toContain(
-        'com_ui_message_nav_no_preview',
+        'No preview',
       );
       expect(container.querySelector('[data-msg-id="d"]')?.getAttribute('aria-label')).toContain(
-        'com_ui_generating',
+        'Generating...',
       );
     });
 
@@ -2342,8 +2329,8 @@ describe('MessageNav', () => {
         buildMessage({ messageId: 'c', text: '', content: [], isCreatedByUser: true }),
       ]);
       const last = container.querySelector('[data-msg-id="c"]');
-      expect(last?.getAttribute('aria-label')).toContain('com_ui_message_nav_no_preview');
-      expect(last?.getAttribute('aria-label')).not.toContain('com_ui_generating');
+      expect(last?.getAttribute('aria-label')).toContain('No preview');
+      expect(last?.getAttribute('aria-label')).not.toContain('Generating...');
     });
 
     it('reads the rendered row when the message itself carries no text part', () => {

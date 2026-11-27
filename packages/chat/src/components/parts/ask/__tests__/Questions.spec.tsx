@@ -9,31 +9,12 @@ import type { AskAnswerStatus } from '../../../../react/parts/ask';
 import { ChatSurfaceProvider } from '../../../../react/subagents/provider';
 import { askSubmitStatusAtom } from '../../../../react/parts/ask';
 import { ASK_USER_DECLINED_ANSWER } from '../../../../core';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import AskUserQuestions from '../Questions';
 
 const mockSubmitAskAnswer = jest.fn();
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<number, number>) => {
-    const labels: Record<string, string> = {
-      com_ui_question_number: `Question ${values?.[0] ?? ''}`,
-      com_ui_question_step: `Question ${values?.[0] ?? ''} of ${values?.[1] ?? ''}`,
-      com_ui_question_step_answered: `Go to question ${values?.[0] ?? ''}, answered`,
-      com_ui_question_step_unanswered: `Go to question ${values?.[0] ?? ''}, not answered`,
-      com_ui_question_navigation: 'Question navigation',
-      com_ui_questions_remaining_one: `${values?.[0] ?? ''} question still needs an answer`,
-      com_ui_questions_remaining: `${values?.[0] ?? ''} questions still need an answer`,
-      com_ui_your_answer: 'Your answer',
-      com_ui_back: 'Back',
-      com_ui_next: 'Next',
-      com_ui_skip: 'Skip',
-      com_ui_submit: 'Submit',
-      com_ui_submitting: 'Submitting',
-    };
-    return labels[key] ?? key;
-  },
-}));
+beforeAll(initEnglish);
 
 const setStatus = (actionId: string, status: AskAnswerStatus) => {
   const store = getDefaultStore();
@@ -744,13 +725,15 @@ describe('AskUserQuestions', () => {
     test('keeps partial answers instead of skipping', () => {
       renderBatch('ask-escape-partial');
       fireEvent.click(screen.getByRole('button', { name: /Staging/ }));
-      fireEvent.keyDown(screen.getByRole('textbox', { name: /Your answer/ }), { key: 'Escape' });
+      fireEvent.keyDown(screen.getByRole('textbox', { name: /Type your answer…/ }), {
+        key: 'Escape',
+      });
       expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
     });
 
     test('ignores Escape that cancels an IME composition or carries a modifier', () => {
       renderBatch('ask-escape-ime', [{ id: 'window', question: 'Which time window?' }]);
-      const field = screen.getByRole('textbox', { name: /Your answer/ });
+      const field = screen.getByRole('textbox', { name: /Type your answer…/ });
       fireEvent.keyDown(field, { key: 'Escape', isComposing: true });
       fireEvent.keyDown(field, { key: 'Escape', shiftKey: true });
       expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
