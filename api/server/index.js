@@ -414,6 +414,8 @@ const startServer = async () => {
   app.use('/api/agents/chat', agentStartupIngressMiddleware);
   app.use(metricsMiddleware);
   app.use(noIndex);
+  /** Signed provider deliveries: before every body parser, since the signature covers the raw body. */
+  app.use('/api/agents/events/in', routes.ingress);
   app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));
   app.use(excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })));
   app.use(handleJsonParseError);

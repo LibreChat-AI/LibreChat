@@ -19,6 +19,19 @@ export type ConnectionBound =
   | { ok: true; value: Connection }
   | { ok: false; error: { code: 'taken' } };
 
+/** An install's state as the provider reports it: held, released, or gone. */
+export type InstallState = ConnectionStatus | 'removed';
+
+/**
+ * Whether `record` applied a provider's answer:
+ * - `missing`: no connection by that id on the caller's side (gone already, or never there).
+ * - `newer`: an answer from a lookup sent at the same time or later is recorded; `status` is
+ *   what it recorded.
+ */
+export type Recorded =
+  | { ok: true }
+  | { ok: false; error: { code: 'missing' } | { code: 'newer'; status: ConnectionStatus } };
+
 /** What names a connection before its tenant is known: its id, or the install it holds. */
 export type ConnectionRef = { id: string } | Pick<Connection, 'provider' | 'installation'>;
 
@@ -43,10 +56,17 @@ export type Connections = {
    * an ingress URL, or an install taken from a delivery whose signature was verified.
    */
   resolve: (ref: ConnectionRef) => Promise<Connection | null>;
-  /** Records the provider holding or restoring an install. `null` when there is none by that id. */
+  /** Records an operator holding or restoring an install. `null` when there is none by that id. */
   mark: (id: string, status: ConnectionStatus) => Promise<Connection | null>;
   /** Unbinds an install. Its record is deleted; `false` when there was none by that id. */
   remove: (id: string) => Promise<boolean>;
+  /**
+   * Records an install's state as the provider reported it to a lookup sent at `at`, marking or
+   * removing the connection. It applies only when no answer from a lookup sent at `at` or later
+   * is recorded yet, so answers that arrive out of order cannot undo a newer one; a refusal
+   * says what is recorded, so the caller can tell the same answer again from a conflict.
+   */
+  record: (id: string, state: InstallState, at: Date) => Promise<Recorded>;
 };
 
 function view(row: ConnectionRecord): Connection {
@@ -129,5 +149,28 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
     return deletedCount === 1;
   }
 
-  return { bind, get, list, resolve, mark, remove };
+  async function record(id: string, state: InstallState, at: Date): Promise<Recorded> {
+    // The caller's connection, while no answer from a lookup sent at `at` or later is recorded.
+    const older = {
+      $and: [{ id }, mine(), { $or: [{ stateAt: { $exists: false } }, { stateAt: { $lt: at } }] }],
+    };
+    const applied =
+      state === 'removed'
+        ? (await Model.deleteOne(older)).deletedCount === 1
+        : (await Model.findOneAndUpdate(
+            older,
+            { $set: { status: state, stateAt: at } },
+            { new: true, runValidators: true },
+          ).lean<ConnectionRecord>()) != null;
+    if (applied) {
+      return { ok: true };
+    }
+    // Refused: read what is recorded, which only a refusal needs.
+    const row = await Model.findOne({ id, ...mine() }, { status: 1 }).lean<ConnectionRecord>();
+    return row == null
+      ? { ok: false, error: { code: 'missing' } }
+      : { ok: false, error: { code: 'newer', status: row.status } };
+  }
+
+  return { bind, get, list, resolve, mark, remove, record };
 }

@@ -2476,6 +2476,11 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Turn on only once every replica runs a version that knows event subscriptions: an
            *  older replica would run a subscription's delivery without its grant. */
           enabled: z.boolean().optional().default(false),
+          /** Largest webhook body accepted at `POST /api/agents/events/in/:provider`, in bytes;
+           *  a longer one is refused with 413 before it is read further or parsed. Default
+           *  1048576 (1 MiB), about four times the largest catalog delivery. GitHub sends
+           *  nothing over 25 MB. */
+          maxBodyBytes: z.number().int().min(65_536).max(26_214_400).optional(),
           /** Bounds on what one delivery becomes; each default is used when the field is unset. */
           limits: z
             .object({

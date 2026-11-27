@@ -39,7 +39,9 @@ export { createTriggerRuns } from './methods/triggerRun';
 export type { TriggerRuns } from './methods/triggerRun';
 export { createConnections } from './methods/connection';
 export type {
+  Recorded,
   Connections,
+  InstallState,
   ConnectionRef,
   ConnectionBound,
   ConnectionBinding,

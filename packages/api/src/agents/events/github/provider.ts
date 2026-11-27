@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import type { Inbound, Provider, Rejected, Verdict, Verified } from '../provider';
+import type { Inbound, Lifecycle, Provider, Rejected, Verdict, Verified } from '../provider';
 import type { Limits, Outcome } from '../catalog';
 import { normalize } from '../catalog';
 
@@ -66,27 +66,75 @@ function malformed(field: string): Outcome {
   return { ok: false, error: { code: 'malformed', field } };
 }
 
+/** The JSON a verified body holds, or `undefined` when it is not UTF-8 JSON. */
+function read(verified: Verified): unknown {
+  const body = bodies.get(verified);
+  if (body == null) {
+    throw new Error('Only a delivery that verify passed can be read');
+  }
+  try {
+    return JSON.parse(decoder.decode(body));
+  } catch {
+    /** The parser's message quotes the text around the fault, so it is dropped whole. */
+    return undefined;
+  }
+}
+
+type InstallBody = {
+  action?: unknown;
+  repository?: unknown;
+  installation?: { id?: unknown; app_id?: unknown; account?: unknown } | null;
+};
+
+/**
+ * The install an `installation` delivery names, whatever its action: the caller asks GitHub for
+ * the install's current state rather than trusting the action, so an older delivery arriving
+ * late cannot undo a newer change. The event header is not signed, and many signed events name
+ * their install, so the body must also be shaped as only this event's is: an action, the whole
+ * installation object with its `app_id` and `account`, and no repository. Every other event
+ * carries only the install's id, so a relabelled delivery never reads as one.
+ */
+function lifecycle(verified: Verified): Lifecycle | null {
+  if (verified.event !== 'installation') {
+    return null;
+  }
+  const json = read(verified) as InstallBody | null | undefined;
+  if (json == null || typeof json !== 'object' || json.repository !== undefined) {
+    return null;
+  }
+  const install = json.installation;
+  const id = install?.id;
+  if (
+    typeof json.action !== 'string' ||
+    typeof id !== 'number' ||
+    !Number.isSafeInteger(id) ||
+    id <= 0 ||
+    typeof install?.app_id !== 'number' ||
+    install.account == null ||
+    typeof install.account !== 'object'
+  ) {
+    return null;
+  }
+  return { installation: String(id) };
+}
+
 /**
  * The event header is not signed, so it is only a claim about the body. The catalog reads a
  * body by the fields its event defines, and no listed event's body has the fields of
  * another, so a relabelled delivery is `ignored` or `malformed` and never an event.
  */
 function parse(verified: Verified, limits?: Limits): Outcome {
-  const body = bodies.get(verified);
-  if (body == null) {
+  if (!bodies.has(verified)) {
     throw new Error('parse takes only a delivery that verify passed');
   }
   if (verified.event == null) {
     return malformed('x-github-event');
   }
-  let json: unknown;
-  try {
-    json = JSON.parse(decoder.decode(body));
-  } catch {
-    /** The parser's message quotes the text around the fault, so it is dropped whole. */
+  const json = read(verified);
+  if (json === undefined) {
     return malformed('body');
   }
   return normalize('github', verified.event, json, limits);
 }
 
-export const github: Provider = { name: 'github', verify, parse };
+export const github: Provider = { name: 'github', verify, parse, lifecycle };

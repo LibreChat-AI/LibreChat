@@ -45,9 +45,19 @@ export type Verdict =
   | { ok: false; error: { code: 'signature'; reason: Rejected } };
 
 /**
+ * A verified delivery saying the provider changed an install of the deployment's app: removed,
+ * held (suspended), released, or re-granted. It names the install only, not what to do: a
+ * delivery can arrive late or twice, so the caller asks the provider for the install's state
+ * now and applies that, whatever order deliveries come in.
+ */
+export interface Lifecycle {
+  installation: string;
+}
+
+/**
  * An outside service that signs and posts events. The order is fixed: `verify` with the
- * deployment's secret for that service, then `parse`, and only then may the caller look up
- * anything the body names, such as the connection for its installation.
+ * deployment's secret for that service, then `parse` or `lifecycle`, and only then may the
+ * caller look up anything the body names, such as the connection for its installation.
  */
 export interface Provider {
   name: AgentEventProvider;
@@ -62,4 +72,10 @@ export interface Provider {
    * contains, and throws only when handed something `verify` did not return.
    */
   parse(verified: Verified, limits?: Limits): Outcome;
+  /**
+   * The install a verified delivery reports a change to, or `null` when it is not about the
+   * install itself (every catalog event). Like `parse`, it never throws for what the body
+   * contains.
+   */
+  lifecycle(verified: Verified): Lifecycle | null;
 }
