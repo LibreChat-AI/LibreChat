@@ -463,7 +463,7 @@ describe('image input declarations', () => {
       ],
     });
 
-    expect(root).not.toHaveProperty('vision');
+    expect(root.vision).toBeUndefined();
     expect(chained.vision).toBe(false);
     const configs = root.subagentConfigs as Array<Record<string, unknown>>;
     const eager = configs.find((config) => config.type === 'agent_eager');

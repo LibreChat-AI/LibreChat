@@ -36,6 +36,12 @@ const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 /** `E2E_LIST_PROVIDER_FILES:<label>` names every provider file in the request, earlier turns'
  *  included; `E2E_ASSERT_PROVIDER_FILE` looks only at the latest user message. */
 const LIST_PROVIDER_FILES_MARKER = 'E2E_LIST_PROVIDER_FILES:';
+/** `E2E_REPORT_IMAGES:<label>`: each agent in the run reports the images in its own request and
+ *  the text markers that replaced images, and takes its first handoff edge unless the request
+ *  already holds a handoff result. */
+const REPORT_IMAGES_MARKER = 'E2E_REPORT_IMAGES:';
+/** What `@librechat/agents` sends a model declared text-only in place of each image. */
+const OMITTED_IMAGE_TEXT = '[Image omitted because this model does not accept image input.]';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
 const REPORT_TOOLS_MARKER = 'E2E_REPORT_TOOLS';
@@ -558,6 +564,61 @@ function providerFileAssertionResponses({ messages, text }) {
         Array.from(providerFileNames).join(', ') || 'no provider files'
       }`,
     ],
+  };
+}
+
+/**
+ * The images a request carries and the text markers that replaced images, in every message. A
+ * custom endpoint sends legacy string content, so a message whose image was replaced arrives as
+ * one string holding the marker.
+ */
+function countImages(messages) {
+  const counts = { images: 0, omitted: 0 };
+  for (const message of messages ?? []) {
+    const content = message?.content;
+    const parts = typeof content === 'string' ? [{ type: 'text', text: content }] : content;
+    if (!Array.isArray(parts)) {
+      continue;
+    }
+    for (const part of parts) {
+      if (part?.type === 'image_url' || part?.type === 'image' || part?.type === 'input_image') {
+        counts.images += 1;
+      } else if (part?.type === 'text' && typeof part.text === 'string') {
+        counts.omitted += part.text.split(OMITTED_IMAGE_TEXT).length - 1;
+      }
+    }
+  }
+  return counts;
+}
+
+function imageReportResponses(graph, text) {
+  const label = getMarkerValue(text, REPORT_IMAGES_MARKER);
+  if (!label) {
+    return null;
+  }
+  return {
+    responses: [''],
+    resolveInvocation: (messages, options, runManager) => {
+      const agentId = getAgentIdFromInvocationOptions(options, runManager);
+      const { images, omitted } = countImages(messages);
+      const response = `E2E images ${label}: agent=${agentId}; images=${images}; omitted=${omitted}`;
+      const handedOff = (messages ?? []).some(
+        (message) =>
+          messageType(message) === 'tool' && message.name?.startsWith(HANDOFF_TOOL_PREFIX),
+      );
+      const handoff = handedOff
+        ? undefined
+        : [...getGraphTools(graph?.agentContexts?.get(agentId)).keys()].find((name) =>
+            name.startsWith(HANDOFF_TOOL_PREFIX),
+          );
+      if (!handoff) {
+        return { response };
+      }
+      return {
+        response,
+        toolCalls: [{ id: `call_e2e_images_${label}`, name: handoff, args: {}, type: 'tool_call' }],
+      };
+    },
   };
 }
 
@@ -4273,6 +4334,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const providerFileList = providerFileListResponses({ messages, text });
   if (providerFileList) {
     return providerFileList;
+  }
+
+  const imageReport = imageReportResponses(graph, text);
+  if (imageReport) {
+    return imageReport;
   }
 
   const quoteAssertion = quoteAssertionResponses({ messages, text });
