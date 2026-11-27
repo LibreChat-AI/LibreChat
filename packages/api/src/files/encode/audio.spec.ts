@@ -225,3 +225,113 @@ describe('encodeAndFormatAudios - provider formatting', () => {
     });
   });
 });
+
+describe('encodeAndFormatAudios - agents that share the history', () => {
+  const agent = (provider: Providers, endpoint: string, useResponsesApi?: boolean) => ({
+    provider,
+    endpoint,
+    model_parameters: { model: 'model', useResponsesApi },
+  });
+  const gpt = agent(Providers.OPENAI, 'openAI');
+  const gateway = agent(Providers.OPENAI, 'MyGateway');
+  const openrouter = agent(Providers.OPENROUTER, 'OpenRouter');
+  const gemini = agent(Providers.GOOGLE, 'google');
+  const claude = agent(Providers.ANTHROPIC, 'anthropic');
+  const bedrock = agent(Providers.BEDROCK, 'bedrock');
+  const responses = agent(Providers.OPENAI, 'openAI', true);
+  const inputAudio = { type: 'input_audio', input_audio: { data: 'AAAA', format: 'wav' } };
+  const media = { type: 'media', mimeType: 'audio/wav', data: 'AAAA' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedValidateAudio.mockResolvedValue({ isValid: true });
+    mockedIsConfigured.mockImplementation((_req, { endpoint }) => endpoint === 'MyGateway');
+    const file = createMockFile();
+    mockedGetFileStream.mockResolvedValue({
+      file,
+      content: 'AAAA',
+      metadata: {
+        file_id: file.file_id,
+        filepath: file.filepath,
+        source: file.source,
+        filename: file.filename,
+        type: file.type,
+      },
+    });
+  });
+
+  const encode = (
+    provider: Providers,
+    recipients: Iterable<ReturnType<typeof agent>>,
+    endpoint?: string,
+  ) =>
+    encodeAndFormatAudios(
+      req,
+      [createMockFile()],
+      { provider, endpoint, recipients },
+      getStrategyFunctions,
+    );
+
+  it('keeps input_audio when every other agent reads it, has it rewritten or left out', async () => {
+    const result = await encode(Providers.OPENROUTER, [
+      openrouter,
+      gateway,
+      gemini,
+      claude,
+      bedrock,
+      responses,
+    ]);
+    expect(result.audios).toEqual([inputAudio]);
+  });
+
+  it("sends Gemini's part when an OpenAI-compatible agent cannot read input_audio", async () => {
+    const result = await encode(Providers.OPENROUTER, [gemini, gpt]);
+    expect(result.audios).toEqual([media]);
+  });
+
+  it('gives a custom endpoint that lists audio its input_audio unless another agent cannot read it', async () => {
+    expect((await encode(Providers.OPENAI, [openrouter], 'MyGateway')).audios).toEqual([
+      inputAudio,
+    ]);
+    expect((await encode(Providers.OPENAI, [gpt], 'MyGateway')).audios).toEqual([media]);
+    expect((await encode(Providers.OPENAI, [openrouter], 'OtherGateway')).audios).toEqual([]);
+  });
+
+  it("keeps a Gemini agent's media part whoever else reads the history", async () => {
+    const result = await encode(Providers.GOOGLE, [gpt, openrouter, claude]);
+    expect(result.audios).toEqual([media]);
+  });
+
+  it('reads agents passed as an iterator once for every file', async () => {
+    const result = await encodeAndFormatAudios(
+      req,
+      [createMockFile(), createMockFile()],
+      { provider: Providers.OPENROUTER, recipients: new Map([['agent_gpt', gpt]]).values() },
+      getStrategyFunctions,
+    );
+    expect(result.audios).toEqual([media, media]);
+  });
+
+  it("refuses audio over a Gemini reader's limit, with Gemini's reason", async () => {
+    mockedValidateAudio.mockImplementation(async (_buffer, _size, provider) =>
+      provider === Providers.GOOGLE
+        ? { isValid: false, error: 'Audio file size (21MB) exceeds the 20MB limit' }
+        : { isValid: true },
+    );
+    await expect(encode(Providers.OPENROUTER, [gemini])).rejects.toThrow(
+      'Audio validation failed: Audio file size (21MB) exceeds the 20MB limit',
+    );
+    await expect(encode(Providers.OPENROUTER, [claude])).resolves.toBeDefined();
+  });
+
+  it("checks no reader's limit for audio the primary agent does not send", async () => {
+    await encode(Providers.ANTHROPIC, [gemini]);
+    expect(mockedValidateAudio).toHaveBeenCalledTimes(1);
+    expect(mockedValidateAudio).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      3,
+      Providers.ANTHROPIC,
+      undefined,
+    );
+  });
+});

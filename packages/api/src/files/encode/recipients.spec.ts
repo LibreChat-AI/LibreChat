@@ -11,12 +11,16 @@ import {
 import type { ConverseStreamOutput, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { IMongoFile } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions } from '~/types';
 import { encodeAndFormatDocuments } from './document';
+import { encodeAndFormatAudios } from './audio';
+import { encodeAndFormatVideos } from './video';
 
 /** An agent reading the conversation, with the parameters its initialization resolved. */
 interface Agent {
   provider: Providers;
+  endpoint?: string;
   model_parameters: { model: string; useResponsesApi?: boolean };
 }
 
@@ -37,6 +41,17 @@ const gemini: Agent = {
 const bedrock: Agent = {
   provider: Providers.BEDROCK,
   model_parameters: { model: 'anthropic.claude-sonnet-4-20250514-v1:0' },
+};
+const openrouter: Agent = {
+  provider: Providers.OPENROUTER,
+  endpoint: 'OpenRouter',
+  model_parameters: { model: 'google/gemini-2.5-flash' },
+};
+/** A custom endpoint (an OpenAI-compatible gateway) whose admin listed audio types. */
+const gateway: Agent = {
+  provider: Providers.OPENAI,
+  endpoint: 'Gateway',
+  model_parameters: { model: 'voxtral-small' },
 };
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page >> endobj\ntrailer << >>\n%%EOF\n');
@@ -154,6 +169,10 @@ async function send(agent: Agent, message: BaseMessage): Promise<unknown[]> {
   } else if (agent.provider === Providers.GOOGLE) {
     jest.spyOn(globalThis, 'fetch').mockImplementation(fetch);
     chat = initializeModel({ provider: Providers.GOOGLE, clientOptions: options });
+  } else if (agent.provider === Providers.OPENROUTER) {
+    /** ChatOpenRouter takes ChatOpenAI's fields; its declared options leave `configuration` out. */
+    const openRouterOptions = { ...options, configuration: { fetch } };
+    chat = initializeModel({ provider: Providers.OPENROUTER, clientOptions: openRouterOptions });
   } else {
     chat = initializeModel({
       provider: Providers.OPENAI,
@@ -269,5 +288,116 @@ describe('documents in a history that agents on different providers read', () =>
     expect(await send(claude, message)).toEqual([
       { type: 'text', text: 'Summarize the attachment' },
     ]);
+  });
+});
+
+/** Encodes one audio or video attachment as `addAudios` and `addVideos` do. */
+async function encodeMedia(
+  primary: Agent,
+  readers: Agent[],
+  file: IMongoFile,
+  content: Buffer,
+  config: Partial<AppConfig> = {},
+): Promise<BaseMessage> {
+  const strategy: StrategyFunctions = {
+    getDownloadStream: async () => Readable.from([content]),
+  };
+  const req = { config } as ServerRequest;
+  const params = { provider: primary.provider, endpoint: primary.endpoint, recipients: readers };
+  const media = file.type.startsWith('audio/')
+    ? { audios: (await encodeAndFormatAudios(req, [file], params, () => strategy)).audios }
+    : { videos: (await encodeAndFormatVideos(req, [file], params, () => strategy)).videos };
+  return formatMessage({
+    message: { role: 'user', content: 'Summarize the attachment', ...media },
+    langChain: true,
+  }) as BaseMessage;
+}
+
+describe('audio and video in a history that agents on different providers read', () => {
+  const MP3 = Buffer.concat([Buffer.from('ID3'), Buffer.alloc(64, 1)]);
+  const MP4 = Buffer.concat([Buffer.from('ftypmp42'), Buffer.alloc(64, 1)]);
+  const mp3 = MP3.toString('base64');
+  const mp4 = MP4.toString('base64');
+  const audio = () => createFile('audio/mpeg', 'memo.mp3', MP3.length);
+  const video = () => createFile('video/mp4', 'clip.mp4', MP4.length);
+  const prompt = [{ type: 'text', text: 'Summarize the attachment' }];
+  const inputAudio = { type: 'input_audio', input_audio: { data: mp3, format: 'mp3' } };
+  const videoUrl = { type: 'video_url', video_url: { url: `data:video/mp4;base64,${mp4}` } };
+  /** A custom endpoint configured for audio, as `fileConfig.endpoints.<name>.supportedMimeTypes`. */
+  const audioGateway: Partial<AppConfig> = {
+    fileConfig: { endpoints: { Gateway: { supportedMimeTypes: ['^audio/mpeg$'] } } },
+  } as Partial<AppConfig>;
+
+  it('gives a Gemini agent its audio and every other agent the message without it', async () => {
+    const message = await encodeMedia(gemini, [gpt, claude, bedrock, openrouter], audio(), MP3);
+
+    expect(await send(gemini, message)).toContainEqual({
+      inlineData: { mimeType: 'audio/mpeg', data: mp3 },
+    });
+    for (const agent of [gpt, claude, bedrock, openrouter]) {
+      expect(await send(agent, message)).toEqual(
+        agent.provider === Providers.BEDROCK ? [{ text: prompt[0].text }] : prompt,
+      );
+    }
+  });
+
+  it('gives a Gemini agent its video and every other agent the message without it', async () => {
+    const message = await encodeMedia(gemini, [gpt, responses, claude, openrouter], video(), MP4);
+
+    expect(await send(gemini, message)).toContainEqual({
+      inlineData: { mimeType: 'video/mp4', data: mp4 },
+    });
+    expect(await send(responses, message)).toEqual([{ type: 'input_text', text: prompt[0].text }]);
+    for (const agent of [gpt, claude, openrouter]) {
+      expect(await send(agent, message)).toEqual(prompt);
+    }
+  });
+
+  it('gives a Gemini agent the audio an OpenRouter agent hears, and leaves it out for Claude and the Responses API', async () => {
+    const message = await encodeMedia(openrouter, [gemini, claude, responses], audio(), MP3);
+
+    expect(await send(openrouter, message)).toContainEqual(inputAudio);
+    expect(await send(gemini, message)).toContainEqual({
+      inlineData: { mimeType: 'audio/mp3', data: mp3 },
+    });
+    expect(await send(claude, message)).toEqual(prompt);
+    expect(await send(responses, message)).toEqual([{ type: 'input_text', text: prompt[0].text }]);
+  });
+
+  it('gives a Gemini agent the video an OpenRouter agent sees, and leaves it out for Bedrock', async () => {
+    const message = await encodeMedia(openrouter, [gemini, bedrock], video(), MP4);
+
+    expect(await send(openrouter, message)).toContainEqual(videoUrl);
+    expect(await send(gemini, message)).toContainEqual({
+      inlineData: { mimeType: 'video/mp4', data: mp4 },
+    });
+    expect(await send(bedrock, message)).toEqual([{ text: prompt[0].text }]);
+  });
+
+  it('keeps input_audio for a custom endpoint that lists audio, beside an OpenRouter agent', async () => {
+    const message = await encodeMedia(openrouter, [gateway], audio(), MP3, audioGateway);
+
+    expect(await send(openrouter, message)).toContainEqual(inputAudio);
+    expect(await send(gateway, message)).toContainEqual(inputAudio);
+  });
+
+  it('sends the audio to Gemini agents only when a GPT agent cannot read input_audio', async () => {
+    const message = await encodeMedia(openrouter, [gemini, gpt], audio(), MP3);
+
+    expect(await send(gemini, message)).toContainEqual({
+      inlineData: { mimeType: 'audio/mpeg', data: mp3 },
+    });
+    expect(await send(gpt, message)).toEqual(prompt);
+    expect(await send(openrouter, message)).toEqual(prompt);
+  });
+
+  it("refuses audio over a Gemini agent's inline limit, with Gemini's reason", async () => {
+    const large = Buffer.alloc(21 * 1024 * 1024, 1);
+    const file = createFile('audio/mpeg', 'long.mp3', large.length);
+
+    await expect(encodeMedia(openrouter, [], file, large)).resolves.toBeDefined();
+    await expect(encodeMedia(openrouter, [gemini], file, large)).rejects.toThrow(
+      'Audio validation failed: Audio file size (21MB) exceeds the 20MB limit',
+    );
   });
 });
