@@ -3,7 +3,6 @@ import useLoadedSkill from '../useLoadedSkill';
 
 const mockNavigate = jest.fn();
 const mockHasAccess = jest.fn(() => true);
-const mockSkillsQuery = jest.fn();
 const mockSkillQuery = jest.fn();
 
 jest.mock('react-router-dom', () => ({
@@ -16,76 +15,55 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useSkillsInfiniteQuery: (...args: unknown[]) => mockSkillsQuery(...args),
   useGetSkillQuery: (...args: unknown[]) => mockSkillQuery(...args),
 }));
 
 const SKILL = {
-  _id: 'skill-1',
+  _id: '6650f0c2a1b2c3d4e5f60718',
   name: 'release-notes',
   body: '# Release notes\nSummarize merged PRs.',
 };
 
-const lookup = (enabled = true) =>
-  renderHook(() => useLoadedSkill('release-notes', enabled)).result.current;
+const lookup = (id = SKILL._id, enabled = true) =>
+  renderHook(() => useLoadedSkill(id, enabled)).result.current;
 
 describe('useLoadedSkill', () => {
   beforeEach(() => {
     mockNavigate.mockReset();
-    mockSkillsQuery.mockReset();
     mockSkillQuery.mockReset();
     mockHasAccess.mockReturnValue(true);
-    mockSkillsQuery.mockReturnValue({
-      data: { pages: [{ skills: [{ _id: 'other', name: 'release' }, SKILL] }] },
-    });
+    /** The server answers 404 for an id the user cannot open, which leaves no data. */
     mockSkillQuery.mockImplementation((id: string | undefined) => ({
       data: id === SKILL._id ? SKILL : undefined,
     }));
   });
 
-  it('resolves the one accessible skill with the name and opens it', () => {
+  it('resolves the skill the call names by id and opens it', () => {
     const skill = lookup();
 
-    expect(mockSkillsQuery).toHaveBeenCalledWith(
-      { search: 'release-notes', limit: 10 },
-      { enabled: true },
-    );
+    expect(mockSkillQuery).toHaveBeenCalledWith(SKILL._id, { enabled: true });
     expect(skill?.instructions).toBe(SKILL.body);
 
     skill?.open();
-    expect(mockNavigate).toHaveBeenCalledWith('/skills/skill-1');
+    expect(mockNavigate).toHaveBeenCalledWith(`/skills/${SKILL._id}`);
   });
 
-  it('resolves nothing for a skill outside the library', () => {
-    mockSkillsQuery.mockReturnValue({ data: { pages: [{ skills: [] }] } });
-
-    expect(lookup()).toBeUndefined();
+  it('resolves nothing for a skill the user cannot open or that was deleted', () => {
+    expect(lookup('aaaaaaaaaaaaaaaaaaaaaaaa')).toBeUndefined();
   });
 
-  it('resolves nothing when two accessible skills share the name', () => {
-    mockSkillsQuery.mockReturnValue({
-      data: {
-        pages: [{ skills: [SKILL, { ...SKILL, _id: 'skill-2' }], has_more: false }],
-      },
-    });
-
-    expect(lookup()).toBeUndefined();
-  });
-
-  it('resolves nothing while more results could hold another same-name skill', () => {
-    mockSkillsQuery.mockReturnValue({ data: { pages: [{ skills: [SKILL], has_more: true }] } });
-
-    expect(lookup()).toBeUndefined();
+  it('neither fetches nor resolves anything for a call without a skill id', () => {
+    expect(lookup('')).toBeUndefined();
+    expect(mockSkillQuery).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ enabled: true }),
+    );
   });
 
   it('neither fetches nor resolves the skill without skills access', () => {
     mockHasAccess.mockReturnValue(false);
 
     expect(lookup()).toBeUndefined();
-    expect(mockSkillsQuery).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ enabled: false }),
-    );
     expect(mockSkillQuery).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ enabled: false }),
@@ -93,8 +71,8 @@ describe('useLoadedSkill', () => {
   });
 
   it('neither fetches nor resolves the skill while the lookup is off', () => {
-    expect(lookup(false)).toBeUndefined();
-    expect(mockSkillsQuery).not.toHaveBeenCalledWith(
+    expect(lookup(SKILL._id, false)).toBeUndefined();
+    expect(mockSkillQuery).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ enabled: true }),
     );

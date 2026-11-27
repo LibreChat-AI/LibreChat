@@ -49,6 +49,8 @@ jest.mock('@librechat/api', () => ({
   feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
   stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
+  stampSkillId: jest.requireActual('@librechat/api').stampSkillId,
+  createToolExecuteHandler: jest.fn(() => ({ handle: jest.fn() })),
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -1968,6 +1970,161 @@ describe('tool input validation marker', () => {
     expect(data.result.tool_call).not.toHaveProperty('inputValidationError');
     expect(contentParts[0].tool_call).not.toHaveProperty('inputValidationError');
     expect(contentParts[0].tool_call.stepId).toBe('step-1');
+  });
+});
+
+describe('skill call identity', () => {
+  const SKILL_ID = '6650f0c2a1b2c3d4e5f60718';
+  const LOADED = 'Skill "release-notes" loaded. Follow the instructions below.';
+  const skillStep = (id, calls) => ({
+    id,
+    index: 0,
+    stepDetails: {
+      type: 'tool_calls',
+      tool_calls: calls.map((callId) => ({
+        id: callId,
+        name: 'skill',
+        args: '{"skillName":"release-notes"}',
+      })),
+    },
+  });
+  const completion = (stepId, callId, output = LOADED) => ({
+    result: {
+      id: stepId,
+      index: 0,
+      type: 'tool_call',
+      tool_call: { id: callId, name: 'skill', args: '{"skillName":"release-notes"}', output },
+    },
+  });
+
+  it('stamps the skill a call loaded on the streamed result and the saved part', async () => {
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, aggregateContent, stepMap } = createContentAggregator();
+    const skillCalls = new Map([['call-skill', { stepId: 'step-skill', skillId: SKILL_ID }]]);
+    const res = { write: jest.fn() };
+    const handlers = getDefaultHandlers({
+      res,
+      contentParts,
+      stepMap,
+      aggregateContent,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      toolExecuteOptions: { skillCalls },
+    });
+
+    await handlers[GraphEvents.ON_RUN_STEP].handle(
+      GraphEvents.ON_RUN_STEP,
+      skillStep('step-skill', ['call-skill']),
+    );
+    const data = completion('step-skill', 'call-skill');
+    await handlers[GraphEvents.ON_RUN_STEP_COMPLETED].handle(
+      GraphEvents.ON_RUN_STEP_COMPLETED,
+      data,
+    );
+
+    expect(data.result.tool_call.skillId).toBe(SKILL_ID);
+    expect(contentParts[0].tool_call).toMatchObject({
+      id: 'call-skill',
+      output: LOADED,
+      skillId: SKILL_ID,
+    });
+    const { sendEvent } = require('@librechat/api');
+    expect(sendEvent).toHaveBeenCalledWith(res, {
+      event: GraphEvents.ON_RUN_STEP_COMPLETED,
+      data: expect.objectContaining({
+        result: expect.objectContaining({
+          tool_call: expect.objectContaining({ skillId: SKILL_ID }),
+        }),
+      }),
+    });
+  });
+
+  it('stamps nothing for a call its handler did not record or that ran in another step', async () => {
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, aggregateContent, stepMap } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      contentParts,
+      stepMap,
+      aggregateContent,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      toolExecuteOptions: {
+        skillCalls: new Map([['call-other', { stepId: 'step-earlier', skillId: SKILL_ID }]]),
+      },
+    });
+
+    await handlers[GraphEvents.ON_RUN_STEP].handle(
+      GraphEvents.ON_RUN_STEP,
+      skillStep('step-skill', ['call-failed', 'call-other']),
+    );
+    const failed = completion(
+      'step-skill',
+      'call-failed',
+      'Error: Skill "release-notes" not found',
+    );
+    const other = completion('step-skill', 'call-other');
+    for (const data of [failed, other]) {
+      await handlers[GraphEvents.ON_RUN_STEP_COMPLETED].handle(
+        GraphEvents.ON_RUN_STEP_COMPLETED,
+        data,
+      );
+    }
+
+    expect(failed.result.tool_call).not.toHaveProperty('skillId');
+    expect(other.result.tool_call).not.toHaveProperty('skillId');
+    expect(contentParts.filter(Boolean).map((part) => part.tool_call.skillId)).toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("stamps a subagent's skill call in the update sent on and the saved transcript", async () => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+      toolExecuteOptions: {
+        skillCalls: new Map([['child-skill', { stepId: 'child-step', skillId: SKILL_ID }]]),
+      },
+    });
+    const base = {
+      parentToolCallId: 'parent-call',
+      parentRunId: 'parent-run',
+      subagentRunId: 'child-run',
+      subagentType: 'researcher',
+      subagentAgentId: 'child-agent',
+      runId: 'parent-run',
+    };
+    const completed = {
+      ...base,
+      phase: 'run_step_completed',
+      data: completion('child-step', 'child-skill'),
+    };
+
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+      ...base,
+      phase: 'run_step',
+      data: { ...skillStep('child-step', ['child-skill']), type: 'tool_calls' },
+    });
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(
+      GraphEvents.ON_SUBAGENT_UPDATE,
+      completed,
+    );
+
+    expect(completed.data.result.tool_call.skillId).toBe(SKILL_ID);
+    expect(aggregators.get('parent-call')?.contentParts[0]?.tool_call).toMatchObject({
+      id: 'child-skill',
+      output: LOADED,
+      skillId: SKILL_ID,
+    });
   });
 });
 

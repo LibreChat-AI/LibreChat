@@ -24,6 +24,7 @@ export default function SkillCall({
   runStepDurationMs,
   initialProgress = 0.1,
   args,
+  skillId = '',
   output = '',
   attachments,
   hideAttachments = false,
@@ -34,6 +35,8 @@ export default function SkillCall({
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
   args?: string | Record<string, unknown>;
+  /** The skill the call loaded, as the server stamped it; calls saved before that have none. */
+  skillId?: string;
   output?: string;
   attachments?: TAttachment[];
   hideAttachments?: boolean;
@@ -60,12 +63,13 @@ export default function SkillCall({
     });
 
   /** The tool output only confirms the load, so the instructions come from the skill itself,
-   *  when the host can name it. A shared transcript ran in its author's library, so a skill
-   *  with the same name in the viewer's library is a different skill: the output is all the
-   *  call can vouch for. */
+   *  found by the id the server recorded for the call. Names are unique only per author, and a
+   *  copy continued from a share holds calls another user ran, so a call with no id never looks
+   *  a skill up by name: the output is all it can vouch for. A shared transcript ran in its
+   *  author's library and its link carries no ids, so it looks nothing up either. */
   const skill = useLoadedSkill(
-    parsedSkillName,
-    showCode && phase === 'completed' && isSharedConvo !== true,
+    skillId,
+    skillId !== '' && showCode && phase === 'completed' && isSharedConvo !== true,
   );
   const instructions = skill?.instructions.trim();
   /** Beside the instructions, the output only adds the bare confirmation, so it

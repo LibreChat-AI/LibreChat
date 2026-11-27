@@ -298,6 +298,7 @@ const buildTools = (): Record<string, ToolRenderer> => ({
   skill: ({ toolCall, attachments, isSubmitting, hideAttachments, onToolExpand }) => (
     <SkillCall
       args={toolCall.args}
+      skillId={toolCall.skillId}
       output={toolCall.output ?? ''}
       initialProgress={toolCall.progress ?? 0.1}
       isSubmitting={isSubmitting}

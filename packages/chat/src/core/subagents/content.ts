@@ -50,6 +50,7 @@ type RunStepCompletedData = {
       output?: string;
       progress?: number;
       inputValidationError?: true;
+      skillId?: string;
     };
   };
 };
@@ -106,6 +107,8 @@ type ToolCallPart = {
     output?: string;
     progress: number;
     inputValidationError?: true;
+    /** The skill a `skill` call loaded, as the server stamped it on the completion. */
+    skillId?: string;
     type?: string;
     stepId?: string;
     toolPreparationStartedAt?: number;
@@ -447,6 +450,7 @@ export function foldSubagentEvent(
             : {}),
           ...(tc.output != null ? { output: tc.output } : {}),
           ...(tc.inputValidationError === true ? { inputValidationError: true } : {}),
+          ...(typeof tc.skillId === 'string' && tc.skillId !== '' ? { skillId: tc.skillId } : {}),
           progress: tc.progress ?? 1,
         },
       };
@@ -478,6 +482,7 @@ export function foldSubagentEvent(
         ...(!tc.name ? { nameUnavailable: true } : {}),
         output: tc.output,
         ...(tc.inputValidationError === true ? { inputValidationError: true } : {}),
+        ...(typeof tc.skillId === 'string' && tc.skillId !== '' ? { skillId: tc.skillId } : {}),
         progress: tc.progress ?? 1,
         type: ToolCallTypes.TOOL_CALL,
       },

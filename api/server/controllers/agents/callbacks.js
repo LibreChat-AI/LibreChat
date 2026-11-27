@@ -43,6 +43,7 @@ const {
   collectToolCallIds,
   createToolTimingAdapter,
   stampCommandExecutor,
+  stampSkillId,
   writeGuarded,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
@@ -608,6 +609,7 @@ function getDefaultHandlers({
           }
         }
         stampCommandExecutor(toolExecuteOptions?.attachedCommandStepIds, data?.result, toolCall);
+        stampSkillId(toolExecuteOptions?.skillCalls, data?.result, contentParts, runStep?.index);
         if (data?.result != null) {
           await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
@@ -708,7 +710,7 @@ function getDefaultHandlers({
         }
         try {
           captureSubagentIdentity(aggregator, data);
-          feedSubagentAggregator(aggregator, data, toolTiming.child);
+          feedSubagentAggregator(aggregator, data, toolTiming.child, toolExecuteOptions);
         } catch (err) {
           logger.warn(
             `[ON_SUBAGENT_UPDATE] Failed to aggregate phase "${data?.phase}" for tool_call ${key}: ${err?.message ?? err}`,

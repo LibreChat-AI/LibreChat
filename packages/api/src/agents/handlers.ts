@@ -341,6 +341,9 @@ export interface ToolExecuteOptions {
   /** Run steps whose call resolved to the attached-workspace `bash_tool`
    *  instance; the step-completed handler consumes them to stamp `executor`. */
   attachedCommandStepIds?: Set<string>;
+  /** The skill each `skill` call of the run loaded, by tool call id with its run step; the
+   *  step-completed handlers read them to stamp `skillId`, which names the skill that ran. */
+  skillCalls?: Map<string, { stepId?: string; skillId: string }>;
   /** Durable internal-completion adapter, present only for an Event Actor invocation. */
   eventActorDetachedAction?: EventActorDetachedActionLifecycle;
   /** Called once per batch before tool execution to lazily provision files to tool
@@ -5421,15 +5424,17 @@ async function handleSkillToolCall(
     }
   }
 
+  const skillId = skill._id.toString();
   options.onSkillResolved?.(
     {
-      id: skill._id.toString(),
+      id: skillId,
       name: skill.name,
       version: skill.version,
       contentDigest: createSkillContentDigest(skill.body),
     },
     { agentId },
   );
+  options.skillCalls?.set(tc.id, { stepId: tc.stepId, skillId });
 
   return {
     toolCallId: tc.id,

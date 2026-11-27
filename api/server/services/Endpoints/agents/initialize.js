@@ -497,6 +497,7 @@ const initializeClientWithProvider = async ({
     runSignal: signal,
     foregroundRunId,
     attachedCommandStepIds: new Set(),
+    skillCalls: new Map(),
     ordinaryToolCancellation: ordinaryToolCancellationEnabled,
     backgroundCompletionResultMaxChars,
     loadTools: async (

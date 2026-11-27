@@ -42,25 +42,27 @@ jest.mock('../useToolCallState', () => ({
 }));
 
 const open = jest.fn();
+const SKILL_ID = '6650f0c2a1b2c3d4e5f60718';
 const SKILL: LoadedSkill = { instructions: '# Release notes\nSummarize merged PRs.\n', open };
 const LOADED = 'Skill "release-notes" loaded. Follow the instructions below.';
 
-/** The host's lookup, recording what the card asked for. */
+/** The host's lookup, recording what the card asked for. It knows one skill, by its id. */
 const lookup = jest.fn<LoadedSkill | undefined, [string, boolean]>();
 let share: MessagePartsShare = {};
 
 const host = createMessagePartsHost({
   useShare: () => share,
-  useLoadedSkill: (name, enabled) => lookup(name, enabled),
+  useLoadedSkill: (id, enabled) => lookup(id, enabled),
 });
 
-function renderSkill(output = LOADED) {
+function renderSkill({ output = LOADED, skillId }: { output?: string; skillId?: string } = {}) {
   return render(
     <MessagePartsHostProvider host={host}>
       <SkillCall
         initialProgress={1}
         isSubmitting={false}
         args={JSON.stringify({ skillName: 'release-notes' })}
+        skillId={skillId}
         output={output}
       />
     </MessagePartsHostProvider>,
@@ -71,14 +73,14 @@ describe('SkillCall', () => {
   beforeEach(() => {
     open.mockReset();
     lookup.mockReset();
-    lookup.mockImplementation((_name, enabled) => (enabled ? SKILL : undefined));
+    lookup.mockImplementation((id, enabled) => (enabled && id === SKILL_ID ? SKILL : undefined));
     share = {};
   });
 
-  it('shows the loaded skill instructions and opens the skill', () => {
-    renderSkill();
+  it('shows the instructions of the skill the call loaded and opens it', () => {
+    renderSkill({ skillId: SKILL_ID });
 
-    expect(lookup).toHaveBeenLastCalledWith('release-notes', true);
+    expect(lookup).toHaveBeenLastCalledWith(SKILL_ID, true);
     expect(screen.getByText('com_ui_skill_current_version')).toBeInTheDocument();
     expect(screen.getByText(/Summarize merged PRs\./)).toBeInTheDocument();
     expect(screen.queryByText(/loaded\. Follow the instructions/)).not.toBeInTheDocument();
@@ -88,27 +90,40 @@ describe('SkillCall', () => {
   });
 
   it('keeps an execution warning in the output beside the instructions', () => {
-    renderSkill(
-      `${LOADED}\n\n` +
+    renderSkill({
+      skillId: SKILL_ID,
+      output:
+        `${LOADED}\n\n` +
         "Note: this skill's bundled files could not be loaded into the code environment.",
-    );
+    });
 
     expect(screen.getByText(/Summarize merged PRs\./)).toBeInTheDocument();
     expect(screen.getByText(/bundled files could not be loaded/)).toBeInTheDocument();
   });
 
-  it('falls back to the tool output when the host names no skill', () => {
-    lookup.mockReturnValue(undefined);
-    renderSkill();
+  it('falls back to the tool output when the reader cannot open the skill', () => {
+    renderSkill({ skillId: 'aaaaaaaaaaaaaaaaaaaaaaaa' });
 
+    expect(lookup).toHaveBeenLastCalledWith('aaaaaaaaaaaaaaaaaaaaaaaa', true);
     expect(screen.getByText('com_ui_output')).toBeInTheDocument();
     expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
   });
 
-  it("keeps the output instead of the viewer's same-named skill in a shared transcript", () => {
-    share = { isSharedConvo: true, shareId: 'share-1' };
+  it('keeps the output of a call saved without a skill id and looks nothing up', () => {
     renderSkill();
+
+    expect(lookup).toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalledWith(expect.anything(), true);
+    expect(screen.getByText('com_ui_output')).toBeInTheDocument();
+    expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_skill_current_version')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the output in a shared transcript and looks nothing up', () => {
+    share = { isSharedConvo: true, shareId: 'share-1' };
+    renderSkill({ skillId: SKILL_ID });
 
     expect(lookup).toHaveBeenCalled();
     expect(lookup).not.toHaveBeenCalledWith(expect.anything(), true);
