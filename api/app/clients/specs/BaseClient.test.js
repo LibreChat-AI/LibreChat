@@ -414,7 +414,7 @@ describe('BaseClient', () => {
         });
       const wholeConversationQuery = [
         { conversationId, user: 'user-1' },
-        '+privateTextTokens +trigger',
+        '+privateTextTokens +trigger +providerItems',
       ];
       const messageIds = (messages) => messages.map((message) => message.messageId);
 
@@ -429,7 +429,7 @@ describe('BaseClient', () => {
         const [filter, select] = getMessages.mock.calls[0];
         expect(filter).toMatchObject({ conversationId, user: 'user-1' });
         expect([...filter.messageId.$in].sort()).toEqual(['a1', 'a2b', 'u1', 'u2b']);
-        expect(select).toBe('+privateTextTokens +trigger');
+        expect(select).toBe('+privateTextTokens +trigger +providerItems');
         expect(messageIds(result)).toEqual(['u1', 'a1', 'u2b', 'a2b']);
         expect(messageIds(client.onHistoryLoaded.mock.calls[0][0])).toEqual([
           'u1',
@@ -1771,7 +1771,7 @@ describe('BaseClient', () => {
 
       expect(getMessages).toHaveBeenCalledWith(
         { conversationId, user },
-        '+privateTextTokens +trigger',
+        '+privateTextTokens +trigger +providerItems',
       );
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');
@@ -2765,6 +2765,53 @@ describe('BaseClient', () => {
         );
       }
       expect(getConvo).not.toHaveBeenCalled();
+    });
+
+    test('saveMessageToDatabase inserts the turn user message at the turn start time', async () => {
+      const user = { id: 'user-id' };
+      const turnStartedAt = Date.parse('2026-03-10T09:00:00.000Z');
+      const req = {
+        user,
+        body: {},
+        turnStartedAt,
+        config: { endpoints: { agents: { promptCache: { stableContext: true } } } },
+      };
+      saveMessage.mockReset().mockResolvedValue({ messageId: 'msg-1' });
+      saveConvo.mockReset().mockResolvedValue({ conversationId: 'convo-id' });
+
+      TestClient = initializeFakeClient(apiKey, { ...options, endpoint: 'openai', req }, []);
+
+      await TestClient.saveMessageToDatabase(
+        { messageId: 'msg-1', conversationId: 'convo-id', isCreatedByUser: true, text: 'hi' },
+        { endpoint: 'openai' },
+        user,
+      );
+      expect(saveMessage).toHaveBeenLastCalledWith(
+        expect.any(Object),
+        expect.any(Object),
+        expect.objectContaining({ createdAtOnInsert: new Date(turnStartedAt) }),
+      );
+
+      await TestClient.saveMessageToDatabase(
+        { messageId: 'response-1', conversationId: 'convo-id', text: 'reply' },
+        { endpoint: 'openai' },
+        user,
+      );
+      expect(saveMessage.mock.lastCall[2]).not.toHaveProperty('createdAtOnInsert');
+
+      TestClient = initializeFakeClient(
+        apiKey,
+        { ...options, endpoint: 'openai', req: { ...req, config: {} } },
+        [],
+      );
+      await TestClient.saveMessageToDatabase(
+        { messageId: 'msg-2', conversationId: 'convo-id', isCreatedByUser: true, text: 'hi' },
+        { endpoint: 'openai' },
+        user,
+      );
+      expect(saveMessage.mock.lastCall[2]).not.toHaveProperty('createdAtOnInsert');
+      saveMessage.mockReset();
+      saveConvo.mockReset();
     });
 
     test('userMessagePromise is awaited before saving response message', async () => {
