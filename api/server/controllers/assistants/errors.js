@@ -1,6 +1,6 @@
 // errorHandler.js
 const { logger } = require('@librechat/data-schemas');
-const { getTransactionsConfig } = require('@librechat/api');
+const { getTransactionsConfig, createRecoveryClaim } = require('@librechat/api');
 const { CacheKeys, ViolationTypes, ContentTypes } = require('librechat-data-provider');
 const { recordUsage, checkMessageGaps } = require('~/server/services/Threads');
 const { sendResponse } = require('~/server/middleware/error');
@@ -35,7 +35,7 @@ const { getConvo } = require('~/models');
  * @returns {(error: Error) => Promise<void>} The error handler function
  */
 const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/chat/' }) => {
-  const cache = getLogStores(CacheKeys.ABORT_KEYS);
+  const claim = createRecoveryClaim(getLogStores(CacheKeys.ABORT_KEYS));
 
   /**
    * Handles errors that occur during the chat process
@@ -103,12 +103,11 @@ const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/ch
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     try {
-      const status = await cache.get(cacheKey);
-      if (status === 'cancelled') {
-        logger.debug(`[${originPath}] Run already cancelled`);
+      const settled = Boolean(getContext().completedRun);
+      if (!(await claim({ key: cacheKey, thread_id, run_id, settled }))) {
+        logger.debug(`[${originPath}] Run already stopped or recovered`);
         return res.end();
       }
-      await cache.delete(cacheKey);
       const cancelledRun = await openai.beta.threads.runs.cancel(run_id, { thread_id });
       logger.debug(`[${originPath}] Cancelled run:`, cancelledRun);
     } catch (error) {

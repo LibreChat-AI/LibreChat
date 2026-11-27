@@ -20,6 +20,7 @@ const {
   resolveAssistantProjectTurn,
   joinChatProjectInstructions,
   applyForcedTemporaryRequest,
+  createRecoveryClaim,
   getAssistantRun,
 } = require('@librechat/api');
 const {
@@ -132,6 +133,7 @@ const chatV1 = async (req, res) => {
 
   const cache = getLogStores(CacheKeys.ABORT_KEYS);
   const cacheKey = `${req.user.id}:${conversationId}`;
+  const claim = createRecoveryClaim(cache);
   /** Registered with the account cleanup barrier by the route, so deletion can stop and drain it. */
   const assistantRun = getAssistantRun(req);
 
@@ -188,12 +190,10 @@ const chatV1 = async (req, res) => {
     await sleep(2000);
 
     try {
-      const status = await cache.get(cacheKey);
-      if (status === 'cancelled') {
-        logger.debug('[/assistants/chat/] Run already cancelled');
+      if (!(await claim({ key: cacheKey, thread_id, run_id, settled: Boolean(completedRun) }))) {
+        logger.debug('[/assistants/chat/] Run already stopped or recovered');
         return res.end();
       }
-      await cache.delete(cacheKey);
       const cancelledRun = await openai.beta.threads.runs.cancel(run_id, { thread_id });
       logger.debug('[/assistants/chat/] Cancelled run:', cancelledRun);
     } catch (error) {

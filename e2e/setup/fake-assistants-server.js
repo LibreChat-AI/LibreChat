@@ -24,6 +24,10 @@ const runs = new Map();
 const runSteps = new Map();
 /** Runs whose steps cannot be read, so stopping them fails once the run is cancelled. */
 const unreadableSteps = new Set();
+/** Runs that report the tokens they used once they end, so each read of the run can bill them. */
+const billedRuns = new Set();
+/** What an `E2E_ASSISTANT_USAGE` run reports it used once it ends. */
+const RUN_USAGE = { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 };
 const requests = [];
 
 function now() {
@@ -335,6 +339,8 @@ const PARTS_TOOL_CALL = {
 };
 /** How many deltas an `E2E_ASSISTANT_DROP` run streams before its connection is cut. */
 const DROP_AFTER_CHUNKS = 8;
+/** How many deltas an `E2E_ASSISTANT_BRIEF` run streams before it completes. */
+const BRIEF_CHUNKS = 12;
 
 function toolCallsStep({ id, runId, threadId, assistantId, status, toolCalls }) {
   return {
@@ -352,10 +358,20 @@ function toolCallsStep({ id, runId, threadId, assistantId, status, toolCalls }) 
  * `E2E_ASSISTANT_PARTS` makes the run write a whole message (`apart-one`) and call a tool before
  * the message it streams, so a stop reads back a run of several messages. `E2E_ASSISTANT_DROP`
  * cuts the connection after a few deltas, which the app answers by reading the run back itself.
+ * `E2E_ASSISTANT_BRIEF` completes the run after three seconds, and `E2E_ASSISTANT_USAGE` makes it
+ * report usage once it ends, so the app bills it.
  */
 function sendSlowAssistantStream(
   res,
-  { assistant, thread, stepsFail = false, parts = false, drop = false },
+  {
+    assistant,
+    thread,
+    stepsFail = false,
+    parts = false,
+    drop = false,
+    brief = false,
+    billed = false,
+  },
 ) {
   const runId = createId('run');
   const ids = { runId, threadId: thread.id, assistantId: assistant.id };
@@ -374,6 +390,9 @@ function sendSlowAssistantStream(
   runs.set(runId, run);
   if (stepsFail) {
     unreadableSteps.add(runId);
+  }
+  if (billed) {
+    billedRuns.add(runId);
   }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -428,7 +447,12 @@ function sendSlowAssistantStream(
   const finish = (status) => {
     clearInterval(timer);
     slowRuns.delete(runId);
-    const settled = { ...run, status, cancelled_at: status === 'cancelled' ? now() : null };
+    const settled = {
+      ...run,
+      status,
+      cancelled_at: status === 'cancelled' ? now() : null,
+      usage: billed ? RUN_USAGE : run.usage,
+    };
     runs.set(runId, settled);
     runSteps.set(runId, [...earlierSteps, runStep({ ...step, status })]);
     sendEvent(status === 'cancelled' ? 'thread.run.cancelled' : 'thread.run.completed', settled);
@@ -451,7 +475,7 @@ function sendSlowAssistantStream(
       res.destroy();
       return;
     }
-    if (index >= 120) {
+    if (index >= (brief ? BRIEF_CHUNKS : 120)) {
       finish('completed');
     }
   }, 250);
@@ -497,6 +521,7 @@ const server = http.createServer(async (req, res) => {
     runs.clear();
     runSteps.clear();
     unreadableSteps.clear();
+    billedRuns.clear();
     requests.length = 0;
     sendJson(res, 200, { ok: true });
     return;
@@ -672,6 +697,8 @@ const server = http.createServer(async (req, res) => {
           stepsFail: prompt.includes('E2E_ASSISTANT_STEPS_FAIL'),
           parts: prompt.includes('E2E_ASSISTANT_PARTS'),
           drop: prompt.includes('E2E_ASSISTANT_DROP'),
+          brief: prompt.includes('E2E_ASSISTANT_BRIEF'),
+          billed: prompt.includes('E2E_ASSISTANT_USAGE'),
         });
         return;
       }
@@ -696,6 +723,9 @@ const server = http.createServer(async (req, res) => {
         slow.finish('cancelled');
       } else {
         runs.set(runId, cancelled);
+      }
+      if (billedRuns.has(runId)) {
+        runs.set(runId, { ...runs.get(runId), usage: RUN_USAGE });
       }
       sendJson(res, 200, runs.get(runId) ?? cancelled);
       return;

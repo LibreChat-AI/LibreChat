@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
@@ -8,29 +9,35 @@ import {
   isAssistantsStop,
 } from '../helpers';
 import { openChatHistory, openSidebar } from './sidebar';
+import { withMongo } from '../db';
 
 type CreatedAssistant = { id: string };
 
 const MODEL = 'gpt-4o-mini';
+const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 
 const uniqueLabel = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-async function createAssistant(page: Page, name: string): Promise<CreatedAssistant> {
+async function createAssistant(
+  page: Page,
+  name: string,
+  version: 'v1' | 'v2' = 'v2',
+): Promise<CreatedAssistant> {
   await page.goto('/c/new', { timeout: 10000 });
   const token = await getAccessToken(page);
   return requestJson<CreatedAssistant>(page, {
-    path: '/api/assistants/v2',
+    path: `/api/assistants/${version}`,
     token,
     method: 'POST',
     body: { endpoint: 'assistants', model: MODEL, name },
   });
 }
 
-async function deleteAssistant(page: Page, assistantId: string) {
+async function deleteAssistant(page: Page, assistantId: string, version: 'v1' | 'v2' = 'v2') {
   const token = await getAccessToken(page);
   await requestJson(page, {
-    path: `/api/assistants/v2/${encodeURIComponent(assistantId)}?endpoint=assistants&model=${MODEL}`,
+    path: `/api/assistants/${version}/${encodeURIComponent(assistantId)}?endpoint=assistants&model=${MODEL}`,
     token,
     method: 'DELETE',
     body: { endpoint: 'assistants' },
@@ -109,6 +116,94 @@ async function stopRun(page: Page): Promise<number> {
   });
   return stopped.status();
 }
+
+const PROVIDER = `http://127.0.0.1:${process.env.E2E_ASSISTANTS_PORT || '8890'}`;
+
+type ProviderRequest = { method: string; path: string; body?: { assistant_id?: string } };
+
+/** How many runs the app started for `assistantId`, and how often it read back (and billed)
+ *  each run it read: once by the stop, or once by the request that recovers a failed run. */
+async function runReads(page: Page, assistantId: string) {
+  const response = await page.request.get(`${PROVIDER}/__e2e/requests`);
+  const { requests } = (await response.json()) as { requests: ProviderRequest[] };
+  const threads = new Set<string>();
+  let runs = 0;
+  for (const { method, path, body } of requests) {
+    const thread = path.match(/^\/v1\/threads\/([^/]+)\/runs$/)?.[1];
+    if (method === 'POST' && thread && body?.assistant_id === assistantId) {
+      threads.add(thread);
+      runs += 1;
+    }
+  }
+  const reads = new Map<string, number>();
+  for (const { method, path } of requests) {
+    const [, thread, run] = path.match(/^\/v1\/threads\/([^/]+)\/runs\/([^/]+)$/) ?? [];
+    if (method === 'GET' && run && threads.has(thread)) {
+      reads.set(run, (reads.get(run) ?? 0) + 1);
+    }
+  }
+  return { runs, reads: [...reads.values()] };
+}
+
+/** Sends `text` to an assistant through a chat route the way an API client does, and drops the
+ *  connection once the stream carries `until`. Resolves with the conversation the turn created. */
+async function sendAndDrop(
+  page: Page,
+  {
+    version,
+    assistantId,
+    text,
+    until,
+  }: { version: 'v1' | 'v2'; assistantId: string; text: string; until: string },
+): Promise<string> {
+  const controller = new AbortController();
+  const response = await fetch(new URL(`/api/assistants/${version}/chat`, page.url()), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${await getAccessToken(page)}`,
+      'Content-Type': 'application/json',
+      /** The chat routes refuse a client that does not identify as a browser. */
+      'User-Agent': await page.evaluate(() => navigator.userAgent),
+    },
+    body: JSON.stringify({
+      text,
+      sender: 'User',
+      endpoint: 'assistants',
+      model: MODEL,
+      assistant_id: assistantId,
+      messageId: randomUUID(),
+      parentMessageId: NO_PARENT,
+      conversationId: null,
+      isCreatedByUser: true,
+      clientTimestamp: new Date().toISOString(),
+    }),
+    signal: controller.signal,
+  });
+  expect(response.status).toBe(200);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let transcript = '';
+  try {
+    while (!transcript.includes(until)) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      transcript += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    controller.abort();
+  }
+  return /"conversationId":"([0-9a-f-]{36})"/.exec(transcript)?.[1] ?? '';
+}
+
+/** How many transactions billing wrote for the conversation: two (prompt, completion) per read. */
+const billedFor = (conversationId: string) =>
+  withMongo((db) => db.collection('transactions').countDocuments({ conversationId }));
+
+/** A request that closes before its run settles checks the run's stop marker 2 s later, then
+ *  recovers the run if nothing else did; counting waits past that check and its read. */
+const RECOVERY_CHECK_MS = 6_000;
 
 /** A run that writes a whole message (`apart-one`), calls a tool, then streams a second one. */
 const PARTS = 'E2E_ASSISTANT_SLOW:E2E_ASSISTANT_PARTS';
@@ -478,9 +573,6 @@ test.describe('assistants stream', () => {
       await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
       expect(await stopRun(page)).toBe(200);
       await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
-      /** The stopped request checks the run's stop marker again 2 s after it closes, and a run
-       *  started before that loses its own marker to the check, so its stop finds no run. */
-      await page.waitForTimeout(3_000);
 
       await send(page, second);
       await expect(messagesView(page).getByText(second)).toBeVisible({ timeout: 20_000 });
@@ -517,6 +609,127 @@ test.describe('assistants stream', () => {
       await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
       await expect(messagesView(page).getByText(/apart-one/)).toHaveCount(1);
       expect(await savedReplyParts(page)).toEqual([RUN_PARTS]);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a run sent right after a stop can be stopped too, and each run is read back and kept once @scenario:assistants-run-sent-right-after-stop-stops', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('assistant-stop-again');
+    const second = `E2E_ASSISTANT_SLOW:second-${label}`;
+    const assistant = await createAssistant(page, `E2E stop again ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, `E2E_ASSISTANT_SLOW:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      expect(await stopRun(page)).toBe(200);
+
+      /** The next run starts while the stopped request is still settling, and streams on past the
+       *  moment that request checks its own run again, 2 s after it closed. */
+      await send(page, second);
+      await expect(messagesView(page).getByText(/achunk-012/)).toHaveCount(1, { timeout: 20_000 });
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      expect(stopped.status()).toBe(200);
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+        timeout: 20_000,
+      });
+
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect(await runReads(page, assistant.id)).toEqual({ runs: 2, reads: [1, 1] });
+
+      /** The chat keeps one reply per run, each as it was when its stop cut it. */
+      await page.reload();
+      await expect(messagesView(page).getByText(second)).toBeVisible({ timeout: 20_000 });
+      expect(await savedReplyParts(page)).toEqual([['text'], ['text']]);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('leaving a chat right after its run failed reads back and bills that run once @scenario:assistants-left-failed-run-recovered-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-drop-leave');
+    const assistant = await createAssistant(page, `E2E drop leave ${label}`);
+    try {
+      /** The fake Assistants API cuts the stream, and the app cancels, bills and reads the run back. */
+      const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_DROP:E2E_ASSISTANT_USAGE:${label}`;
+      await sendToAssistant(page, assistant.id, prompt);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      const conversationId = new URL(page.url()).pathname.split('/').pop() ?? '';
+      /** Leaving closes the run's stream while its request is still settling. */
+      await startNewChat(page);
+
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      const billed = await billedFor(conversationId);
+      expect({ ...(await runReads(page, assistant.id)), billed }).toEqual({
+        runs: 1,
+        reads: [1],
+        billed: 2,
+      });
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a v1 client that leaves right after its run failed has that run read back and billed once @scenario:assistants-v1-left-failed-run-recovered-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-v1-drop-leave');
+    const assistant = await createAssistant(page, `E2E v1 drop leave ${label}`, 'v1');
+    try {
+      const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_DROP:E2E_ASSISTANT_USAGE:${label}`;
+      const conversationId = await sendAndDrop(page, {
+        version: 'v1',
+        assistantId: assistant.id,
+        text: prompt,
+        until: '"final":true',
+      });
+      expect(conversationId).toBeTruthy();
+
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      const billed = await billedFor(conversationId);
+      expect({ ...(await runReads(page, assistant.id)), billed }).toEqual({
+        runs: 1,
+        reads: [1],
+        billed: 2,
+      });
+    } finally {
+      await deleteAssistant(page, assistant.id, 'v1');
+    }
+  });
+
+  test('a client whose connection drops just before its run ends has that run billed once @scenario:assistants-dropped-connection-before-run-ends-bills-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-cut-late');
+    const assistant = await createAssistant(page, `E2E cut late ${label}`);
+    try {
+      /** The run completes a second after the connection drops, inside the 2 s the closed request
+       *  waits before it would recover the run itself. */
+      const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_BRIEF:E2E_ASSISTANT_USAGE:${label}`;
+      const conversationId = await sendAndDrop(page, {
+        version: 'v2',
+        assistantId: assistant.id,
+        text: prompt,
+        until: 'achunk-008',
+      });
+      expect(conversationId).toBeTruthy();
+
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect(await billedFor(conversationId)).toBe(2);
     } finally {
       await deleteAssistant(page, assistant.id);
     }
