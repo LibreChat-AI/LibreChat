@@ -17,7 +17,7 @@ const {
   getBalanceConfig,
   selectOpenIdRole,
   getTokenCacheTtlMs,
-  recordIdpRoleChange,
+  writeIdpRoleChange,
   applyOpenIDProfile,
   getAvatarSaveParams,
   isEmailDomainAllowed,
@@ -866,12 +866,14 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     }
   }
 
-  user = await updateUser(user._id, user);
-  await recordIdpRoleChange({
-    recordAuditEntry,
+  user = await writeIdpRoleChange({
     userId: String(user._id),
-    previousRole: roleBeforeClaims,
-    role: user.role,
+    update: user,
+    observedRole: roleBeforeClaims,
+    updateUser,
+    findUser,
+    getRolesByNames: findRolesByNames,
+    recordAuditEntry,
     source: 'openid_login',
     tenantId: user.tenantId,
   });

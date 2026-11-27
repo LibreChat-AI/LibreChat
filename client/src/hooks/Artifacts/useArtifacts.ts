@@ -293,7 +293,8 @@ export default function useArtifacts() {
     if (latestArtifact?.messageId !== latestMessageId) {
       return;
     }
-    if (latestArtifact.content === lastContentRef.current && !justFinishedSubmitting) {
+    /* Nothing new, even as the reply ends: an artifact the reader chose meanwhile stays open. */
+    if (latestArtifact.content === lastContentRef.current) {
       return;
     }
     lastContentRef.current = latestArtifact?.content ?? null;

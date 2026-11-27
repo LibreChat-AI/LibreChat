@@ -1661,6 +1661,67 @@ describe('Conversation Utilities', () => {
   });
 });
 
+describe("findConvoInAllQueries on the message list's per-frame path", () => {
+  const stamped = (lastResponseAt: string): TConversation =>
+    ({ conversationId: 'open', title: 'Open', lastResponseAt }) as TConversation;
+  const list = (convo?: TConversation): InfiniteData<ConversationCursorData> => ({
+    pageParams: [undefined],
+    pages: [{ conversations: convo ? [convo] : [], nextCursor: null }],
+  });
+
+  it.each([
+    [
+      'a chats list',
+      ['allConversations', { isArchived: false }],
+      list(stamped('2026-11-21T10:00:00.000Z')),
+    ],
+    ['the archived list', ['archivedConversations', {}], list(stamped('2026-11-21T10:00:00.000Z'))],
+    [
+      'the pinned section',
+      ['pinnedConversations', {}],
+      { conversations: [stamped('2026-11-21T10:00:00.000Z')] },
+    ],
+    ['its running query', ['runningConversation', 'open'], stamped('2026-11-21T10:00:00.000Z')],
+    ['its own point query', ['conversation', 'open'], stamped('2026-11-21T10:00:00.000Z')],
+  ])('finds a conversation held only by %s, walking the cache once', (_name, queryKey, data) => {
+    const client = new QueryClient();
+    for (let index = 0; index < 20; index++) {
+      client.setQueryData(['messages', `other-${index}`], []);
+    }
+    client.setQueryData(['allConversations', { tags: ['work'] }], list());
+    client.setQueryData(queryKey, data);
+    /** The first lookup also starts the client's authority tracking, which reads the cache once. */
+    findConvoInAllQueries(client, 'open');
+    const cache = client.getQueryCache();
+    const walks = [
+      jest.spyOn(cache, 'getAll'),
+      jest.spyOn(cache, 'find'),
+      jest.spyOn(cache, 'findAll'),
+    ];
+
+    expect(findConvoInAllQueries(client, 'open')?.lastResponseAt).toBe('2026-11-21T10:00:00.000Z');
+    expect(findConvoInAllQueries(client, 'absent')).toBeUndefined();
+
+    /** Two lookups, one walk each: `find`, `findAll` and `getQueryData` all walk every query. */
+    expect(walks.map((walk) => walk.mock.calls.length)).toEqual([2, 0, 0]);
+    client.clear();
+  });
+
+  it('still prefers the copy with the newest reply across every place a conversation is cached', () => {
+    const client = new QueryClient();
+    client.setQueryData(['allConversations', {}], list(stamped('2026-11-21T10:00:00.000Z')));
+    client.setQueryData(['archivedConversations', {}], list(stamped('2026-11-21T09:00:00.000Z')));
+    client.setQueryData(['pinnedConversations', {}], {
+      conversations: [stamped('2026-11-21T11:00:00.000Z')],
+    });
+    client.setQueryData(['runningConversation', 'open'], stamped('2026-11-21T12:00:00.000Z'));
+    client.setQueryData(['conversation', 'open'], stamped('2026-11-21T08:00:00.000Z'));
+
+    expect(findConvoInAllQueries(client, 'open')?.lastResponseAt).toBe('2026-11-21T12:00:00.000Z');
+    client.clear();
+  });
+});
+
 describe('conversation snapshot read authority', () => {
   it('fences reads already pending at request start and drops settled records', () => {
     const client = new QueryClient();

@@ -2,6 +2,7 @@ import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState }
 import { RefreshCw } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { Button, Spinner } from '@librechat/client';
+import { NAV_CLEARANCE } from '@librechat/chat/components';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import ArtifactRow from '~/components/Chat/Messages/Content/Parts/ArtifactRow';
@@ -389,6 +390,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
                 onReset={handleResetZoom}
                 className={cn(
                   'absolute inset-e-2 bottom-2 z-10 transition-opacity duration-200',
+                  NAV_CLEARANCE.edge,
                   showControls ? 'opacity-100' : 'pointer-events-none opacity-0',
                 )}
               />
@@ -452,7 +454,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
           </div>
         ) : (
           <div className="border-border-light bg-surface-tertiary border-t p-4">
-            <div className="mb-2 flex items-center justify-between">
+            <div className={cn('mb-2 flex items-center justify-between', NAV_CLEARANCE.pad)}>
               <span className="text-text-destructive font-semibold">
                 {localize('com_ui_mermaid_failed')}
               </span>
@@ -559,6 +561,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
             onReset={handleResetZoom}
             className={cn(
               'absolute inset-e-2 bottom-2 z-10 transition-opacity duration-200',
+              NAV_CLEARANCE.edge,
               showControls ? 'opacity-100' : 'pointer-events-none opacity-0',
             )}
           />

@@ -86,6 +86,8 @@ beforeAll(async () => {
   SystemGrant = dbModels.SystemGrant;
   Config = dbModels.Config;
   db = require('~/models');
+  /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+  await mongoose.models.ResourceLock.createIndexes();
 
   // Import permission service
   const permissionService = require('~/server/services/PermissionService');

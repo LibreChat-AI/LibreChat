@@ -7,13 +7,27 @@
  */
 export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center gap-2.5';
 
+/**
+ * At md and up, MessageNav lays its rail over the inline end of the message
+ * list, and its 68px box takes every click there. `MessagesView` marks the
+ * list it lays a rail over with `data-message-nav`, so a control at the end of
+ * a block keeps 8px clear of the rail (in full-width chat) only where a rail
+ * can sit. `pad` moves the content of a row or box that ends in a control;
+ * `edge` moves a box, or a control pinned with absolute positioning, on top of
+ * its own offset. A user turn's column takes the clearance for everything in
+ * it, so nothing inside one adds its own.
+ */
+export const NAV_CLEARANCE = {
+  pad: 'md:in-[[data-message-nav]]:not-in-[.user-turn]:pe-17',
+  edge: 'md:in-[[data-message-nav]]:not-in-[.user-turn]:me-17',
+} as const;
+
 /** The absolutely positioned line inside a tool row, shared by every progress header. */
 export const PROGRESS_TEXT_WRAPPER =
   'progress-text-wrapper text-text-secondary relative -mt-[0.046875rem] h-5 w-full leading-5';
 
 /** Caps that line at the message column while leaving the focus ring visible. */
-export const PROGRESS_TEXT_CONTENT =
-  'progress-text-content absolute top-0 right-0 left-0 max-w-full overflow-visible whitespace-nowrap';
+export const PROGRESS_TEXT_CONTENT: string = `progress-text-content absolute top-0 right-0 left-0 max-w-full overflow-visible whitespace-nowrap ${NAV_CLEARANCE.pad}`;
 
 /**
  * Grid collapse for a disclosure panel. The rules live in `parts.css`; the
@@ -22,8 +36,8 @@ export const PROGRESS_TEXT_CONTENT =
  */
 export const DISCLOSURE_COLLAPSE = 'disclosure-collapse';
 
-/** Leave an 8px gap beside MessageNav's hit area in full-width chat. */
-export const ARTIFACT_ROW_NAV_SPACING = 'pe-3 md:pe-17';
+/** An artifact row's own end padding plus the rail clearance. */
+export const ARTIFACT_ROW_NAV_SPACING: string = `pe-3 ${NAV_CLEARANCE.pad}`;
 
 /** Behavior hook for header glyphs, independent of their layout. */
 export const FOLD_GLYPH_CLASS = 'fold-glyph';

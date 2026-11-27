@@ -5,7 +5,7 @@ import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { LocalizeFunction } from '~/common';
 import {
   clearMessagesCache,
-  clearArchivedConversationMessagesCache,
+  clearNewConversationAlias,
   clearDeletedConversationMessagesCache,
   getMessageAriaLabel,
   getHeaderPrefixForScreenReader,
@@ -104,7 +104,7 @@ describe('clearDeletedConversationMessagesCache', () => {
   });
 });
 
-describe('clearArchivedConversationMessagesCache', () => {
+describe('clearNewConversationAlias', () => {
   it('clears the new-conversation cache that still shows the archived chat', () => {
     const queryClient = new QueryClient();
     const conversationId = 'conversation-1';
@@ -115,7 +115,7 @@ describe('clearArchivedConversationMessagesCache', () => {
       messages.map((message) => ({ ...message })),
     );
 
-    clearArchivedConversationMessagesCache(queryClient, conversationId);
+    clearNewConversationAlias(queryClient, conversationId);
 
     expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual([]);
   });
@@ -127,7 +127,7 @@ describe('clearArchivedConversationMessagesCache', () => {
     queryClient.setQueryData([QueryKeys.messages, conversationId], messages);
     queryClient.setQueryData([QueryKeys.messages, Constants.NEW_CONVO], messages);
 
-    clearArchivedConversationMessagesCache(queryClient, conversationId);
+    clearNewConversationAlias(queryClient, conversationId);
 
     expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual([]);
   });
@@ -139,7 +139,7 @@ describe('clearArchivedConversationMessagesCache', () => {
     queryClient.setQueryData([QueryKeys.messages, conversationId], messages);
     queryClient.setQueryData([QueryKeys.messages, Constants.NEW_CONVO], messages);
 
-    clearArchivedConversationMessagesCache(queryClient, conversationId);
+    clearNewConversationAlias(queryClient, conversationId);
 
     expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toEqual(messages);
   });
@@ -156,7 +156,7 @@ describe('clearArchivedConversationMessagesCache', () => {
     );
     queryClient.setQueryData([QueryKeys.messages, Constants.NEW_CONVO], newConversationMessages);
 
-    clearArchivedConversationMessagesCache(queryClient, conversationId);
+    clearNewConversationAlias(queryClient, conversationId);
 
     expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual(
       newConversationMessages,

@@ -46,4 +46,30 @@ describe('schedule consent wiring', () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenLastCalledWith({ code: 'consent_forbidden' });
   });
+
+  it("reads a schedule's grant through its own storage, which the model methods do not hold", async () => {
+    const mongoose = require('mongoose');
+    const findOne = jest.fn(() => ({
+      select: () => ({ read: () => ({ lean: async () => null }) }),
+    }));
+    const Schedule = mongoose.models.Schedule;
+    mongoose.models.Schedule = { findOne };
+    try {
+      const { execution } = require('./consent');
+      const identity = {
+        scheduleId: 'schedule_a',
+        ownerId: 'owner',
+        tenantId: null,
+        agentId: 'agent_a',
+        invocationMode: 'delegated',
+      };
+      await execution.resolve(identity, 'invoke').catch(() => undefined);
+      expect(findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'schedule_a', user: 'owner', tenantId: null }),
+      );
+    } finally {
+      if (Schedule) mongoose.models.Schedule = Schedule;
+      else delete mongoose.models.Schedule;
+    }
+  });
 });

@@ -8,8 +8,8 @@ import {
   useParentSubagents,
 } from '@librechat/chat/react';
 import type { TaskRow } from './rows';
-import { findTaskTarget, focusTaskTarget, scrollToTaskTarget } from './jump';
 import useBackgroundTasks from './useTasks';
+import { visitTaskTarget } from './jump';
 import { useTaskExpiry } from './clock';
 import { useLocalize } from '~/hooks';
 import Section from './Section';
@@ -98,13 +98,10 @@ function BackgroundTasksButton({
       openSubagentPanel({ ...selection, isSubmitting: false });
       return true;
     }
-    const target = findTaskTarget(row);
-    if (target == null) return false;
-    finalFocusRef.current = null;
-    focusTaskTarget(target);
-    popover.hide();
-    scrollToTaskTarget(target);
-    return true;
+    return visitTaskTarget(row, () => {
+      finalFocusRef.current = null;
+      popover.hide();
+    });
   };
   const card = (row: (typeof rows)[number]) => (
     <TaskCard

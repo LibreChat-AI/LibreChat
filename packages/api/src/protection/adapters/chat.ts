@@ -1,5 +1,6 @@
 import type { ContentFieldMap, ContentSource, TextContentFragment } from '../types';
 import type { ModelParameterContentInput } from './submissions';
+import type { VisitNestedStringsBudget } from './nested';
 import {
   extractModelParameterContent,
   extractToolArgumentContent,
@@ -18,6 +19,29 @@ export interface ChatSubmissionDecision {
   readonly editedArguments?: unknown;
 }
 
+type ChatExample =
+  | {
+      readonly input?: string | { readonly content?: string };
+      readonly output?: string | { readonly content?: string };
+    }
+  | null
+  | undefined;
+
+/** The added conversation's own settings, which its agent receives as the primary's do. */
+interface AddedConversationBody extends ModelParameterContentInput {
+  readonly promptPrefix?: string | null;
+  readonly system?: string;
+  readonly context?: string | null;
+  readonly instructions?: string | null;
+  readonly additional_instructions?: string | null;
+  readonly greeting?: string;
+  readonly artifacts?: string;
+  readonly examples?: readonly ChatExample[];
+  readonly ephemeralAgent?: {
+    readonly artifacts?: string;
+  } | null;
+}
+
 export interface ChatSubmissionBody extends ModelParameterContentInput {
   readonly input?: string;
   readonly text?: string;
@@ -31,25 +55,11 @@ export interface ChatSubmissionBody extends ModelParameterContentInput {
   readonly greeting?: string;
   readonly artifacts?: string;
   readonly manualSkills?: readonly unknown[];
-  readonly examples?: readonly (
-    | {
-        readonly input?: string | { readonly content?: string };
-        readonly output?: string | { readonly content?: string };
-      }
-    | null
-    | undefined
-  )[];
+  readonly examples?: readonly ChatExample[];
   readonly ephemeralAgent?: {
     readonly artifacts?: string;
   } | null;
-  readonly addedConvo?: {
-    readonly promptPrefix?: string | null;
-    readonly additional_instructions?: string | null;
-    readonly artifacts?: string;
-    readonly ephemeralAgent?: {
-      readonly artifacts?: string;
-    } | null;
-  } | null;
+  readonly addedConvo?: AddedConversationBody | null;
   readonly editedContent?: {
     readonly text?: string;
   } | null;
@@ -75,6 +85,44 @@ function createFragment<Source extends ContentSource>(
     treatment,
     provenance: 'user',
   } as Extract<TextContentFragment, { source: Source }>;
+}
+
+/** Collects each example's input and output; `false` once the array exceeds the budget. */
+function appendExamples(
+  fragments: TextContentFragment[],
+  examples: unknown,
+  budget: VisitNestedStringsBudget,
+  id: string,
+  path: '' | '/addedConvo',
+): boolean {
+  return visitBoundedSubmittedArray<ChatExample>(examples, budget, (example, index) => {
+    const exampleInput =
+      typeof example?.input === 'string' ? example.input : example?.input?.content;
+    const exampleOutput =
+      typeof example?.output === 'string' ? example.output : example?.output?.content;
+    if (typeof exampleInput === 'string' && exampleInput.length > 0) {
+      fragments.push(
+        createFragment(
+          `${id}.${index}.input`,
+          `${path}/examples/${index}/input`,
+          exampleInput,
+          'prompt',
+          'example_input',
+        ),
+      );
+    }
+    if (typeof exampleOutput === 'string' && exampleOutput.length > 0) {
+      fragments.push(
+        createFragment(
+          `${id}.${index}.output`,
+          `${path}/examples/${index}/output`,
+          exampleOutput,
+          'prompt',
+          'example_output',
+        ),
+      );
+    }
+  });
 }
 
 function remapEditedArgumentFragments(
@@ -219,36 +267,13 @@ export function extractChatContent(
       createFragment('chat.greeting', '/greeting', body.greeting, 'prompt', 'greeting'),
     );
   }
-  const examplesComplete = visitBoundedSubmittedArray<
-    NonNullable<ChatSubmissionBody['examples']>[number]
-  >(body?.examples, submittedArrayBudget, (example, index) => {
-    const exampleInput =
-      typeof example?.input === 'string' ? example.input : example?.input?.content;
-    const exampleOutput =
-      typeof example?.output === 'string' ? example.output : example?.output?.content;
-    if (typeof exampleInput === 'string' && exampleInput.length > 0) {
-      fragments.push(
-        createFragment(
-          `chat.example.${index}.input`,
-          `/examples/${index}/input`,
-          exampleInput,
-          'prompt',
-          'example_input',
-        ),
-      );
-    }
-    if (typeof exampleOutput === 'string' && exampleOutput.length > 0) {
-      fragments.push(
-        createFragment(
-          `chat.example.${index}.output`,
-          `/examples/${index}/output`,
-          exampleOutput,
-          'prompt',
-          'example_output',
-        ),
-      );
-    }
-  });
+  const examplesComplete = appendExamples(
+    fragments,
+    body?.examples,
+    submittedArrayBudget,
+    'chat.example',
+    '',
+  );
   if (!examplesComplete) {
     traversalErrors.push(
       new ContentTraversalLimitError(
@@ -314,6 +339,68 @@ export function extractChatContent(
         body.addedConvo.ephemeralAgent.artifacts,
         'agent_instruction',
         'artifacts',
+      ),
+    );
+  }
+  /** The added conversation is parsed through its endpoint's schema like the
+   *  primary request, so whatever of these it keeps reaches its own model. */
+  const added = body?.addedConvo;
+  if (typeof added?.instructions === 'string' && added.instructions.length > 0) {
+    fragments.push(
+      createFragment(
+        'chat.added-conversation.instructions',
+        '/addedConvo/instructions',
+        added.instructions,
+        'agent_instruction',
+        'instructions',
+      ),
+    );
+  }
+  if (typeof added?.system === 'string' && added.system.length > 0) {
+    fragments.push(
+      createFragment(
+        'chat.added-conversation.system',
+        '/addedConvo/system',
+        added.system,
+        'prompt',
+        'system',
+      ),
+    );
+  }
+  if (typeof added?.context === 'string' && added.context.length > 0) {
+    fragments.push(
+      createFragment(
+        'chat.added-conversation.context',
+        '/addedConvo/context',
+        added.context,
+        'prompt',
+        'context',
+      ),
+    );
+  }
+  if (typeof added?.greeting === 'string' && added.greeting.length > 0) {
+    fragments.push(
+      createFragment(
+        'chat.added-conversation.greeting',
+        '/addedConvo/greeting',
+        added.greeting,
+        'prompt',
+        'greeting',
+      ),
+    );
+  }
+  const addedExamplesComplete = appendExamples(
+    fragments,
+    added?.examples,
+    submittedArrayBudget,
+    'chat.added-conversation.example',
+    '/addedConvo',
+  );
+  if (!addedExamplesComplete) {
+    traversalErrors.push(
+      new ContentTraversalLimitError(
+        [],
+        [{ source: 'prompt', fields: ['example_input', 'example_output'] }],
       ),
     );
   }
@@ -411,14 +498,19 @@ export function extractChatContent(
     );
   }
 
-  try {
-    fragments.push(...extractModelParameterContent(body));
-  } catch (error) {
-    if (!(error instanceof ContentTraversalLimitError)) {
-      throw error;
+  for (const [parameters, path] of [
+    [body, ''],
+    [body?.addedConvo, '/addedConvo'],
+  ] as const) {
+    try {
+      fragments.push(...extractModelParameterContent(parameters, path));
+    } catch (error) {
+      if (!(error instanceof ContentTraversalLimitError)) {
+        throw error;
+      }
+      fragments.push(...getContentTraversalFragments(error));
+      traversalErrors.push(error);
     }
-    fragments.push(...getContentTraversalFragments(error));
-    traversalErrors.push(error);
   }
 
   if (traversalErrors.length > 0) {

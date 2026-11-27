@@ -924,6 +924,16 @@ describe('agentsEndpointSchema', () => {
     ).toBe(false);
   });
 
+  it('leaves subagentSelfNesting on unless it is turned off', () => {
+    const omitted = agentsEndpointSchema.safeParse({});
+    expect(omitted.success && omitted.data.subagentSelfNesting).toBe(true);
+
+    const off = agentsEndpointSchema.safeParse({ subagentSelfNesting: false });
+    expect(off.success && off.data.subagentSelfNesting).toBe(false);
+
+    expect(agentsEndpointSchema.safeParse({ subagentSelfNesting: 'no' }).success).toBe(false);
+  });
+
   it('rejects empty or unknown stateful code environment allowlists', () => {
     expect(
       agentsEndpointSchema.safeParse({

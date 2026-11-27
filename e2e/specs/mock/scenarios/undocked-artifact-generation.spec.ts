@@ -4,7 +4,6 @@ import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   isAgentsStream,
-  messagesView,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -43,9 +42,7 @@ test('an edit carried through a response is saved once it ends @scenario:an-edit
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
   await sendMessageAndWaitForCompletion(page, 'E2E_HTML_ARTIFACT_REPLY', { timeout: 60000 });
 
-  await messagesView(page)
-    .getByRole('button', { name: new RegExp(HTML_ARTIFACT) })
-    .click();
+  /* The reply opens its artifact as it arrives. */
   const panel = page.getByRole('region', { name: HTML_ARTIFACT });
   await expect(panel).toBeVisible();
   await panel.getByRole('radio', { name: 'Code' }).click();

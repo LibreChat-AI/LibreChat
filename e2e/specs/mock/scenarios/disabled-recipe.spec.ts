@@ -94,4 +94,80 @@ test.describe('the disabled-recipe design rule', () => {
       rmSync(probePath, { force: true });
     }
   });
+
+  /**
+   * Lints one probe file whose cases each sit on a line of their own, and answers, per case,
+   * whether the rule reported that line: one ESLint run for the whole scenario.
+   */
+  const lintCases = (probe: string, cases: Record<string, string>): Record<string, boolean> => {
+    const probePath = join(repoRoot, probe);
+    const header = "import { cn, disabledFillClasses } from '@librechat/client';\n";
+    const labels = Object.keys(cases);
+    const body = labels
+      .map((label, index) => `export const Case${index} = ${cases[label]};\n`)
+      .join('');
+    try {
+      writeFileSync(probePath, `${header}${body}`);
+      const result = run(ESLINT, ['--format', 'json', '--no-warn-ignored', '--', probe]);
+      const [report] = JSON.parse(result.stdout) as { messages: LintMessage[] }[];
+      const lines = new Set(
+        report.messages.filter((message) => message.ruleId === RULE).map((message) => message.line),
+      );
+      return Object.fromEntries(labels.map((label, index) => [label, lines.has(index + 2)]));
+    } finally {
+      rmSync(probePath, { force: true });
+    }
+  };
+
+  test('a recipe that holds whenever the dim does passes the design lint @scenario:a-recipe-that-holds-whenever-the-dim-does-passes-the-design-lint', () => {
+    inOneProject();
+    test.setTimeout(180_000);
+
+    const reported = lintCases('client/src/__disabled_recipe_holds_probe__.tsx', {
+      'a recipe that repeats the disabled variant of the dim':
+        "() => <input className={cn('disabled:opacity-50', 'disabled:theme-disabled:opacity-100')} />",
+      'a recipe under a smaller breakpoint than the dim':
+        "() => <input className={cn('lg:disabled:opacity-50', 'md:theme-disabled:opacity-100')} />",
+      'a recipe beside a dim spread into the class map':
+        "({ disabled }: { disabled: boolean }) => <input disabled={disabled} className={cn({ ...{ 'opacity-50': disabled }, [disabledFillClasses]: disabled })} />",
+      'control: a recipe under another disabled variant':
+        "() => <input className={cn('aria-disabled:opacity-50', 'disabled:theme-disabled:opacity-100')} />",
+      'control: a recipe under a larger breakpoint than the dim':
+        "() => <input className={cn('md:disabled:opacity-50', 'lg:theme-disabled:opacity-100')} />",
+      'control: a recipe under another condition than the spread dim':
+        "({ disabled, busy }: { disabled: boolean; busy: boolean }) => <input disabled={disabled} className={cn({ ...{ 'opacity-50': disabled }, [disabledFillClasses]: busy })} />",
+    });
+
+    expect(reported).toEqual({
+      'a recipe that repeats the disabled variant of the dim': false,
+      'a recipe under a smaller breakpoint than the dim': false,
+      'a recipe beside a dim spread into the class map': false,
+      'control: a recipe under another disabled variant': true,
+      'control: a recipe under a larger breakpoint than the dim': true,
+      'control: a recipe under another condition than the spread dim': true,
+    });
+  });
+
+  test('a dim whose recipe is overwritten or whose fade is wrapped fails the design lint @scenario:a-dim-whose-recipe-is-overwritten-or-whose-fade-is-wrapped-fails-the-design-lint', () => {
+    inOneProject();
+    test.setTimeout(180_000);
+
+    const reported = lintCases('client/src/__disabled_recipe_overwritten_probe__.tsx', {
+      'a recipe overwritten through a constant computed key':
+        "() => { const key = 'theme-disabled:opacity-100'; return <input className={cn('disabled:opacity-50', { 'theme-disabled:opacity-100': true, [key]: false })} />; }",
+      'a constant fade under a non-null assertion':
+        "({ disabled }: { disabled: boolean }) => { const faded: string | undefined = 'opacity-50'; return <input disabled={disabled} className={cn(disabled && faded!)} />; }",
+      'control: a recipe spelled through a constant computed key':
+        "() => { const key = 'theme-disabled:opacity-100'; return <input className={cn('disabled:opacity-50', { [key]: true })} />; }",
+      'control: a wrapped constant fade composed with the recipe':
+        "({ disabled }: { disabled: boolean }) => { const faded: string | undefined = 'opacity-50'; return <input disabled={disabled} className={cn(disabled && faded!, disabledFillClasses)} />; }",
+    });
+
+    expect(reported).toEqual({
+      'a recipe overwritten through a constant computed key': true,
+      'a constant fade under a non-null assertion': true,
+      'control: a recipe spelled through a constant computed key': false,
+      'control: a wrapped constant fade composed with the recipe': false,
+    });
+  });
 });

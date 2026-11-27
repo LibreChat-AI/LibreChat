@@ -1,9 +1,18 @@
 import { test } from 'node:test';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { applySkip, estimate, fileSeconds, listedFiles, partition } from './playwright-shards.mjs';
 
 const script = fileURLToPath(new URL('./playwright-shards.mjs', import.meta.url));
@@ -209,6 +218,104 @@ test('a listing with load errors, or a malformed shard, fails the plan', (t) => 
     );
     assert.notEqual(result.status, 0, `${shard} ${reserve}`);
   }
+});
+
+/** The body of playwright-mock.yml's sharded run step, with its matrix shard filled in. */
+function shardStep(shard) {
+  const lines = readFileSync(
+    new URL('../workflows/playwright-mock.yml', import.meta.url),
+    'utf8',
+  ).split('\n');
+  const name = lines.findIndex((line) => line.trim() === '- name: Run full mock-LLM Tier-1 e2e');
+  const run = lines.findIndex((line, i) => i > name && line.trim() === 'run: |');
+  assert.ok(name !== -1 && run !== -1, 'the sharded run step is missing');
+  const indent = lines[run + 1].search(/\S/);
+  const body = [];
+  for (const line of lines.slice(run + 1)) {
+    if (line.trim() && line.search(/\S/) < indent) {
+      break;
+    }
+    body.push(line.slice(indent));
+  }
+  const script = body.join('\n').replaceAll('${{ matrix.shard }}', shard);
+  assert.doesNotMatch(script, /\$\{\{/, 'the step uses an expression this test does not fill in');
+  return script;
+}
+
+/**
+ * Runs the step as the runner's bash does, with `npx` stubbed: the listing call writes the
+ * fixture, and any other call is logged as a test run and exits with `status`.
+ */
+function runStep(t, { files, shard, reserve = '', skip = '', status = 0 }) {
+  const dir = scratch(t);
+  mkdirSync(join(dir, '.github', 'scripts'), { recursive: true });
+  copyFileSync(script, join(dir, '.github', 'scripts', 'playwright-shards.mjs'));
+  writeFileSync(join(dir, 'listing.json'), JSON.stringify(listing(files)));
+  mkdirSync(join(dir, 'bin'));
+  const npx = join(dir, 'bin', 'npx');
+  writeFileSync(
+    npx,
+    [
+      '#!/bin/sh',
+      'case " $* " in',
+      '  *" --list "*)',
+      '    mkdir -p "$(dirname "$PLAYWRIGHT_JSON_OUTPUT_FILE")"',
+      '    cp listing.json "$PLAYWRIGHT_JSON_OUTPUT_FILE"',
+      '    exit 0 ;;',
+      'esac',
+      'echo "$*" >> runs.log',
+      `exit ${status}`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(npx, 0o755);
+  const result = spawnSync(
+    'bash',
+    ['--noprofile', '--norc', '-eo', 'pipefail', '-c', shardStep(shard)],
+    {
+      cwd: dir,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: [join(dir, 'bin'), dirname(process.execPath), process.env.PATH].join(delimiter),
+        E2E_SKIP: skip,
+        E2E_SHARD_RESERVE: reserve,
+        E2E_SHARD_TIMINGS: JSON.stringify({ files: recorded }),
+      },
+    },
+  );
+  const log = join(dir, 'runs.log');
+  const runs = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
+  return { status: result.status, output: result.stdout + result.stderr, runs };
+}
+
+test('a shard the plan leaves empty passes without starting Playwright', (t) => {
+  const pair = { 'a.spec.ts': 3, 'b.spec.ts': 1 };
+  const extra = runStep(t, { files: pair, shard: '3/3' });
+  assert.equal(extra.status, 0, extra.output);
+  assert.match(extra.output, /this shard drew no spec files/);
+  assert.deepEqual(extra.runs, []);
+
+  const reserved = runStep(t, { files: pair, shard: '1/2', reserve: '1:130' });
+  assert.equal(reserved.status, 0, reserved.output);
+  assert.deepEqual(reserved.runs, []);
+
+  const loaded = runStep(t, { files: pair, shard: '2/2', reserve: '1:130' });
+  assert.equal(loaded.status, 0, loaded.output);
+  assert.deepEqual(loaded.runs, [
+    'playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt',
+  ]);
+});
+
+test('a shard with files still fails when its tests fail, and an empty listing fails the plan', (t) => {
+  const failed = runStep(t, { files: suite, shard: '1/2', status: 1 });
+  assert.notEqual(failed.status, 0, failed.output);
+  assert.equal(failed.runs.length, 1);
+
+  const empty = runStep(t, { files: {}, shard: '1/2' });
+  assert.notEqual(empty.status, 0, empty.output);
+  assert.match(empty.output, /playwright --list found no spec files/);
+  assert.deepEqual(empty.runs, []);
 });
 
 test('record sums every attempt per file from JSON reports', (t) => {

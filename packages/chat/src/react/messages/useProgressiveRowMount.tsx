@@ -8,6 +8,7 @@ import {
   useLayoutEffect,
   startTransition,
 } from 'react';
+import { flushSync } from 'react-dom';
 import type { ReactNode, RefObject } from 'react';
 
 /**
@@ -110,11 +111,6 @@ export function useRowMounted(depth: number): boolean {
   return mounted || inside;
 }
 
-/** Renders its row once the window reaches `depth`, for a renderer that lists rows flat. */
-export function RowGate({ depth, children }: { depth: number; children: ReactNode }): ReactNode {
-  return useRowMounted(depth) ? children : null;
-}
-
 /**
  * Whether this row mounted in a widening step: one of the rows a long thread adds after its
  * first commit, away from where the reader is. Fixed for the row's life.
@@ -123,6 +119,43 @@ export function useWidenedRow(): boolean {
   const gates = useContext(RowGatesContext);
   return useState(() => gates != null && gates.window != null && gates.window !== gates.opened)[0];
 }
+
+/**
+ * Whether the browser holds a reader in place itself when content is added or resized above
+ * them (`overflow-anchor`). It does so for every change, including a row that settles to a
+ * different height after it mounts, and without cancelling a scroll the reader is in the middle
+ * of. Writing the scroll position by hand can do neither, so the hook pins the anchor row only
+ * where this is missing, or cannot be relied on (see `pinsByHand`).
+ */
+function anchorsNatively(): boolean {
+  return (
+    typeof CSS !== 'undefined' &&
+    typeof CSS.supports === 'function' &&
+    CSS.supports('overflow-anchor', 'auto')
+  );
+}
+
+/**
+ * Whether the mount holds the reader itself rather than leaving it to the browser.
+ *
+ * Beside a reply in flight it does, even where the browser anchors: the thread then mounts a
+ * few rows on every frame, and a browser that is adjusting the scroll position frame after
+ * frame stops doing it part way through, which leaves the reader tens of thousands of pixels
+ * from where they were. The scroller takes `overflow-anchor: none` for as long as this is
+ * true, so the two never both react to the same rows.
+ */
+export function pinsByHand(isSubmitting: boolean): boolean {
+  return isSubmitting || !anchorsNatively();
+}
+
+/**
+ * How long after the reader's last scroll input a step waits. A step that lands in the same
+ * frame as a scroll is the one the reader's place does not survive: the browser has dropped
+ * its anchor for the scroll, and a position written by hand cancels the scroll under way.
+ */
+const SCROLL_REST_MS = 150;
+/** The reader moving the thread themselves: wheel, touch, or a key that scrolls. */
+const SCROLL_INPUTS = ['wheel', 'touchmove', 'keydown'] as const;
 
 /** Below this path length every row mounts in one commit, exactly as before. */
 const MIN_PROGRESSIVE_ROWS = 40;
@@ -151,6 +184,10 @@ type ProgressiveRowMountOptions = {
   scrollableRef: RefObject<HTMLDivElement | null>;
   /** The provider's gates. Passing them lets a step mount its rows in its own render. */
   gates?: RowGates;
+  /** Told the height a step added above the reader, as its rows commit. The scroll position
+   *  moves by that much without the reader having moved, and whatever judges which way they
+   *  are heading from the position needs to know. */
+  onInsertAbove?: (height: number) => void;
 };
 
 function initialWindow(tailDepth: number | undefined, anchorBottom: boolean): RowMountWindow {
@@ -171,10 +208,11 @@ function initialWindow(tailDepth: number | undefined, anchorBottom: boolean): Ro
  * screenshot export, and the nav rail see the same document they always have,
  * just a few frames later.
  *
- * Bottom-anchored expansion inserts rows above the viewport; the layout
- * effect re-pins the previously first-mounted row to its pre-commit viewport
- * offset by measuring its actual shift, which also degrades to a no-op
- * wherever native scroll anchoring already compensated.
+ * Bottom-anchored expansion inserts rows above the viewport. A browser with
+ * scroll anchoring keeps the reader where they are through that; where there
+ * is none, and beside a reply in flight (see `pinsByHand`), the layout effect
+ * re-pins the previously first-mounted row to its pre-commit viewport offset
+ * by measuring its actual shift.
  *
  * A reply in flight does not end the windowing. Its row is at the thread's end, which a window
  * anchored there always holds, so the rows above keep arriving, in smaller steps that each
@@ -190,11 +228,58 @@ export function useProgressiveRowMount({
   conversationId,
   scrollableRef,
   gates,
+  onInsertAbove,
 }: ProgressiveRowMountOptions): RowMountWindow {
   const [mountWindow, setMountWindow] = useState<RowMountWindow>(() =>
     initialWindow(tailDepth, anchorBottom),
   );
-  const anchorRef = useRef<{ element: Element; documentOffset: number } | null>(null);
+  const anchorRef = useRef<{
+    element: Element;
+    documentOffset: number;
+    /** Whether the mount is the one holding the reader for this step (`pinsByHand`). */
+    byHand: boolean;
+    /** Where the anchor sat on the reader's screen, when the commit follows its capture within
+     *  the same task (`finish`): the reader cannot have scrolled between the two. */
+    restingTop: number | null;
+  } | null>(null);
+  /**
+   * What the scroll position still owes the reader after a step, and the position that step
+   * left it at.
+   *
+   * Chromium keeps a scroll position in whole pixels, and rows are not whole pixels tall:
+   * asked to move by the 458.375px that four one-line turns come to, it moves by 458.
+   * Each step measures its own rows and nothing else, so what a step lost stayed lost, and a
+   * reader beside a reply in flight, where a step lands on every frame, watched the row they
+   * were reading sink 60px while 800 rows mounted above it. What a step could not apply goes
+   * into the next one instead, for as long as the position is still where the mount left it:
+   * any other move is the reader's, or the stream's, and is a place of its own.
+   */
+  const owedRef = useRef<{ top: number; height: number } | null>(null);
+  /** The thread's height before the step in flight, while one is. */
+  const heightRef = useRef<number | null>(null);
+  const onInsertAboveRef = useRef(onInsertAbove);
+  onInsertAboveRef.current = onInsertAbove;
+  /** When the reader last scrolled the thread themselves. */
+  const scrolledAtRef = useRef(Number.NEGATIVE_INFINITY);
+
+  const isWindowed = mountWindow != null;
+  useEffect(() => {
+    const container = scrollableRef.current;
+    if (!container || !isWindowed) {
+      return;
+    }
+    const mark = () => {
+      scrolledAtRef.current = performance.now();
+    };
+    for (const type of SCROLL_INPUTS) {
+      container.addEventListener(type, mark, { passive: true });
+    }
+    return () => {
+      for (const type of SCROLL_INPUTS) {
+        container.removeEventListener(type, mark);
+      }
+    };
+  }, [isWindowed, scrollableRef]);
 
   /** The window and the waiting rows move together, so the rows a step adds render in the
    *  same pass as the step, at whatever priority it was made. */
@@ -224,22 +309,36 @@ export function useProgressiveRowMount({
     }
   }, [isSubmitting, mountWindow, moveTo]);
 
-  const captureAnchor = useCallback(() => {
-    const container = scrollableRef.current;
-    if (!container || !anchorBottom) {
-      anchorRef.current = null;
-      return;
-    }
-    const element = container.querySelector('.message-render');
-    /** Document-space offset (viewport top + scrollTop): the widening commit
-     *  is transition-deferred, so the user may scroll between capture and
-     *  commit. User scrolling moves viewport coordinates but not document
-     *  ones, so measuring here isolates the inserted-row shift and never
-     *  folds the user's own movement into the correction. */
-    anchorRef.current = element
-      ? { element, documentOffset: element.getBoundingClientRect().top + container.scrollTop }
-      : null;
-  }, [anchorBottom, scrollableRef]);
+  const captureAnchor = useCallback(
+    (finishing = false) => {
+      const container = scrollableRef.current;
+      heightRef.current = container && anchorBottom ? container.scrollHeight : null;
+      if (!container || !anchorBottom) {
+        anchorRef.current = null;
+        return;
+      }
+      /** Taken even where the browser anchors: whether it will for this step is only known once
+       *  the rows are in, by where the reader is then. */
+      const element = container.querySelector('.message-render');
+      if (!element) {
+        anchorRef.current = null;
+        return;
+      }
+      const top = element.getBoundingClientRect().top;
+      /** Document-space offset (viewport top + scrollTop): the widening commit
+       *  is transition-deferred, so the user may scroll between capture and
+       *  commit. User scrolling moves viewport coordinates but not document
+       *  ones, so measuring here isolates the inserted-row shift and never
+       *  folds the user's own movement into the correction. */
+      anchorRef.current = {
+        element,
+        documentOffset: top + container.scrollTop,
+        byHand: pinsByHand(isSubmitting),
+        restingTop: finishing ? top : null,
+      };
+    },
+    [anchorBottom, isSubmitting, scrollableRef],
+  );
 
   useEffect(() => {
     if (mountWindow == null || tailDepth == null) {
@@ -250,7 +349,12 @@ export function useProgressiveRowMount({
       return;
     }
     const chunk = isSubmitting ? LIVE_CHUNK_ROWS : CHUNK_ROWS;
-    const frameId = requestAnimationFrame(() => {
+    const step = () => {
+      /** Rows the reader is about to scroll into can wait for the scroll to rest. */
+      if (performance.now() - scrolledAtRef.current < SCROLL_REST_MS) {
+        frameId = requestAnimationFrame(step);
+        return;
+      }
       captureAnchor();
       const widen = () =>
         moveTo({
@@ -262,47 +366,139 @@ export function useProgressiveRowMount({
         return;
       }
       startTransition(widen);
-    });
+    };
+    let frameId = requestAnimationFrame(step);
     return () => cancelAnimationFrame(frameId);
   }, [mountWindow, tailDepth, isSubmitting, captureAnchor, moveTo]);
 
   useLayoutEffect(() => {
     const captured = anchorRef.current;
     anchorRef.current = null;
+    /** Owed to the step that follows the one it came from, and to no other. */
+    const owed = owedRef.current;
+    owedRef.current = null;
     const container = scrollableRef.current;
+    const height = heightRef.current;
+    heightRef.current = null;
+    if (container && height != null) {
+      const added = container.scrollHeight - height;
+      if (added !== 0) {
+        onInsertAboveRef.current?.(added);
+      }
+    }
     if (!captured || !container || !captured.element.isConnected) {
       return;
     }
-    const shift =
-      captured.element.getBoundingClientRect().top + container.scrollTop - captured.documentOffset;
-    if (shift !== 0) {
-      container.scrollTop += shift;
+    const { element, restingTop: sat } = captured;
+    if (sat != null) {
+      /**
+       * The rest of the thread, landed in the commit that also ends the window (`finish`). The
+       * scroller's anchoring comes back on in this commit, and who holds the reader through it
+       * is not known beforehand. A browser that was anchoring all along has. One whose anchoring
+       * was off until now, beside a reply, may have (Chromium, Firefox) or may not (WebKit), and
+       * one that does not anchor never has. Pinning the reader regardless corrects twice wherever
+       * the browser did hold them, and throws them to the end of the thread. So the mount looks:
+       * any adjustment the browser makes is in by the time the row is measured here, and the row
+       * is put back where it sat only when it is not there. Again once the commit has finished,
+       * as for a step below.
+       */
+      const putBack = () => {
+        if (!element.isConnected) {
+          return;
+        }
+        const drift = element.getBoundingClientRect().top - sat;
+        if (Math.abs(drift) >= 1) {
+          container.scrollTop += drift;
+        }
+      };
+      putBack();
+      queueMicrotask(putBack);
+      return;
     }
+    const before = container.scrollTop;
+    /**
+     * A browser that anchors has already held the reader, unless they are at the very top:
+     * scroll anchoring selects no anchor at the scroll origin. A reader who scrolled past the
+     * rows mounted so far, or pressed Home, is exactly there, and would stay at the top of each
+     * chunk as it arrived while the row they had reached moved out of view below. There the
+     * mount pins them as it does where nothing else would.
+     */
+    if (!captured.byHand && before > 0) {
+      return;
+    }
+    const carried = owed != null && owed.top === before ? owed.height : 0;
+    /** Rows added above have not moved the scroll position, so what it reads is where the
+     *  reader was before the step. This is where the anchor belongs on their screen: where it
+     *  sat, less what the position was already short of. */
+    const restingTop = captured.documentOffset - before - carried;
+    const shift = captured.element.getBoundingClientRect().top + before - captured.documentOffset;
+    if (shift !== 0) {
+      container.scrollTop = before + shift + carried;
+    }
+    /**
+     * Once more when the commit has finished. A row that mounts can change its height before
+     * the frame is painted: a long user message measures itself in a layout effect and renders
+     * again clamped, after this effect has already counted its full height. Correcting only
+     * above left a reader who had scrolled up a clamp's worth further down the thread, once for
+     * every such message that mounted above them.
+     *
+     * The anchor is put back where it sat, not moved by a second difference: a reader on the
+     * thread's end is already there, because the browser pulled the scroll position in as the
+     * content shrank under it, and a difference taken from before that would move them twice.
+     */
+    queueMicrotask(() => {
+      if (!captured.element.isConnected) {
+        return;
+      }
+      /** How far below where it belongs the anchor sits: under a pixel when nothing changed
+       *  height, which is the part of the step the scroll position could not take. */
+      let short = captured.element.getBoundingClientRect().top - restingTop;
+      let top = container.scrollTop;
+      if (Math.abs(short) >= 1) {
+        container.scrollTop = top + short;
+        const moved = container.scrollTop - top;
+        short -= moved;
+        top += moved;
+      }
+      /** A pixel or more left over is the end of the scroll range, where there is no further
+       *  to go, and not something a later step should make up. */
+      owedRef.current = Math.abs(short) < 1 ? { top, height: short } : null;
+    });
   }, [mountWindow, scrollableRef]);
 
-  /** Registered while a window is active so `completeProgressiveRowMounts`
-   *  (screenshot capture) can force the remaining rows in and wait for the
-   *  commit to paint before cloning the DOM. */
+  /** Registered while a window is active, so a consumer of the whole thread can bring the
+   *  remaining rows in (`completeProgressiveRowMounts`, `finishProgressiveRowMounts`). */
   const isWindowActive = mountWindow != null;
+  /** Whether rows after the mounted ones are still to come: a thread that opened at its start
+   *  mounts towards its end, where one that opened at its end has had its latest rows all along. */
+  const laterRef = useRef(false);
+  laterRef.current = mountWindow != null && tailDepth != null && mountWindow.end < tailDepth;
   useEffect(() => {
     if (!isWindowActive) {
       return;
     }
-    const complete = () =>
-      new Promise<void>((resolve) => {
-        moveTo(null);
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      });
-    activeCompleters.add(complete);
-    return () => {
-      activeCompleters.delete(complete);
+    /**
+     * The rest of the thread lands above the reader like any step, in the commit that ends the
+     * window. Called inside `flushSync`, so that commit follows the capture at once and the
+     * layout effect can tell whether the reader's row is still where it sat.
+     */
+    const finish = () => {
+      captureAnchor(true);
+      moveTo(null);
     };
-  }, [isWindowActive, moveTo]);
+    const thread = { finish, later: () => laterRef.current };
+    mounting.add(thread);
+    return () => {
+      mounting.delete(thread);
+    };
+  }, [isWindowActive, captureAnchor, moveTo]);
 
   return mountWindow;
 }
 
-const activeCompleters = new Set<() => Promise<void>>();
+/** Each thread that is still mounting: what mounts the rest of its rows, and whether any of
+ *  those come after the rows already in. */
+const mounting = new Set<{ finish: () => void; later: () => boolean }>();
 
 /**
  * Forces every in-flight progressive mount to completion and resolves after
@@ -311,8 +507,39 @@ const activeCompleters = new Set<() => Promise<void>>();
  * silently truncate the rows still outside the window.
  */
 export async function completeProgressiveRowMounts(): Promise<void> {
-  if (activeCompleters.size === 0) {
+  if (mounting.size === 0) {
     return;
   }
-  await Promise.all([...activeCompleters].map((complete) => complete()));
+  flushSync(() => {
+    for (const thread of [...mounting]) {
+      thread.finish();
+    }
+  });
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
+/**
+ * Mounts the remaining rows of every thread still mounting before it returns, and says whether
+ * there were any. For an action that reads the thread from the document and has to answer
+ * inside the event that asked: a keyboard shortcut reports whether it did anything, and a copy
+ * made after the key press is one the browser may refuse.
+ *
+ * The rest of the thread lands in one commit, which is what mounting in steps exists to avoid,
+ * so call it once the rows already in have been found not to hold the answer. `'later'` keeps
+ * to the threads with rows still to come after the ones already in, for an action that wants
+ * the latest of something: there the rows already in cannot be trusted to hold it.
+ */
+export function finishProgressiveRowMounts(which: 'all' | 'later' = 'all'): boolean {
+  const threads = [...mounting].filter((thread) => which === 'all' || thread.later());
+  if (threads.length === 0) {
+    return false;
+  }
+  flushSync(() => {
+    for (const thread of threads) {
+      thread.finish();
+    }
+  });
+  return true;
 }

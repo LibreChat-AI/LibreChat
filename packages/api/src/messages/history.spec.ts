@@ -9,7 +9,7 @@ jest.mock('@librechat/data-schemas', () => ({
 
 const USER = 'user-1';
 const CONVERSATION = 'convo-1';
-const SELECT = '+privateTextTokens';
+const SELECT = '+privateTextTokens +trigger';
 const NO_PARENT: string = Constants.NO_PARENT;
 
 type Stored = {

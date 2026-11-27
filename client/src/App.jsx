@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { RouterProvider } from 'react-router-dom';
 import { HTML5Backend } from 'react-dnd-html5-backend';
+import { LazyImportProvider } from '@librechat/chat/react';
 import { Toast, ToastViewport, ToastProvider, useInputModality } from '@librechat/client';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query';
 import { FilesHostProvider, appFilesHost } from '~/Providers/FilesHostContext';
@@ -13,6 +14,7 @@ import QueryDevtoolsGate from '~/components/QueryDevtoolsGate';
 import LanguageSync from '~/components/System/LanguageSync';
 import DeploymentTheme from '~/Providers/DeploymentTheme';
 import UiScaleSync from '~/components/System/UiScaleSync';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import { initializeFontSize } from '~/store/fontSize';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import { LiveAnnouncer } from '~/a11y';
@@ -83,9 +85,11 @@ const App = () => {
                       transition-safe reads are gated behind
                       `_TRANSITION_SUPPORT_UNSTABLE` hooks this app does not use.
                       Worth revisiting once that state has moved to Jotai. */}
-                    <FilesHostProvider host={appFilesHost}>
-                      <RouterProvider router={router} useTransitions={false} />
-                    </FilesHostProvider>
+                    <LazyImportProvider value={importWithRecovery}>
+                      <FilesHostProvider host={appFilesHost}>
+                        <RouterProvider router={router} useTransitions={false} />
+                      </FilesHostProvider>
+                    </LazyImportProvider>
                     <WakeLockManager />
                     <QueryDevtoolsGate />
                     <Toast />

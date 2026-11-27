@@ -1,8 +1,8 @@
 import { useRef, useCallback, useLayoutEffect } from 'react';
 import { useStore, useSetAtom } from 'jotai';
+import { useNavigate } from 'react-router-dom';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
-import { useParams, useNavigate } from 'react-router-dom';
 import { QueryKeys, dataService, isAssistantsEndpoint } from 'librechat-data-provider';
 import { sideChatAtom, sideChatBesideAtom, sideChatRequestAtom } from '@librechat/chat/react';
 import type { MouseEvent, MutableRefObject } from 'react';
@@ -13,6 +13,7 @@ import {
   usePinConversationMutation,
   useMarkConversationUnreadMutation,
 } from '~/data-provider';
+import useOpenConversationId from '~/hooks/Conversations/useOpenConversationId';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import { useLocalize, useNewConvo } from '~/hooks';
 import { NotificationSeverity } from '~/common';
@@ -66,12 +67,10 @@ function ConvoMenuController({
   const { announcePolite } = useLiveAnnouncer();
 
   const navigate = useNavigate();
-  const { conversationId: currentConvoId } = useParams();
-  /* A mutation callback outlives the click that made it: the route it should compare
-     against is whichever chat is open when the request resolves, not the one that was
+  /* A mutation callback outlives the click that made it: the chat it should compare
+     against is whichever one is open when the request resolves, not the one that was
      open when the menu item was pressed. */
-  const openConvoIdRef = useRef(currentConvoId);
-  openConvoIdRef.current = currentConvoId;
+  const getOpenConversationId = useOpenConversationId();
   const { newConversation } = useNewConvo();
 
   const archiveConvoMutation = useArchiveConvoMutation();
@@ -80,7 +79,7 @@ function ConvoMenuController({
 
   const deleteMutation = useDeleteConversationMutation({
     onSuccess: () => {
-      if (currentConvoId === conversationId || currentConvoId === 'new') {
+      if (getOpenConversationId() === conversationId) {
         newConversation();
         navigate('/c/new', { replace: true });
       }
@@ -137,8 +136,7 @@ function ConvoMenuController({
               message: localize(isArchived ? 'com_ui_convo_unarchived' : 'com_ui_convo_archived'),
               isStatus: true,
             });
-            const openConvoId = openConvoIdRef.current;
-            if (!isArchived && (openConvoId === convoId || openConvoId === 'new')) {
+            if (!isArchived && getOpenConversationId() === convoId) {
               newConversation();
               navigate('/c/new', { replace: true });
             }
@@ -160,6 +158,7 @@ function ConvoMenuController({
       isArchived,
       setConversation,
       archiveConvoMutation,
+      getOpenConversationId,
       navigate,
       newConversation,
       retainView,

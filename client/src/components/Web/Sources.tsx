@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import * as Ariakit from '@ariakit/react';
 import { VisuallyHidden } from '@ariakit/react';
 import { Tools } from 'librechat-data-provider';
+import { StackedFavicons } from '@librechat/chat/components';
 import { X, Globe, Newspaper, Image, ChevronDown, File, Download } from 'lucide-react';
 import {
   Button,
@@ -360,32 +361,6 @@ const FileItem = React.memo(function FileItem({
     </button>
   );
 });
-
-export function StackedFavicons({
-  sources,
-  start = 0,
-  end = 3,
-}: {
-  sources: ValidSource[];
-  start?: number;
-  end?: number;
-}) {
-  let slice = [start, end];
-  if (start < 0) {
-    slice = [start];
-  }
-  return (
-    <div className="relative flex">
-      {sources.slice(...slice).map((source, i) => (
-        <FaviconImage
-          key={`icon-${i}`}
-          domain={getCleanDomain(source.link)}
-          className={i > 0 ? 'ms-[-0.375rem]' : ''}
-        />
-      ))}
-    </div>
-  );
-}
 
 const SourcesGroup = React.memo(function SourcesGroup({
   sources,

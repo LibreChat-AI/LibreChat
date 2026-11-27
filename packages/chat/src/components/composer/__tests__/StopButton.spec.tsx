@@ -2,12 +2,10 @@
  * @jest-environment jsdom
  */
 import { render, screen, fireEvent } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import StopButton from '../StopButton';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 describe('StopButton', () => {
   it('uses contrasted theme roles for its fill and inherited glyph ink', () => {
@@ -36,6 +34,7 @@ describe('StopButton', () => {
 
     const button = screen.getByTestId('stop-generation-button');
     expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleName('Stop generating');
 
     fireEvent.click(button);
 

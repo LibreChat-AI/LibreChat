@@ -767,7 +767,7 @@ describe('cancel2FASetup', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockFindSession).toHaveBeenCalledWith(
       { userId: 'user-1', refreshToken: 'live-session-token' },
-      { lean: false },
+      { lean: false, graceMs: 60_000 },
     );
     expect(mockDeleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
   });

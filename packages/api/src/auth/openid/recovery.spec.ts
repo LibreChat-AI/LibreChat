@@ -142,6 +142,22 @@ describe('OpenID authentication publication settlement', () => {
     expect(deps.failOpenIDRefreshFlight).not.toHaveBeenCalled();
   });
 
+  /** Sharing one key, the first refresh would rejoin the sign-in and answer with its tokens. */
+  it('keys a sign-in apart from the first refresh of the token it issued', async () => {
+    const { deps, service, input } = setup();
+    await service.sendOpenIDAuthResponse({ ...input, existingRefreshToken: undefined });
+    await service.sendOpenIDAuthResponse(input);
+    expect(deps.createRefreshTokenBridgeFlightKey).toHaveBeenNthCalledWith(1, {
+      oldRefreshToken: 'refresh',
+      userId: 'user',
+      signIn: true,
+    });
+    expect(deps.createRefreshTokenBridgeFlightKey).toHaveBeenNthCalledWith(2, {
+      oldRefreshToken: 'refresh',
+      userId: 'user',
+    });
+  });
+
   describe('with a stale token set left in the Express session', () => {
     function buildStaleSession() {
       return {
@@ -156,7 +172,12 @@ describe('OpenID authentication publication settlement', () => {
       const { deps, service, input } = setup();
       const req = { session: { openidTokens: buildStaleSession() } };
       await expect(
-        service.sendOpenIDAuthResponse({ ...input, req, discardSessionTokens: true }),
+        service.sendOpenIDAuthResponse({
+          ...input,
+          existingRefreshToken: undefined,
+          req,
+          discardSessionTokens: true,
+        }),
       ).resolves.toBe('app-token');
       expect(req.session.openidTokens).toBeUndefined();
       expect(deps.completeOpenIDRefreshFlight).toHaveBeenCalledWith(
@@ -170,7 +191,7 @@ describe('OpenID authentication publication settlement', () => {
         expect.objectContaining({ access_token: 'access', refresh_token: 'refresh' }),
         req,
         input.res,
-        expect.objectContaining({ userId: 'user', existingRefreshToken: 'refresh' }),
+        expect.objectContaining({ userId: 'user' }),
       );
     });
 

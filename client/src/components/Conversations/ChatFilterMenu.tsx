@@ -2,8 +2,13 @@ import { memo, useCallback, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
-import { TooltipAnchor, buttonVariants, usePopoverZIndex } from '@librechat/client';
 import { alternateName, PermissionTypes, Permissions } from 'librechat-data-provider';
+import {
+  TooltipAnchor,
+  buttonVariants,
+  disabledInkClasses,
+  usePopoverZIndex,
+} from '@librechat/client';
 import {
   Archive,
   ArrowDownAZ,
@@ -339,14 +344,74 @@ const EndpointLimitNote = ({ limit }: { limit: number }) => {
   );
 };
 
+type EndpointsStatusProps = {
+  failed: boolean;
+  fetching: boolean;
+  onRetry: () => void;
+};
+
+/**
+ * Stands in for the endpoint list until it arrives. The endpoints query never refetches
+ * on its own (`staleTime: Infinity`, no refetch on mount), so a failed first load would
+ * otherwise leave this submenu empty until a reload. Retry stays mounted, disabled, while
+ * its request runs, so the keyboard focus it holds is not dropped.
+ */
+const EndpointsStatus = ({ failed, fetching, onRetry }: EndpointsStatusProps) => {
+  const localize = useLocalize();
+  const loading = !failed || fetching;
+  return (
+    <>
+      <Ariakit.MenuItem
+        disabled={true}
+        accessibleWhenDisabled={true}
+        className={cn(itemClassName, 'text-text-secondary cursor-default')}
+        data-testid="chat-filter-endpoints-status"
+      >
+        <span className="text-xs" aria-live="polite">
+          {localize(
+            loading ? 'com_ui_endpoint_filter_loading' : 'com_ui_endpoint_filter_load_error',
+          )}
+        </span>
+      </Ariakit.MenuItem>
+      {failed && (
+        <Ariakit.MenuItem
+          hideOnClick={false}
+          disabled={fetching}
+          accessibleWhenDisabled={true}
+          onClick={onRetry}
+          className={cn(
+            itemClassName,
+            'aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+            disabledInkClasses,
+          )}
+        >
+          <RotateCcw className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+          <span className="truncate">{localize('com_ui_retry')}</span>
+        </Ariakit.MenuItem>
+      )}
+    </>
+  );
+};
+
 /** The endpoints this deployment actually serves, named the way the rest of the app
  *  names them. A chat matches if it used any of the chosen ones. */
 const EndpointFacet = memo(() => {
   const localize = useLocalize();
   const selected = useAtomValue(endpointFilterAtom);
   const toggleEndpoint = useSetAtom(toggleEndpointFilterAtom);
-  const { data: endpointsConfig } = useGetEndpointsQuery();
+  const {
+    data: endpointsConfig,
+    errorUpdatedAt,
+    isFetching,
+    isInitialLoading,
+    refetch,
+  } = useGetEndpointsQuery();
   const { limit, maxNameLength, atLimit } = useEndpointFilterLimit(selected.length);
+  /** A refetch without data puts the query back to `loading` and clears its error, so
+   *  whether a load failed is read from when it last did. Cached endpoints are listed
+   *  even when a later refetch failed. */
+  const failed = errorUpdatedAt > 0;
+  const pending = endpointsConfig == null && (failed || isInitialLoading);
 
   const endpoints = useMemo(
     () =>
@@ -396,6 +461,9 @@ const EndpointFacet = memo(() => {
             disabled={atLimit && !selected.includes(endpoint.value)}
           />
         ))}
+        {pending && (
+          <EndpointsStatus failed={failed} fetching={isFetching} onRetry={() => refetch()} />
+        )}
         {atLimit && limit != null && <EndpointLimitNote limit={limit} />}
       </Ariakit.MenuGroup>
     </PropertyRow>

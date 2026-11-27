@@ -2,7 +2,14 @@ import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
-import { cn, pxToRem, useLocalize, useRemScale, disabledInkClasses } from '@librechat/client';
+import {
+  cn,
+  pxToRem,
+  useLocalize,
+  useRemScale,
+  disabledInkClasses,
+  usePortalContainer,
+} from '@librechat/client';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TranslationKeys } from '@librechat/client';
 import { parseWakeupMessage } from '../../core/parts/wakeup';
@@ -433,6 +440,7 @@ function MessageNav({
   conversationId?: string | null;
 }): React.JSX.Element | null {
   const localize = useLocalize();
+  const portals = usePortalContainer();
   const { conversation, isSubmitting } = useChatContext();
   const conversationId = renderedConversationId ?? conversation?.conversationId;
   const messages = useMessagesHost().useConversationMessages(conversationId, isSubmitting);
@@ -1810,7 +1818,7 @@ function MessageNav({
           >
             <p className="line-clamp-3 text-xs">{tipText}</p>
           </div>,
-          document.body,
+          portals ?? document.body,
         )}
     </nav>
   );

@@ -10,23 +10,10 @@ import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
 import Attachment, { AttachmentGroup } from '../Attachment';
 import { FilesHostProvider } from '../../../react/files';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import { HiddenAttachmentsContext } from '../media';
 
-const TRANSLATIONS: Record<string, string> = {
-  com_ui_download: 'Download',
-  com_ui_n_files: '{{0}} files',
-  com_ui_show_n_files: 'Show {{0}} files',
-  com_ui_hide_n_files: 'Hide {{0}} files',
-};
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, string>) =>
-    Object.entries(values ?? {}).reduce(
-      (text, [name, value]) => text.replace(`{{${name}}}`, value),
-      TRANSLATIONS[key] ?? key,
-    ),
-}));
+beforeAll(initEnglish);
 
 const baseHost: FilesHost = {
   renderEndpointIcon: () => null,

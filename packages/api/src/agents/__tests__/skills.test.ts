@@ -2187,6 +2187,19 @@ describe('buildSkillPrimeContentParts', () => {
     expect(ids[1]).toContain('msg_xyz');
   });
 
+  it('stamps the id of the skill each card primed, and none for a prime without one', () => {
+    const _id = new Types.ObjectId();
+    const [primed, bare] = buildSkillPrimeContentParts(
+      [
+        { _id, name: 'brand', body: '# Brand' },
+        { name: 'legal', body: '# Legal' },
+      ],
+      { runId: 'msg_1' },
+    );
+    expect(primed.tool_call.skillId).toBe(_id.toString());
+    expect(bare.tool_call).not.toHaveProperty('skillId');
+  });
+
   it('returns an empty array for empty input', () => {
     expect(buildSkillPrimeContentParts([], { runId: 'msg_1' })).toEqual([]);
   });

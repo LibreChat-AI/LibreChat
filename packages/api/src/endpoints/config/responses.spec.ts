@@ -57,17 +57,17 @@ async function runtime(
   value?: boolean,
   webSearch?: boolean,
 ) {
+  const { llmConfig, tools } = await initializeOpenAI({
+    endpoint,
+    model_parameters: { model, useResponsesApi: value, web_search: webSearch },
+    db,
+    runtime: { appConfig, requestBody: { key: '2099-01-01' } },
+  });
+  /** The client sends a request that carries the `web_search` tool to the
+   * Responses API whatever the flag says, so both decide the route. */
   return (
-    (
-      (
-        await initializeOpenAI({
-          endpoint,
-          model_parameters: { model, useResponsesApi: value, web_search: webSearch },
-          db,
-          runtime: { appConfig, requestBody: { key: '2099-01-01' } },
-        })
-      ).llmConfig as OpenAIClientOptions
-    ).useResponsesApi === true
+    (llmConfig as OpenAIClientOptions).useResponsesApi === true ||
+    tools?.some((tool) => (tool as { type?: string }).type === 'web_search') === true
   );
 }
 async function expectParity(appConfig: AppConfig, endpoint: EModelEndpoint, model: string) {

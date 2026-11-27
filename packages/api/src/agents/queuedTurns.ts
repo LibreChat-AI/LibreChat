@@ -24,9 +24,9 @@ import type { SteerPromotionOutcome } from '~/stream/interfaces/IJobStore';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
 import type { AgentTriggerDeliveryFailure } from './triggers/engine';
 import { getAgentTriggerIdempotencyKey, parseAgentTriggerEnvelope } from './triggers/envelope';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from './recovery';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
-import { createIdleRecoveryLoop } from './recovery';
 import { getSafeErrorMetadata } from '~/utils';
 
 export const AGENT_QUEUED_TURN_SOURCE = 'agent-queued-turn';
@@ -108,8 +108,16 @@ export interface AgentQueuedTurnSchedulerDeps {
   recoveryLimit?: number;
 }
 
+/** What the host tells the queued-turn recovery loop when it starts it. */
+export interface AgentQueuedTurnLoopOptions {
+  /** The loop's own ceiling, from `endpoints.agents.eventDriven.idlePolling.queuedTurnMaxIntervalMs`. */
+  maxIdleIntervalMs?: number;
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. It replaces the ceiling above. */
+  idleCeilingMs?: number;
+}
+
 export interface AgentQueuedTurnScheduler {
-  initialize: (options?: { maxIdleIntervalMs?: number }) => Promise<void>;
+  initialize: (options?: AgentQueuedTurnLoopOptions) => Promise<void>;
   stop: () => Promise<void>;
   schedule: (turn: AgentQueuedTurnRecord) => Promise<string>;
   recover: () => Promise<number>;
@@ -129,7 +137,7 @@ export interface AgentQueuedTurnLifecycle {
     rawSource: unknown,
     input: AgentQueuedTurnExecutionAdmission,
   ) => Promise<boolean>;
-  initialize: (options?: { maxIdleIntervalMs?: number }) => Promise<void>;
+  initialize: (options?: AgentQueuedTurnLoopOptions) => Promise<void>;
   stop: () => Promise<void>;
   schedule: (turn: AgentQueuedTurnRecord) => Promise<string>;
   cancel: (
@@ -1119,9 +1127,13 @@ function createAgentQueuedTurnScheduler({
       if (stopped) {
         return Promise.resolve();
       }
-      const maxIdleIntervalMs =
-        options.maxIdleIntervalMs ??
-        Math.max(recoveryIntervalMs, DEFAULT_RECOVERY_MAX_IDLE_INTERVAL_MS);
+      const maxIdleIntervalMs = resolveIdleCeilingMs({
+        intervalMs: recoveryIntervalMs,
+        defaultMs:
+          options.maxIdleIntervalMs ??
+          Math.max(recoveryIntervalMs, DEFAULT_RECOVERY_MAX_IDLE_INTERVAL_MS),
+        ceilingMs: options.idleCeilingMs,
+      });
       const next = (async () => {
         loop = createIdleRecoveryLoop({
           intervalMs: recoveryIntervalMs,

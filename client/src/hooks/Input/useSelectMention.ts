@@ -146,6 +146,7 @@ export default function useSelectMention({
         },
         preset,
         keepAddedConvos: isModular,
+        retarget: true,
       });
     },
     [
@@ -238,6 +239,7 @@ export default function useSelectMention({
         },
         preset: { ...kwargs, spec: null, iconURL: null, modelLabel: null, endpoint: newEndpoint },
         keepAddedConvos: isNewModular,
+        retarget: true,
       });
     },
     [
@@ -303,6 +305,7 @@ export default function useSelectMention({
         preset: newPreset,
         keepAddedConvos: isModular,
         disableParams,
+        retarget: true,
       });
     },
     [

@@ -386,8 +386,14 @@ export class ChannelWorker {
       run.plan.parts.length > 100
     )
       throw new Error('Unsupported delivery plan');
-    const renderer = run.plan.rendererVersion;
-    for (const part of run.plan.parts) {
+    const { rendererVersion: renderer, parts } = run.plan;
+    let deliveryFailed = run.receipts.some(
+      (receipt) =>
+        receipt.outcome === 'permanent_failure' &&
+        parts.some((part) => part.required && part.operationId === receipt.operationId),
+    );
+    for (const part of parts) {
+      if (deliveryFailed) break;
       check();
       const traceAvailable = () =>
         !part.traceUrl ||
@@ -457,33 +463,55 @@ export class ChannelWorker {
         }
         check();
         run = await this.settle(run, fence, receipt, signal);
+        if (part.required && receipt.outcome === 'permanent_failure') {
+          deliveryFailed = true;
+          break;
+        }
         if (receipt.outcome !== 'confirmed' && (part.required || receipt.outcome === 'retryable'))
           throw new Error('Delivery not confirmed');
       }
     }
     check();
-    // The answer receipts are settled. Cosmetic cleanup must never cause answer replay.
-    if (run.snapshot?.status === 'completed' && run.progress?.externalMessageKey) {
-      try {
-        if (
-          run.receipts.some(
-            (receipt) => receipt.externalMessageKey === run.progress?.externalMessageKey,
-          )
-        )
-          throw new Error('Progress address overlaps answer');
-        await this.slack.deleteMessage(
-          token,
-          progressAddress(run),
-          AbortSignal.any([signal, AbortSignal.timeout(2000)]),
-        );
-      } catch {
-        this.log.warn('optional_progress_cleanup_unavailable');
-      }
-    }
+    if (!deliveryFailed) await this.finishProgress(run, token, false, signal);
     check();
     run = await this.client.mutate(fence, 'commit', {}, signal);
-    if (!terminalStates.has(run.state)) throw new Error('Commit not confirmed');
+    if (!terminalStates.has(run.state) || (deliveryFailed && run.state !== 'failed'))
+      throw new Error('Commit not confirmed');
+    // Release the lane before the best-effort failure notice.
+    if (deliveryFailed) await this.finishProgress(run, token, true, signal);
     await this.lifecycle(run, bundle, run.state === 'delivered' ? 'completed' : 'failed', signal);
+  }
+
+  private async finishProgress(
+    run: ChannelRunView,
+    token: string,
+    deliveryFailed: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const key = run.progress?.externalMessageKey;
+    if (run.snapshot?.status !== 'completed' || !key) return;
+    if (deliveryFailed && run.progress?.outcome !== 'confirmed') return;
+    try {
+      if (run.receipts.some((receipt) => receipt.externalMessageKey === key))
+        throw new Error('Progress address overlaps answer');
+      const target = progressAddress(run);
+      const limited = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
+      if (deliveryFailed) {
+        await this.slack.updateMessageOnce(
+          token,
+          {
+            ...target,
+            text: ':warning: The agent completed, but Slack could not deliver the reply.',
+            blocks: [],
+          },
+          limited,
+        );
+      } else {
+        await this.slack.deleteMessage(token, target, limited);
+      }
+    } catch {
+      this.log.warn('optional_progress_cleanup_unavailable');
+    }
   }
 
   private retryable(receipt: ChannelDeliveryReceipt): void {

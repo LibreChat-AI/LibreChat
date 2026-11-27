@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
+import type { ISession } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { EnrollmentControllerDependencies } from './enrollment';
 import {
@@ -241,6 +242,21 @@ describe('cancel2FASetup', () => {
     await cancel(controllers, { userId, refreshToken: browser.refreshToken });
 
     expect(await sessionIds()).toEqual([otherBrowser.id, otherAccount.id].sort());
+  });
+
+  it('ends the session when the browser presents a token another tab just replaced', async () => {
+    const { controllers } = createHarness();
+    const userId = await seedUser();
+    const browser = await seedSession(userId);
+    const session = await methods.findSession(
+      { userId, refreshToken: browser.refreshToken },
+      { lean: false },
+    );
+    await methods.generateRefreshToken(session as ISession);
+
+    await cancel(controllers, { userId, refreshToken: browser.refreshToken });
+
+    expect(await sessionIds()).toEqual([]);
   });
 
   it('never deletes a session that belongs to a different account', async () => {

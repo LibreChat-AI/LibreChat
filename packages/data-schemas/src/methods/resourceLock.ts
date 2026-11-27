@@ -1,9 +1,19 @@
 import type { Model } from 'mongoose';
 import type { IResourceLock, ResourceLockAcquireData, ResourceLockReleaseData } from '~/types';
 import { createIndexesWithRetry } from '~/utils/retry';
+import logger from '~/config/winston';
 
 /** A stuck index build must surface as an error instead of hanging the request. */
 const INDEX_BUILD_WAIT_MS = 2_000;
+
+class ResourceLockIndexesNotReadyError extends Error {
+  readonly code = 'RESOURCE_LOCK_INDEXES_NOT_READY';
+
+  constructor(readonly waitMs: number) {
+    super(`Lock indexes not ready within ${waitMs}ms`);
+    this.name = 'ResourceLockIndexesNotReadyError';
+  }
+}
 
 function isDuplicateKeyError(error: unknown): boolean {
   return typeof error === 'object' && error != null && (error as { code?: unknown }).code === 11000;
@@ -51,7 +61,7 @@ export function createResourceLockMethods(mongoose: typeof import('mongoose')): 
    * skew relative to the TTL. Tracked as a liveness improvement in berry-13/LibreChat#354.
    *
    * Takes the lease for `key`, or takes over one whose holder let it expire.
-   * Returns false while another owner holds a live lease.
+   * Returns false on contention; throws if the indexes are not ready by the deadline.
    */
   async function acquireResourceLock({
     key,
@@ -60,8 +70,11 @@ export function createResourceLockMethods(mongoose: typeof import('mongoose')): 
     readyWaitMs,
   }: ResourceLockAcquireData): Promise<boolean> {
     const ResourceLock = mongoose.models.ResourceLock as Model<IResourceLock>;
-    if (!(await indexesReady(Math.min(readyWaitMs ?? INDEX_BUILD_WAIT_MS, INDEX_BUILD_WAIT_MS)))) {
-      return false;
+    const waitMs = Math.min(readyWaitMs ?? INDEX_BUILD_WAIT_MS, INDEX_BUILD_WAIT_MS);
+    if (!(await indexesReady(waitMs))) {
+      const error = new ResourceLockIndexesNotReadyError(waitMs);
+      logger.error(`[ResourceLock] ${error.message}`, { code: error.code, waitMs });
+      throw error;
     }
     const now = new Date();
     const expiresAt = new Date(now.getTime() + ttlMs);

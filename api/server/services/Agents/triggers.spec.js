@@ -1,4 +1,5 @@
 const mockCreateAgentTriggerService = jest.fn();
+const mockCreateDeadLetters = jest.fn(() => ({ list: jest.fn() }));
 const mockCreateBackgroundToolCompletionWakeupResolver = jest.fn(() => jest.fn());
 const mockGenerationJobManager = {
   supportsDetachedAgentEventActions: true,
@@ -21,6 +22,7 @@ jest.mock('@librechat/api', () => ({
   createCheckpointDeletionReclaimer: jest.fn((getJobs) => () => getJobs('owner', 'tenant')),
   createBackgroundToolDeadClaimRecovery: jest.fn(() => jest.fn()),
   createAgentTriggerService: (...args) => mockCreateAgentTriggerService(...args),
+  createDeadLetters: (...args) => mockCreateDeadLetters(...args),
   createAgentContinuationResolver: jest.fn(() => jest.fn()),
   createAgentEventContinueResolver: jest.fn(() => jest.fn()),
   createBackgroundToolCompletionWakeupResolver: (...args) =>
@@ -65,6 +67,17 @@ describe('agent trigger service composition', () => {
       purgeUser: jest.fn(),
       getBackgroundCompletionResultBatchSize: () => completionResultBatchSize,
     });
+  });
+
+  it('builds the dead-letter access from the stored methods and the service requeue', () => {
+    const composition = require('./triggers');
+    const service = mockCreateAgentTriggerService.mock.results[0].value;
+
+    expect(mockCreateDeadLetters).toHaveBeenCalledWith({
+      methods: require('~/models'),
+      requeue: service.requeue,
+    });
+    expect(composition.agentTriggerDeadLetters).toBe(mockCreateDeadLetters.mock.results[0].value);
   });
 
   it('uses complete owner job discovery for checkpoint evidence reclamation', async () => {
@@ -113,6 +126,23 @@ describe('agent trigger service composition', () => {
       options,
     );
     expect(mockQueuedTurnLifecycle.initialize).toHaveBeenCalledWith({ maxIdleIntervalMs: 60_000 });
+  });
+
+  it('hands the deployment-wide ceiling to the queued-turn worker as well', async () => {
+    const { initializeAgentTriggerService } = require('./triggers');
+    const options = {
+      address: 'local',
+      idlePolling: { queuedTurnMaxIntervalMs: 60_000 },
+      idleCeilingMs: 900_000,
+    };
+    await initializeAgentTriggerService(options);
+    expect(mockCreateAgentTriggerService.mock.results[0].value.initialize).toHaveBeenCalledWith(
+      options,
+    );
+    expect(mockQueuedTurnLifecycle.initialize).toHaveBeenCalledWith({
+      maxIdleIntervalMs: 60_000,
+      idleCeilingMs: 900_000,
+    });
   });
 
   it('injects the configured background completion batch size', async () => {

@@ -10,7 +10,7 @@ import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/
 import type { FlowStateManager } from '~/flow/manager';
 import type { MCPRequestContext } from '~/mcp/request';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
-import { executionFixture, allowOffered } from '~/schedules/authorization/execution.helper';
+import { executionFixture, allowOffered } from '~/agents/authority/execution.helper';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { getFreePort } from '~/mcp/__tests__/helpers/oauthTestServer';

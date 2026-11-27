@@ -30,12 +30,17 @@ import { collectSources, getCleanDomain, getUniqueDomainSources } from './source
 import useLazyCollapseBody from '../../react/parts/useLazyCollapseBody';
 import { parseJsonField } from '../../core/parts/parseJsonField';
 import { useToolCallIntent } from '../../react/parts/intent';
+import { useSearchContext } from '../../react/parts/search';
+import { NAV_CLEARANCE, ROW_GLYPH_SLOT } from './rows';
 import useRowHandoff from '../../react/parts/handoff';
+import Favicon, { StackedFavicons } from './Favicon';
 import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
-import { ROW_GLYPH_SLOT } from './rows';
+import { HeaderActionSlotContext } from './slot';
+import SearchVerticals from './verticals';
 import { classes } from './classes';
+import ToolCall from './ToolCall';
 
 /** What the app's tool card renders when a search fails. */
 export type WebSearchFailedCall = {
@@ -51,11 +56,6 @@ export type WebSearchFailedCall = {
   onExpand?: () => void;
 };
 
-export type WebSearchFaviconProps = {
-  domain: string;
-  className?: string;
-};
-
 export type WebSearchStackProps = {
   sources: ValidSource[];
   start?: number;
@@ -69,13 +69,7 @@ type ProgressKeys =
 
 const MAX_VISIBLE_FAVICONS = 3;
 
-function SourceFaviconStack({
-  sources,
-  renderFavicon,
-}: {
-  sources: ValidSource[];
-  renderFavicon: (props: WebSearchFaviconProps) => ReactNode;
-}) {
+function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
   const visible = getUniqueDomainSources(sources, MAX_VISIBLE_FAVICONS);
   return (
     <div className="flex items-center" aria-hidden="true">
@@ -89,30 +83,14 @@ function SourceFaviconStack({
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
         >
-          {renderFavicon({ domain: getCleanDomain(source.link), className: 'size-3 rounded-full' })}
+          <Favicon domain={getCleanDomain(source.link)} className="size-3 rounded-full" />
         </div>
       ))}
     </div>
   );
 }
 
-export default function WebSearch({
-  initialProgress: progress = 0.1,
-  isSubmitting,
-  isLast,
-  args,
-  output,
-  attachments,
-  hideAttachments = false,
-  onExpand,
-  runStepStatus,
-  searchResults,
-  headerSlot = null,
-  renderFavicon,
-  renderStackedFavicons,
-  renderVerticals,
-  renderFailedCall,
-}: {
+export type WebSearchProps = {
   isLast?: boolean;
   isSubmitting: boolean;
   args?: string | Record<string, unknown>;
@@ -126,15 +104,36 @@ export default function WebSearch({
   searchResults?: { [key: string]: SearchResultData };
   /** The fold header's action slot, when a generated title replaced this row. */
   headerSlot?: HTMLElement | null;
-  /** One site's icon. Absent, a finished row with sources keeps the globe. */
-  renderFavicon?: (props: WebSearchFaviconProps) => ReactNode;
   /** Overlapping icons while results are still arriving. */
   renderStackedFavicons?: (props: WebSearchStackProps) => ReactNode;
   /** Image, shopping and place strips under a finished search. */
   renderVerticals?: (attachments?: TAttachment[]) => ReactNode;
   /** The app's tool card for a failed search. Absent, a failure renders nothing. */
   renderFailedCall?: (props: WebSearchFailedCall) => ReactNode;
-}): ReactNode {
+};
+
+/** What a web search call gives its card; the rest the card reads from where it is drawn. */
+export type WebSearchCallProps = Omit<
+  WebSearchProps,
+  'searchResults' | 'headerSlot' | 'renderStackedFavicons' | 'renderVerticals' | 'renderFailedCall'
+>;
+
+export default function WebSearch({
+  initialProgress: progress = 0.1,
+  isSubmitting,
+  isLast,
+  args,
+  output,
+  attachments,
+  hideAttachments = false,
+  onExpand,
+  runStepStatus,
+  searchResults,
+  headerSlot = null,
+  renderStackedFavicons,
+  renderVerticals,
+  renderFailedCall,
+}: WebSearchProps): ReactNode {
   const localize = useLocalize();
   /** Model-authored live label (web_search carries `intent` natively);
    *  persists as the settled label like the other tool cards. */
@@ -372,7 +371,13 @@ export default function WebSearch({
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {completedText}
         </span>
-        <div className={classes('relative flex items-center gap-1.5', bare ? 'h-0' : 'my-1.5 h-5')}>
+        <div
+          className={classes(
+            'relative flex items-center gap-1.5',
+            NAV_CLEARANCE.pad,
+            bare ? 'h-0' : 'my-1.5 h-5',
+          )}
+        >
           {!bare && (
             <Button
               ref={rowRef}
@@ -388,8 +393,8 @@ export default function WebSearch({
               }
             >
               <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-                {hasSourceData && renderFavicon != null ? (
-                  <SourceFaviconStack sources={allSources} renderFavicon={renderFavicon} />
+                {hasSourceData ? (
+                  <SourceFaviconStack sources={allSources} />
                 ) : (
                   <Globe className="text-text-secondary size-4 shrink-0" />
                 )}
@@ -438,20 +443,10 @@ export default function WebSearch({
                           i > 0 && 'border-border-light border-t',
                         )}
                       >
-                        {renderFavicon != null ? (
-                          renderFavicon({
-                            domain,
-                            className: classes('size-4 shrink-0 rounded-sm', snippet && 'mt-0.5'),
-                          })
-                        ) : (
-                          <Globe
-                            className={classes(
-                              'text-text-secondary size-4 shrink-0',
-                              snippet && 'mt-0.5',
-                            )}
-                            aria-hidden="true"
-                          />
-                        )}
+                        <Favicon
+                          domain={domain}
+                          className={classes('size-4 shrink-0 rounded-sm', snippet && 'mt-0.5')}
+                        />
                         <span className="min-w-0 flex-1">
                           <span className="text-text-primary block truncate text-xs font-medium">
                             {source.title || domain}
@@ -494,5 +489,35 @@ export default function WebSearch({
       </span>
       <Shimmer className="tool-status-text min-w-0 truncate font-medium">{progressText}</Shimmer>
     </div>
+  );
+}
+
+const renderStack = ({ sources, start }: WebSearchStackProps): ReactNode => (
+  <StackedFavicons sources={sources} start={start} />
+);
+
+const renderVerticalStrips = (attachments?: TAttachment[]): ReactNode => (
+  <SearchVerticals attachments={attachments} />
+);
+
+const renderFailed = (failed: WebSearchFailedCall): ReactNode => <ToolCall {...failed} />;
+
+/**
+ * A web search call as the package draws it: the message's streaming results from
+ * `SearchContext`, the fold header's slot, stacked site icons, the image, shopping and place
+ * strips, and the generic tool card for a failed search.
+ */
+export function WebSearchCall(props: WebSearchCallProps): ReactNode {
+  const { searchResults } = useSearchContext();
+  const headerSlot = useContext(HeaderActionSlotContext);
+  return (
+    <WebSearch
+      {...props}
+      searchResults={searchResults}
+      headerSlot={headerSlot}
+      renderStackedFavicons={renderStack}
+      renderVerticals={renderVerticalStrips}
+      renderFailedCall={renderFailed}
+    />
   );
 }

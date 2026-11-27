@@ -2,7 +2,6 @@ import { expect, test } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
-  messagesView,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -45,9 +44,7 @@ test('an edit the server rejected is not re-sent when the pane changes hosts @sc
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
   await sendMessageAndWaitForCompletion(page, 'E2E_HTML_ARTIFACT_REPLY', { timeout: 60000 });
 
-  await messagesView(page)
-    .getByRole('button', { name: new RegExp(HTML_ARTIFACT) })
-    .click();
+  /* The reply opens its artifact as it arrives. */
   const panel = page.getByRole('region', { name: HTML_ARTIFACT });
   await expect(panel).toBeVisible();
 

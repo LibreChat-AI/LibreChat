@@ -83,7 +83,7 @@ type ButtonVariantOptions =
         | 'tile'
         | null
         | undefined;
-      shape?: 'default' | 'soft' | 'auth-action' | 'theme' | 'round' | null | undefined;
+      shape?: 'default' | 'soft' | 'auth-action' | 'theme' | 'round' | 'nested' | null | undefined;
     } & ClassProp)
   | undefined;
 
@@ -388,6 +388,9 @@ const buttonVariantRecipe = cva(
         'auth-action': 'rounded-theme-auth-action',
         theme: 'rounded-theme-control',
         round: 'rounded-theme-control-round',
+        /** One step tighter than the default, for a control set inside a card whose own corner is
+         *  the default's, such as the action under a failed reply. */
+        nested: 'rounded-md',
         unset: '',
       },
     },
