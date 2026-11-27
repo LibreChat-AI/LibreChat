@@ -1549,6 +1549,7 @@ Please follow these instructions when using tools from the respective MCP server
     onOAuthCredentialsChanged,
     onOAuthCredentialsChanging,
     mcpApps,
+    imageInputMimeTypes,
     scheduledMCPInvocation,
     unattended,
   }: {
@@ -1581,6 +1582,8 @@ Please follow these instructions when using tools from the respective MCP server
     onOAuthCredentialsChanged?: t.UserConnectionContext['onOAuthCredentialsChanged'];
     onOAuthCredentialsChanging?: t.UserConnectionContext['onOAuthCredentialsChanging'];
     mcpApps?: TMCPAppsPolicy;
+    /** Image MIME types the request's endpoint accepts as input; see `resolveMCPImageInputMimeTypes`. */
+    imageInputMimeTypes?: readonly string[];
   }): Promise<t.FormattedToolResponse> {
     if (scheduledBearerInvocation) requestScopedConnections = scheduledBearerInvocation.context;
     const userId = user?.id;
@@ -2304,8 +2307,9 @@ Please follow these instructions when using tools from the respective MCP server
                   serverBinding,
                   toolArgs: toolArguments,
                   mcpApps: admittedMCPApps,
+                  imageInputMimeTypes,
                 }
-              : { mcpApps: admittedMCPApps },
+              : { mcpApps: admittedMCPApps, imageInputMimeTypes },
           ),
           toolResult?.isError === true,
         );

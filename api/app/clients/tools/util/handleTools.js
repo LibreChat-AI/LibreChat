@@ -32,6 +32,7 @@ const {
   withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
+  resolveMCPImageInputMimeTypes,
   setMissingCodeFilesContext,
 } = require('@librechat/api');
 const {
@@ -649,6 +650,12 @@ const loadTools = async ({
         unattended: options.unattended,
         model: agent?.model ?? model,
         provider: agent?.provider ?? endpoint,
+        /** Image types this endpoint takes as input, so MCP tool images can reach a
+         *  custom endpoint's model instead of arriving as serialized text. */
+        imageInputMimeTypes: resolveMCPImageInputMimeTypes(
+          options.req,
+          agent?.provider ?? endpoint,
+        ),
       },
     })),
   );
