@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { AgentDetail } from '../agents.helpers';
 import {
   cleanupAgent,
@@ -11,6 +11,7 @@ import {
 import { getE2EUser } from '../../../setup/user';
 import { loginAdmin, requestResult } from '../content-filters.helpers';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from '../db';
+import { openSettings } from './ui-scale.helpers';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -246,6 +247,70 @@ async function expectBookmarkReleased(
   expect(await bookmarkedChats(request, token, tag)).toEqual([otherId]);
 }
 
+/** A stored Responses API record of the chat, which has to expire with it. */
+async function seedStoredResponse(userId: string, conversationId: string): Promise<void> {
+  await withMongo((db) =>
+    db.collection('storedresponses').insertOne({
+      userId,
+      conversationId,
+      responseId: randomUUID(),
+      requestKey: randomUUID(),
+      fingerprint: 'e2e-retention',
+      agentId: 'agent-mock-a',
+      requestJSON: '{}',
+      responseJSON: '{}',
+      parentMessageId: NO_PARENT,
+      status: 'completed',
+      revision: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }),
+  );
+}
+
+async function readStoredResponse(conversationId: string): Promise<{ expiredAt?: Date } | null> {
+  return withMongo((db) => db.collection('storedresponses').findOne({ conversationId }));
+}
+
+/** The chats the Archived chats view lists. */
+async function archivedChats(request: APIRequestContext, token: string): Promise<string[]> {
+  const result = await requestResult(request, {
+    path: '/api/convos?isArchived=true&limit=100',
+    token,
+  });
+  expect(result.ok, `Expected the archived chats to load: ${result.text}`).toBe(true);
+  const { conversations = [] } = result.body as {
+    conversations?: Array<{ conversationId: string }>;
+  };
+  return conversations.map((conversation) => conversation.conversationId);
+}
+
+async function archiveAll(request: APIRequestContext, token: string): Promise<void> {
+  const result = await requestResult(request, {
+    path: '/api/convos/archive/all',
+    token,
+    method: 'POST',
+  });
+  expect(result.ok, `Expected archiving all chats to succeed: ${result.text}`).toBe(true);
+}
+
+/** Settings > Data & Privacy > Archive all chats, up to its confirmation. */
+async function openArchiveAllDialog(page: Page): Promise<Locator> {
+  await page.goto(NEW_CHAT_PATH);
+  await openSettings(page);
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'Data & Privacy' }).click();
+  await settings.getByRole('button', { name: 'Archive all chats' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Confirm Archive' });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+async function confirmArchiveAll(page: Page, dialog: Locator): Promise<void> {
+  await dialog.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(page.getByText('All chats archived', { exact: true })).toBeVisible();
+}
+
 test.afterEach(async () => {
   const tags = cleanupTags.splice(0);
   if (tags.length > 0) {
@@ -255,6 +320,9 @@ test.afterEach(async () => {
   if (conversationIds.length === 0) {
     return;
   }
+  await withMongo((db) =>
+    db.collection('storedresponses').deleteMany({ conversationId: { $in: conversationIds } }),
+  );
   await deleteMessagesByConversation(conversationIds);
   await deleteConversations(conversationIds);
 });
@@ -610,6 +678,147 @@ test.describe('ephemeral retention', () => {
     const hoursLeft = ((deadline?.getTime() ?? 0) - Date.now()) / 3600000;
     expect(hoursLeft).toBeGreaterThan(generalChatRetention - 1);
     expect(hoursLeft).toBeLessThanOrEqual(generalChatRetention);
+  });
+
+  test('archiving all chats converts the chats saved before the mode @scenario:archiving-all-chats-under-ephemeral-converts-pre-existing-chats', async ({
+    page,
+    request,
+  }) => {
+    const conversationId = await seedPermanentConversation(
+      userId,
+      seedQuestion('Saved before ephemeral'),
+    );
+    await seedStoredResponse(userId, conversationId);
+    await setRetentionMode(request, token, userId);
+
+    const dialog = await openArchiveAllDialog(page);
+    await expect(
+      dialog.getByText(
+        'Are you sure you want to archive all chats? Temporary Chat is enabled for all chats by your administrator, so they will not appear under Archived chats and will be deleted automatically.',
+      ),
+    ).toBeVisible();
+    await confirmArchiveAll(page, dialog);
+
+    const stored = await readConversation(conversationId);
+    expect(stored?.isArchived).toBe(true);
+    expectForcedTemporary(stored);
+    expect(await archivedChats(request, token), 'a temporary chat is in no list').not.toContain(
+      conversationId,
+    );
+    expect(
+      (await readStoredResponse(conversationId))?.expiredAt,
+      'stored responses expire with their chat',
+    ).toEqual(stored?.expiredAt);
+  });
+
+  test('archiving all chats releases the bookmarks of the chats it converts @scenario:archiving-all-chats-under-ephemeral-releases-bookmarks-once', async ({
+    request,
+  }) => {
+    const tag = uniqueTag();
+    const conversationId = await seedPermanentConversation(
+      userId,
+      seedQuestion('Bookmarked before ephemeral'),
+    );
+    /** Already archived, so the sweep leaves it and its bookmark alone: releasing the converted
+     *  chat's bookmark twice would show as a count of 0. */
+    const archivedId = await seedPermanentConversation(
+      userId,
+      seedQuestion('Archived and bookmarked'),
+      { isArchived: true },
+    );
+    await bookmark(request, token, conversationId, tag);
+    await bookmark(request, token, archivedId, tag);
+    expect(await bookmarkCount(request, token, tag)).toBe(2);
+
+    await setRetentionMode(request, token, userId);
+    await archiveAll(request, token);
+
+    const converted = await readConversation(conversationId);
+    expect(converted?.isArchived).toBe(true);
+    expectForcedTemporary(converted);
+    expect(converted?.tags ?? [], 'a hidden chat must not keep its bookmark').toEqual([]);
+    expect(await bookmarkCount(request, token, tag)).toBe(1);
+    expect((await readConversation(archivedId))?.tags).toEqual([tag]);
+  });
+
+  test('archiving all chats keeps the deadline a chat already holds @scenario:archiving-all-chats-under-ephemeral-keeps-a-stored-deadline', async ({
+    request,
+  }) => {
+    /** A deadline from an earlier all-data mode; converting the chat must not open a new window. */
+    const held = new Date(Date.now() + 48 * 3600000);
+    const conversationId = await seedPermanentConversation(
+      userId,
+      seedQuestion('Saved under all-data retention'),
+      { expiredAt: held },
+    );
+
+    await setRetentionMode(request, token, userId);
+    await archiveAll(request, token);
+
+    const stored = await readConversation(conversationId);
+    expect(stored?.isArchived).toBe(true);
+    expect(stored?.isTemporary).toBe(true);
+    expect(stored?.expiredAt).toEqual(held);
+  });
+
+  test('archiving all chats gives the chats saved before all-data retention their deadline @scenario:archiving-all-chats-under-all-retention-gives-pre-existing-chats-their-deadline', async ({
+    request,
+  }) => {
+    const generalChatRetention = 2160;
+    const conversationId = await seedPermanentConversation(
+      userId,
+      seedQuestion('Saved before all-data retention'),
+    );
+    const held = new Date(Date.now() + 48 * 3600000);
+    const holdingId = await seedPermanentConversation(
+      userId,
+      seedQuestion('Already holds a deadline'),
+      { expiredAt: held },
+    );
+    await seedStoredResponse(userId, conversationId);
+
+    await setRetentionMode(request, token, userId, {
+      retentionMode: 'all',
+      temporaryChatRetention: 1,
+      generalChatRetention,
+    });
+    await archiveAll(request, token);
+
+    const stored = await readConversation(conversationId);
+    expect(stored?.isArchived).toBe(true);
+    expect(stored?.isTemporary, 'all-data retention keeps the chat permanent').toBe(false);
+    const hoursLeft = ((stored?.expiredAt?.getTime() ?? 0) - Date.now()) / 3600000;
+    expect(hoursLeft).toBeGreaterThan(generalChatRetention - 1);
+    expect(hoursLeft).toBeLessThanOrEqual(generalChatRetention);
+    expect((await readStoredResponse(conversationId))?.expiredAt).toEqual(stored?.expiredAt);
+    expect((await readConversation(holdingId))?.expiredAt).toEqual(held);
+    expect(await archivedChats(request, token)).toEqual(
+      expect.arrayContaining([conversationId, holdingId]),
+    );
+  });
+
+  test('archiving all chats keeps chats permanent under the default retention mode @scenario:archiving-all-chats-keeps-chats-permanent-under-the-default-retention-mode', async ({
+    page,
+    request,
+  }) => {
+    const conversationId = await seedPermanentConversation(
+      userId,
+      seedQuestion('Saved under the default mode'),
+    );
+
+    const dialog = await openArchiveAllDialog(page);
+    await expect(
+      dialog.getByText(
+        'Are you sure you want to archive all chats? They will be moved out of your chat list and remain available under Archived chats.',
+      ),
+    ).toBeVisible();
+    await confirmArchiveAll(page, dialog);
+
+    const stored = await readConversation(conversationId);
+    expect(stored?.isArchived).toBe(true);
+    expect(stored?.isTemporary ?? false).toBe(false);
+    expect(stored?.expiredAt ?? null).toBeNull();
+    expect(await archivedChats(request, token)).toContain(conversationId);
   });
 
   test('branching a response converts the chat holding it @scenario:branching-a-response-converts-its-pre-existing-chat', async ({

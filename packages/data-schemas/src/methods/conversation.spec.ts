@@ -5538,6 +5538,325 @@ describe('Conversation Operations', () => {
       const result = await archiveAllConvos('user123');
       expect(result.archivedCount).toBe(0);
     });
+
+    /** Archiving one chat applies the request's retention mode (`createArchiveHandler`), so
+     * archiving every chat has to give each the same retention. */
+    describe('under a retention mode', () => {
+      const HOUR = 60 * 60 * 1000;
+      const lastActivity = new Date(Date.now() - 7 * 24 * HOUR);
+      const held = new Date(Date.now() + 2 * HOUR);
+      const ephemeral: AppConfig['interfaceConfig'] = {
+        retentionMode: RetentionMode.EPHEMERAL,
+        temporaryChatRetention: 24,
+      };
+      const allData: AppConfig['interfaceConfig'] = {
+        retentionMode: RetentionMode.ALL,
+        temporaryChatRetention: 1,
+        generalChatRetention: 2160,
+      };
+
+      beforeEach(async () => {
+        await runAsSystem(async () => {
+          await mongoose.models.StoredResponse.deleteMany({});
+          await mongoose.models.ResponseScope.deleteMany({});
+        });
+      });
+
+      /** Inserted raw, as a chat saved before the mode is stored: permanent, with no deadline. */
+      async function seedChat(fields: Record<string, unknown> = {}): Promise<string> {
+        const conversationId = uuidv4();
+        await Conversation.collection.insertOne({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.openAI,
+          title: 'chat saved before the retention mode',
+          isArchived: false,
+          isTemporary: false,
+          tags: [],
+          createdAt: lastActivity,
+          updatedAt: lastActivity,
+          ...fields,
+        });
+        return conversationId;
+      }
+
+      async function seedResponse(conversationId: string): Promise<void> {
+        await runAsSystem(() =>
+          mongoose.models.StoredResponse.create({
+            userId: 'user123',
+            conversationId,
+            responseId: uuidv4(),
+            requestKey: uuidv4(),
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private"}',
+            responseJSON: '{"output":"private"}',
+            parentMessageId: 'root',
+            status: 'completed',
+          }),
+        );
+      }
+
+      const read = (conversationId: string) =>
+        Conversation.findOne({ conversationId }).lean<IConversation>();
+      const hoursUntil = (date?: Date | null) => ((date?.getTime() ?? 0) - Date.now()) / HOUR;
+
+      it.each([
+        ['temporary', { retentionMode: RetentionMode.TEMPORARY, temporaryChatRetention: 24 }, {}],
+        ['all', allData, {}],
+        ['all, legacy row', allData, { isTemporary: null }],
+        ['all, held deadline', allData, { expiredAt: held }],
+        ['ephemeral', ephemeral, {}],
+        ['ephemeral, legacy row', ephemeral, { isTemporary: null }],
+        ['ephemeral, held deadline', ephemeral, { expiredAt: held }],
+        ['ephemeral, bookmarked', ephemeral, { tags: ['work'] }],
+      ] as Array<[string, AppConfig['interfaceConfig'], Record<string, unknown>]>)(
+        'gives a chat the retention archiving it alone gives it (%s)',
+        async (_name, interfaceConfig, fields) => {
+          const alone = await seedChat({ ...fields, user: 'user-alone' });
+          const swept = await seedChat(fields);
+
+          /** What `createArchiveHandler` hands `saveConvo` for the same chat. */
+          const stored = await getConvoRetention('user-alone', alone);
+          await saveConvo(
+            {
+              userId: 'user-alone',
+              isTemporary: stored?.isTemporary,
+              expiredAt: stored?.expiredAt ?? undefined,
+              interfaceConfig,
+            },
+            { conversationId: alone, isArchived: true },
+            { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+          );
+          const result = await archiveAllConvos('user123', interfaceConfig);
+
+          expect(result.archivedCount).toBe(1);
+          const [single, bulk] = await Promise.all([read(alone), read(swept)]);
+          expect(bulk?.isArchived).toBe(true);
+          expect(bulk?.isTemporary).toBe(single?.isTemporary);
+          expect(bulk?.tags).toEqual(single?.tags);
+          expect(bulk?.updatedAt?.toISOString()).toBe(lastActivity.toISOString());
+          if (single?.expiredAt == null) {
+            expect(bulk?.expiredAt ?? null).toBeNull();
+          } else {
+            const drift = Math.abs((bulk?.expiredAt?.getTime() ?? 0) - single.expiredAt.getTime());
+            expect(drift).toBeLessThan(60 * 1000);
+          }
+        },
+      );
+
+      it('converts each chat it archives under ephemeral, so none stays listed', async () => {
+        const saved = await seedChat();
+        const legacy = uuidv4();
+        await Conversation.collection.insertOne({
+          conversationId: legacy,
+          user: 'user123',
+          endpoint: EModelEndpoint.openAI,
+          isArchived: false,
+          createdAt: lastActivity,
+          updatedAt: lastActivity,
+        });
+        const otherUser = await seedChat({ user: 'user456' });
+
+        const result = await archiveAllConvos('user123', ephemeral);
+
+        expect(result.archivedCount).toBe(2);
+        for (const conversationId of [saved, legacy]) {
+          const stored = await read(conversationId);
+          expect(stored?.isArchived).toBe(true);
+          expect(stored?.archivedAt).toBeInstanceOf(Date);
+          expect(stored?.isTemporary).toBe(true);
+          expect(hoursUntil(stored?.expiredAt)).toBeGreaterThan(23.9);
+          expect(hoursUntil(stored?.expiredAt)).toBeLessThanOrEqual(24);
+        }
+        const untouched = await read(otherUser);
+        expect(untouched?.isArchived).toBe(false);
+        expect(untouched?.isTemporary).toBe(false);
+        expect(untouched?.expiredAt ?? null).toBeNull();
+        const { conversations } = await getConvosByCursor('user123', { isArchived: true });
+        expect(conversations).toHaveLength(0);
+      });
+
+      it('stamps the general-chat deadline under all and keeps the chats listed as archived', async () => {
+        const stamped = await seedChat({ tags: ['work'] });
+        const holding = await seedChat({ expiredAt: held });
+        await ConversationTag.create({ user: 'user123', tag: 'work', count: 1, position: 1 });
+
+        const result = await archiveAllConvos('user123', allData);
+
+        expect(result.archivedCount).toBe(2);
+        const stampedChat = await read(stamped);
+        expect(stampedChat?.isTemporary).toBe(false);
+        expect(hoursUntil(stampedChat?.expiredAt)).toBeGreaterThan(2159.9);
+        expect(hoursUntil(stampedChat?.expiredAt)).toBeLessThanOrEqual(2160);
+        expect(stampedChat?.tags).toEqual(['work']);
+        expect((await read(holding))?.expiredAt?.toISOString()).toBe(held.toISOString());
+        const { conversations } = await getConvosByCursor('user123', { isArchived: true });
+        expect(conversations.map(({ conversationId }) => conversationId).sort()).toEqual(
+          [stamped, holding].sort(),
+        );
+        expect((await ConversationTag.findOne({ tag: 'work' }).lean())?.count).toBe(1);
+      });
+
+      it('falls back to the temporary-chat period under all without a general-chat one', async () => {
+        const conversationId = await seedChat();
+
+        await archiveAllConvos('user123', {
+          retentionMode: RetentionMode.ALL,
+          temporaryChatRetention: 6,
+        });
+
+        const stored = await read(conversationId);
+        expect(stored?.isTemporary).toBe(false);
+        expect(hoursUntil(stored?.expiredAt)).toBeGreaterThan(5.9);
+        expect(hoursUntil(stored?.expiredAt)).toBeLessThanOrEqual(6);
+      });
+
+      it('releases the bookmarks of a converted chat once, even with two sweeps racing', async () => {
+        const tagged = await seedChat({ tags: ['work', 'work', 'later'] });
+        const archived = await seedChat({ tags: ['work'], isArchived: true });
+        await ConversationTag.create([
+          { user: 'user123', tag: 'work', count: 2, position: 1 },
+          { user: 'user123', tag: 'later', count: 1, position: 2 },
+        ]);
+
+        const [first, second] = await Promise.all([
+          archiveAllConvos('user123', ephemeral),
+          archiveAllConvos('user123', ephemeral),
+        ]);
+
+        expect(first.archivedCount + second.archivedCount).toBe(1);
+        expect((await read(tagged))?.tags).toEqual([]);
+        expect((await read(archived))?.tags).toEqual(['work']);
+        const counts = await ConversationTag.find({ user: 'user123' }).lean();
+        expect(Object.fromEntries(counts.map(({ tag, count }) => [tag, count]))).toEqual({
+          work: 1,
+          later: 0,
+        });
+      });
+
+      it.each([
+        ['ephemeral', ephemeral],
+        ['all', allData],
+      ] as Array<[string, AppConfig['interfaceConfig']]>)(
+        'gives the stored responses of a chat it stamps the same deadline (%s)',
+        async (_name, interfaceConfig) => {
+          const conversationId = await seedChat();
+          await seedResponse(conversationId);
+
+          await archiveAllConvos('user123', interfaceConfig);
+
+          const stored = await read(conversationId);
+          const response = await runAsSystem(() =>
+            mongoose.models.StoredResponse.findOne({ conversationId }).lean<{
+              expiredAt?: Date;
+            }>(),
+          );
+          expect(stored?.expiredAt).toBeInstanceOf(Date);
+          expect(response?.expiredAt?.toISOString()).toBe(stored?.expiredAt?.toISOString());
+        },
+      );
+
+      it('archives no chat whose responses could not take its deadline, so a retry finds it', async () => {
+        const conversationId = await seedChat();
+        const updateMany = jest
+          .spyOn(mongoose.models.StoredResponse, 'updateMany')
+          .mockRejectedValueOnce(new Error('responses unavailable'));
+
+        try {
+          await expect(archiveAllConvos('user123', ephemeral)).rejects.toThrow(
+            'responses unavailable',
+          );
+        } finally {
+          updateMany.mockRestore();
+        }
+        expect((await read(conversationId))?.isArchived).toBe(false);
+
+        const retry = await archiveAllConvos('user123', ephemeral);
+
+        expect(retry.archivedCount).toBe(1);
+        const stored = await read(conversationId);
+        expect(stored?.isArchived).toBe(true);
+        expect(stored?.isTemporary).toBe(true);
+      });
+
+      it.each([
+        ['no config', undefined],
+        ['the default mode', { retentionMode: RetentionMode.TEMPORARY }],
+      ] as Array<[string, AppConfig['interfaceConfig']]>)(
+        'leaves retention and responses alone with %s',
+        async (_name, interfaceConfig) => {
+          const conversationId = await seedChat({ tags: ['work'] });
+          const updateMany = jest.spyOn(Conversation, 'updateMany');
+          const scopeWrites = jest.spyOn(mongoose.models.ResponseScope, 'findOneAndUpdate');
+
+          try {
+            await archiveAllConvos('user123', interfaceConfig);
+            expect(updateMany).toHaveBeenCalledTimes(1);
+            expect(scopeWrites).not.toHaveBeenCalled();
+          } finally {
+            updateMany.mockRestore();
+            scopeWrites.mockRestore();
+          }
+
+          const stored = await read(conversationId);
+          expect(stored?.isArchived).toBe(true);
+          expect(stored?.isTemporary).toBe(false);
+          expect(stored?.expiredAt ?? null).toBeNull();
+          expect(stored?.tags).toEqual(['work']);
+        },
+      );
+
+      it('converts chats across several concurrent slices of one batch', async () => {
+        const conversationIds = await Promise.all(Array.from({ length: 25 }, () => seedChat()));
+
+        const result = await archiveAllConvos('user123', ephemeral);
+
+        expect(result.archivedCount).toBe(conversationIds.length);
+        const converted = await Conversation.countDocuments({
+          conversationId: { $in: conversationIds },
+          isArchived: true,
+          isTemporary: true,
+          expiredAt: { $ne: null },
+          tags: { $size: 0 },
+        });
+        expect(converted).toBe(conversationIds.length);
+      });
+
+      /** The chat past the first 500 is the only one without a deadline, so the second batch is
+       * the one that must stamp it, and the held deadlines cost no response writes. */
+      it('stamps a chat in a later batch and writes nothing for deadlines already held', async () => {
+        await Conversation.collection.insertMany(
+          Array.from({ length: 500 }, (_, index) => ({
+            conversationId: `retention-held-${index}`,
+            user: 'user123',
+            endpoint: EModelEndpoint.openAI,
+            isArchived: false,
+            isTemporary: false,
+            expiredAt: held,
+          })),
+        );
+        const last = await seedChat();
+        const scopeWrites = jest.spyOn(mongoose.models.ResponseScope, 'findOneAndUpdate');
+
+        let result: { archivedCount: number };
+        try {
+          result = await archiveAllConvos('user123', allData);
+          expect(scopeWrites).toHaveBeenCalledTimes(1);
+        } finally {
+          scopeWrites.mockRestore();
+        }
+
+        expect(result.archivedCount).toBe(501);
+        expect(hoursUntil((await read(last))?.expiredAt)).toBeGreaterThan(2159.9);
+        const keptDeadline = await Conversation.countDocuments({
+          user: 'user123',
+          isArchived: true,
+          expiredAt: held,
+        });
+        expect(keptDeadline).toBe(500);
+      });
+    });
   });
 
   describe('Error Handling', () => {

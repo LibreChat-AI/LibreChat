@@ -157,7 +157,7 @@ module.exports = {
     restoreTenantContextFromReq: jest.fn((req, res, next) => next()),
     createArchiveAllHandler: jest.fn(({ archiveAllConvos }) => {
       archiveAllHandler.mockImplementation(async (req, res) => {
-        const result = await archiveAllConvos(req.user.id);
+        const result = await archiveAllConvos(req.user.id, req.config?.interfaceConfig);
         return res.status(200).json(result);
       });
       return archiveAllHandler;

@@ -1011,6 +1011,7 @@
   "com_nav_always_make_prod": "Always make new prompt versions production",
   "com_nav_archive_all_chats": "Archive all chats",
   "com_nav_archive_all_confirm_message": "Are you sure you want to archive all chats? They will be moved out of your chat list and remain available under Archived chats.",
+  "com_nav_archive_all_confirm_message_temporary": "Are you sure you want to archive all chats? Temporary Chat is enabled for all chats by your administrator, so they will not appear under Archived chats and will be deleted automatically.",
   "com_nav_archive_created_at": "Date Archived",
   "com_nav_archive_name": "Name",
   "com_nav_archived_chats": "Archived chats",

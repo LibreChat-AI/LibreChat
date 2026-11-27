@@ -721,10 +721,12 @@ router.post('/archive', configMiddleware, validateConvoAccess, archiveHandler);
 
 /**
  * Archives every conversation currently visible to the user.
+ * The config loads first because the sweep applies the request's retention mode to each
+ * chat it archives, as `/archive` does for one.
  * @route POST /archive/all
  * @returns {object} 200 - The number of conversations archived.
  */
-router.post('/archive/all', archiveAllHandler);
+router.post('/archive/all', configMiddleware, archiveAllHandler);
 
 router.post('/pin', validateConvoAccess, async (req, res) => {
   const { conversationId, pinned } = req.body?.arg ?? {};
