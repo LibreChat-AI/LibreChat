@@ -1829,6 +1829,11 @@ describe('createRemoteAgentAuth', () => {
           ? makeConfig({ scope: undefined }, { enabled: false })
           : makeConfig({ scope: undefined }, { enabled: true }),
       );
+      const lookupTenants: Array<string | undefined> = [];
+      deps.getRolesByNames.mockImplementation(async (roleNames: string[]) => {
+        lookupTenants.push(getTenantId());
+        return roleNames.map((roleName) => ({ name: roleName }));
+      });
       const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
 
       await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
@@ -1837,6 +1842,9 @@ describe('createRemoteAgentAuth', () => {
         ['STANDARD-USER', 'BASIC-USER', 'USER'],
         'name',
       );
+      /** The configured roles are validated, then the assigned one read back, in the tenant. */
+      expect(deps.getRolesByNames).toHaveBeenLastCalledWith(['BASIC-USER'], 'name');
+      expect(lookupTenants).toEqual(['tenant-role-sync', 'tenant-role-sync']);
       expect(deps.updateUser).toHaveBeenCalledWith(
         'uid123',
         { role: 'BASIC-USER' },

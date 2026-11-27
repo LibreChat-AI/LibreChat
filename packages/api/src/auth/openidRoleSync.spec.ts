@@ -471,6 +471,104 @@ describe('recordIdpRoleChange', () => {
 });
 
 describe('writeIdpRoleChange', () => {
+  /** A sync of user `u1` from USER into `role`, whose role lookup answers with `roles` (or
+   * rejects with it). */
+  function syncInto(role: string, roles: Array<{ name: string }> | Error) {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    const updateUser = jest.fn().mockResolvedValue({ role });
+    const getRolesByNames = jest.fn(async () => {
+      if (roles instanceof Error) {
+        throw roles;
+      }
+      return roles;
+    });
+    const write = () =>
+      writeIdpRoleChange({
+        userId: 'u1',
+        update: { role },
+        observedRole: SystemRoles.USER,
+        updateUser,
+        findUser: jest.fn(),
+        getRolesByNames,
+        recordAuditEntry,
+        source: 'openid_login',
+      });
+    return { write, updateUser, getRolesByNames, recordAuditEntry };
+  }
+
+  it('reads back the custom role it assigned and audits the change while the role exists', async () => {
+    const sync = syncInto('BASIC-USER', [{ name: 'BASIC-USER' }]);
+
+    await expect(sync.write()).resolves.toEqual({ role: 'BASIC-USER' });
+
+    expect(sync.getRolesByNames).toHaveBeenCalledWith(['BASIC-USER'], 'name');
+    expect(sync.updateUser).toHaveBeenCalledTimes(1);
+    expect(sync.recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { previousRole: SystemRoles.USER, role: 'BASIC-USER', source: 'openid_login' },
+      }),
+    );
+  });
+
+  it('reads back no system role', async () => {
+    const sync = syncInto(SystemRoles.ADMIN, []);
+
+    await expect(sync.write()).resolves.toEqual({ role: SystemRoles.ADMIN });
+
+    expect(sync.getRolesByNames).not.toHaveBeenCalled();
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes back a role deleted before it read the role back, unaudited, and fails as a missing role', async () => {
+    const sync = syncInto('BASIC-USER', []);
+    /** Only a role that differs in case is left: the account would still hold a missing name. */
+    sync.getRolesByNames.mockResolvedValue([{ name: 'basic-user' }]);
+
+    await expect(sync.write()).rejects.toThrow(
+      'OpenID role sync configured roles do not exist: BASIC-USER',
+    );
+
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER },
+      { role: 'BASIC-USER' },
+    );
+    expect(sync.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('audits the change when another write moved the account out before the take-back', async () => {
+    const sync = syncInto('BASIC-USER', []);
+    sync.updateUser.mockResolvedValueOnce({ role: 'BASIC-USER' }).mockResolvedValueOnce(null);
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist');
+
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes back the role and fails with the read error when the role cannot be read back', async () => {
+    const sync = syncInto('BASIC-USER', new Error('database unreachable'));
+
+    await expect(sync.write()).rejects.toThrow('database unreachable');
+
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER },
+      { role: 'BASIC-USER' },
+    );
+    expect(sync.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('audits the change it could not take back', async () => {
+    const sync = syncInto('BASIC-USER', []);
+    sync.updateUser
+      .mockResolvedValueOnce({ role: 'BASIC-USER' })
+      .mockRejectedValueOnce(new Error('database unreachable'));
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist');
+
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
   it('throws instead of writing when the stored role changes before every attempt', async () => {
     const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
     let reads = 0;
@@ -484,6 +582,7 @@ describe('writeIdpRoleChange', () => {
         observedRole: SystemRoles.USER,
         updateUser,
         findUser,
+        getRolesByNames: jest.fn(),
         recordAuditEntry,
         source: 'openid_login',
       }),

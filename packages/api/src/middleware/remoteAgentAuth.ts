@@ -523,6 +523,7 @@ export function createRemoteAgentAuth({
               observedRole: previousRole,
               updateUser,
               findUser,
+              getRolesByNames,
               recordAuditEntry,
               source: 'remote_agent_oidc',
               tenantId: userResolution.user.tenantId,

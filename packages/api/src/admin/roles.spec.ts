@@ -2183,6 +2183,8 @@ describe('createAdminRolesHandlers', () => {
         { role: SystemRoles.ADMIN },
         expect.any(Object),
       );
+      /** A system role is never deleted, so the add does not read it back. */
+      expect(deps.getRoleByName).toHaveBeenCalledTimes(1);
       expect(status).toHaveBeenCalledWith(200);
       expect(json).toHaveBeenCalledWith({ success: true });
     });
@@ -2203,6 +2205,125 @@ describe('createAdminRolesHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({ error: 'Failed to add role member' });
+    });
+
+    describe('reading the role back after the write', () => {
+      const roleId = new Types.ObjectId();
+
+      /**
+       * An add of a `previousRole` member to `editor`, whose read of the role after the write
+       * finds `readBack`, and whose undo of the write resolves to `undo` (or rejects with it).
+       */
+      async function addWhileDeleting(
+        readBack: IRole | null | Error,
+        undo: IUser | null | Error,
+        previousRole = 'viewer',
+      ) {
+        const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+        const getRoleByName = jest.fn().mockResolvedValueOnce(mockRole({ _id: roleId }));
+        if (readBack instanceof Error) {
+          getRoleByName.mockRejectedValueOnce(readBack);
+        } else {
+          getRoleByName.mockResolvedValueOnce(readBack);
+        }
+        const updateUser = jest.fn().mockResolvedValueOnce(mockUser({ role: 'editor' }));
+        if (undo instanceof Error) {
+          updateUser.mockRejectedValueOnce(undo);
+        } else {
+          updateUser.mockResolvedValueOnce(undo);
+        }
+        const deps = createDeps({
+          recordAuditEntry,
+          getRoleByName,
+          updateUser,
+          findUser: jest.fn().mockResolvedValue(mockUser({ role: previousRole })),
+          countUsersByRole: jest.fn().mockResolvedValue(3),
+        });
+        const { req, res, status, json } = createReqRes({
+          params: { name: 'editor' },
+          body: { userId: validUserId },
+          user: { _id: new Types.ObjectId(), role: 'admin' },
+        });
+        await createAdminRolesHandlers(deps).addRoleMember(req, res);
+        return { deps, recordAuditEntry, status, json };
+      }
+
+      it('puts the previous role back, records nothing and answers 404 when the role is gone', async () => {
+        const add = await addWhileDeleting(null, mockUser({ role: 'viewer' }));
+
+        expect(add.deps.updateUser).toHaveBeenLastCalledWith(
+          validUserId,
+          { role: 'viewer' },
+          { role: 'editor' },
+        );
+        expect(add.status).toHaveBeenCalledWith(404);
+        expect(add.json).toHaveBeenCalledWith({ error: 'Role not found' });
+        expect(add.recordAuditEntry).not.toHaveBeenCalled();
+      });
+
+      it('treats a role recreated under the name as gone', async () => {
+        const add = await addWhileDeleting(
+          mockRole({ _id: new Types.ObjectId() }),
+          mockUser({ role: 'viewer' }),
+        );
+
+        expect(add.deps.updateUser).toHaveBeenCalledTimes(2);
+        expect(add.status).toHaveBeenCalledWith(404);
+      });
+
+      it('puts an admin it moved back to ADMIN without counting admins again', async () => {
+        const add = await addWhileDeleting(
+          null,
+          mockUser({ role: SystemRoles.ADMIN }),
+          SystemRoles.ADMIN,
+        );
+
+        expect(add.deps.updateUser).toHaveBeenLastCalledWith(
+          validUserId,
+          { role: SystemRoles.ADMIN },
+          { role: 'editor' },
+        );
+        expect(add.deps.countUsersByRole).toHaveBeenCalledTimes(1);
+        expect(add.status).toHaveBeenCalledWith(404);
+      });
+
+      it('records the add when another write moved the user out before the undo', async () => {
+        const add = await addWhileDeleting(null, null);
+
+        expect(add.status).toHaveBeenCalledWith(404);
+        expect(add.recordAuditEntry).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: 'role.member_added',
+            metadata: { userId: validUserId, previousRole: 'viewer' },
+          }),
+        );
+      });
+
+      it('undoes the add and answers 500 when the role cannot be read back', async () => {
+        const add = await addWhileDeleting(new Error('timeout'), mockUser({ role: 'viewer' }));
+
+        expect(add.deps.updateUser).toHaveBeenLastCalledWith(
+          validUserId,
+          { role: 'viewer' },
+          { role: 'editor' },
+        );
+        expect(add.status).toHaveBeenCalledWith(500);
+        expect(add.json).toHaveBeenCalledWith({ error: 'Failed to add role member' });
+        expect(add.recordAuditEntry).not.toHaveBeenCalled();
+      });
+
+      it('records the add, logs and answers 500 when the add cannot be undone', async () => {
+        const add = await addWhileDeleting(null, new Error('timeout'));
+
+        expect(add.status).toHaveBeenCalledWith(500);
+        expect(add.recordAuditEntry).toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'role.member_added' }),
+        );
+        expect(logger.error).toHaveBeenCalledWith(
+          expect.stringContaining('may still hold the role "editor"'),
+          expect.anything(),
+        );
+      });
     });
   });
 

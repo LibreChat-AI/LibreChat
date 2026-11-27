@@ -298,6 +298,15 @@ function roleIdentity(role: Pick<IRole, '_id'>): { id: string } | undefined {
   return role._id != null ? { id: String(role._id) } : undefined;
 }
 
+/** Whether `role` is still `expected`, the role document a request read earlier: a role
+ * recreated under the same name has another `_id`. */
+function isSameRole(expected: Pick<IRole, '_id'>, role: Pick<IRole, '_id'> | null): boolean {
+  return (
+    role != null &&
+    (expected._id == null || role._id == null || String(expected._id) === String(role._id))
+  );
+}
+
 /** What a role rename moved to the new name along with the role. */
 interface RoleDependentsMoved {
   /** The profile as the new name now holds it; `null` when the role had none. */
@@ -383,6 +392,13 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     recordAuditEntry,
     logPrefix: '[adminRoles]',
   });
+
+  /** Reads a role again; `known` is false when the read itself failed. */
+  const readRole = (name: string) =>
+    getRoleByName(name).then(
+      (role) => ({ known: true, role }),
+      () => ({ known: false, role: null }),
+    );
 
   /** Emits a `grant.removed` audit entry for each grant the role-deletion cascade
    * removed, so the cascade leaves the same forensic trail as an explicit revoke.
@@ -924,16 +940,10 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
         : null;
       /** Reads the role again to learn whether it still is the one this request targeted. */
-      const lookupRole = () =>
-        getRoleByName(name).then(
-          (role) => ({ known: true, role }),
-          () => ({ known: false, role: null }),
-        );
+      const lookupRole = () => readRole(name);
       /** A role recreated under the same name is a different role and must not inherit the
        * old one's dependents. */
-      const isTargetedRole = (role: IRole | null) =>
-        role != null &&
-        (existing._id == null || role._id == null || String(existing._id) === String(role._id));
+      const isTargetedRole = (role: IRole | null) => isSameRole(existing, role);
 
       const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
         invalidatingConfigStore(
@@ -1206,6 +1216,57 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return res.status(409).json({ error: 'User role changed concurrently' });
       }
 
+      const recordAdded = async () => {
+        await emitAudit(req, {
+          action: 'role.member_added',
+          severity: memberChangeSeverity(name, user.role),
+          target: roleTarget(name),
+          metadata: { userId, previousRole: user.role ?? null },
+        });
+        /** The single-role write also ends the user's membership of the previous role. */
+        if (user.role) {
+          await emitAudit(req, {
+            action: 'role.member_removed',
+            severity: memberChangeSeverity(user.role),
+            target: roleTarget(user.role),
+            metadata: { userId, newRole: name },
+          });
+        }
+      };
+
+      if (!isSystemRoleName(name)) {
+        /**
+         * A deletion of the role whose last member read came before this write cannot see the
+         * user, so the role is read back. Gone, replaced under its name or unreadable, the add is
+         * undone while the user still holds the name. An add another write moved the user out of
+         * first (the deletion's own sweep, which audits its move) stood until then and is audited.
+         */
+        const lookup = await readRole(name);
+        if (!lookup.known || !isSameRole(existing, lookup.role)) {
+          const outcome = await updateUser(
+            userId,
+            { role: user.role ?? SystemRoles.USER },
+            { role: name },
+          ).then(
+            (undone) => (undone ? 'undone' : 'moved'),
+            (undoError) => {
+              logger.error(
+                `[adminRoles] user ${userId} may still hold the role "${name}" its add assigned:`,
+                getSafeErrorMetadata(undoError),
+              );
+              return 'failed';
+            },
+          );
+          if (outcome !== 'undone') {
+            await recordAdded();
+          }
+          if (lookup.known && outcome !== 'failed') {
+            return res.status(404).json({ error: 'Role not found' });
+          }
+          return res.status(500).json({ error: 'Failed to add role member' });
+        }
+      }
+
       if (user.role === SystemRoles.ADMIN && name !== SystemRoles.ADMIN) {
         const postCount = await countUsersByRole(SystemRoles.ADMIN);
         if (postCount === 0) {
@@ -1221,21 +1282,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         }
       }
 
-      await emitAudit(req, {
-        action: 'role.member_added',
-        severity: memberChangeSeverity(name, user.role),
-        target: roleTarget(name),
-        metadata: { userId, previousRole: user.role ?? null },
-      });
-      /** The single-role write also ends the user's membership of the previous role. */
-      if (user.role) {
-        await emitAudit(req, {
-          action: 'role.member_removed',
-          severity: memberChangeSeverity(user.role),
-          target: roleTarget(user.role),
-          metadata: { userId, newRole: name },
-        });
-      }
+      await recordAdded();
       return res.status(200).json({ success: true });
     } catch (error) {
       logger.error('[adminRoles] addRoleMember error:', getSafeErrorMetadata(error));

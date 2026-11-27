@@ -1,8 +1,13 @@
 import get from 'lodash/get';
 import { SystemRoles } from 'librechat-data-provider';
+import { logger, tenantStorage } from '@librechat/data-schemas';
 import type { RecordAuditEntry } from '~/admin/audit';
 import { recordSystemAuditEntry } from '~/admin/audit';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { isEnabled } from '~/utils';
+
+/** Roles that always exist: a write to one never needs reading back. */
+const systemRoles = new Set<string>(Object.values(SystemRoles));
 
 export type OpenIdRoleSyncClaimSource = 'access' | 'id' | 'userinfo';
 
@@ -376,10 +381,65 @@ type IdpRoleWriteInput<T extends RoleRecord> = {
     expectedState: { role: string | null },
   ) => Promise<T | null>;
   findUser: (filter: { _id: string }, fields: string) => Promise<RoleRecord | null>;
+  /** Reads roles by name in the active tenant context (`findRolesByNames`), as role sync
+   * validated the configured roles, to read a role the write assigned back after it. */
+  getRolesByNames: OpenIdRoleSyncRolesLookup;
   recordAuditEntry?: RecordAuditEntry;
   source: 'openid_login' | 'remote_agent_oidc';
   tenantId?: string;
 };
+
+/** Whether a role named exactly `role` exists in the account's tenant `tenantId`, or without one
+ * in the request's partition: where role sync validated the configured roles. */
+async function roleExists(
+  role: string,
+  tenantId: string | undefined,
+  getRolesByNames: OpenIdRoleSyncRolesLookup,
+): Promise<boolean> {
+  const read = async () => (await getRolesByNames([role], 'name')) ?? [];
+  const roles = tenantId ? await tenantStorage.run({ tenantId }, read) : await read();
+  return roles.some((found) => found?.name === role);
+}
+
+/** What reading back the custom role a write assigned found. `stood`: the change stayed in
+ * place for a while (another write moved the account out first, or the undo failed), so it is
+ * audited; `error`: the read that failed, so the role could not be confirmed. */
+type RoleReadBack = { kept: true } | { kept: false; stood: boolean; error?: unknown };
+
+/**
+ * A role deletion whose last member read came before a write cannot see the account it moved
+ * into the role, so the role is read back after the write. When it is gone, or cannot be read,
+ * the previous role is put back while the account still holds the assigned one.
+ */
+async function readBackRole<T extends RoleRecord>(
+  role: string,
+  previousRole: string | null,
+  {
+    userId,
+    tenantId,
+    getRolesByNames,
+    updateUser,
+  }: Pick<IdpRoleWriteInput<T>, 'userId' | 'tenantId' | 'getRolesByNames' | 'updateUser'>,
+): Promise<RoleReadBack> {
+  let error: unknown;
+  try {
+    if (await roleExists(role, tenantId, getRolesByNames)) {
+      return { kept: true };
+    }
+  } catch (readError) {
+    error = readError;
+  }
+  try {
+    const undone = await updateUser(userId, { role: previousRole } as Partial<T>, { role });
+    return { kept: false, stood: undone == null, error };
+  } catch (undoError) {
+    logger.error(
+      `[openidRoleSync] user ${userId} may still hold the role "${role}" its sync assigned:`,
+      getSafeErrorMetadata(undoError),
+    );
+    return { kept: false, stood: true, error };
+  }
+}
 
 /**
  * Persists an IdP-decided role and audits the transition that write performed. The write is
@@ -387,6 +447,11 @@ type IdpRoleWriteInput<T extends RoleRecord> = {
  * stored role is read again and the write retried from it. Each audit entry therefore names the
  * role the write replaced, and overlapping logins that make the same change audit it once.
  * Resolves `null` when the user no longer exists.
+ *
+ * A write that moved the account into a custom role reads it back (`readBackRole`): when the
+ * role was deleted meanwhile the change is taken back and this throws as role sync does for a
+ * missing configured role. A change that stood for a while is audited either way, since the
+ * deletion's sweep that moves an account out audits its own move.
  */
 export async function writeIdpRoleChange<T extends RoleRecord>({
   userId,
@@ -394,6 +459,7 @@ export async function writeIdpRoleChange<T extends RoleRecord>({
   observedRole,
   updateUser,
   findUser,
+  getRolesByNames,
   recordAuditEntry,
   source,
   tenantId,
@@ -402,14 +468,32 @@ export async function writeIdpRoleChange<T extends RoleRecord>({
   for (let attempt = 0; attempt < ROLE_WRITE_ATTEMPTS; attempt++) {
     const user = await updateUser(userId, update, { role: previousRole });
     if (user) {
-      await recordIdpRoleChange({
-        recordAuditEntry,
-        userId,
-        previousRole,
-        role: update.role,
-        source,
-        tenantId,
-      });
+      const role = update.role;
+      const check: RoleReadBack =
+        role && role !== previousRole && !systemRoles.has(role)
+          ? await readBackRole(role, previousRole, {
+              userId,
+              tenantId,
+              getRolesByNames,
+              updateUser,
+            })
+          : { kept: true };
+      if (check.kept || check.stood) {
+        await recordIdpRoleChange({
+          recordAuditEntry,
+          userId,
+          previousRole,
+          role,
+          source,
+          tenantId,
+        });
+      }
+      if (!check.kept) {
+        throw (
+          check.error ??
+          new Error(`[openidRoleSync] OpenID role sync configured roles do not exist: ${role}`)
+        );
+      }
       return user;
     }
     const current = await findUser({ _id: userId }, 'role');

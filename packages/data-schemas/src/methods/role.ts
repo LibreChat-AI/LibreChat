@@ -671,22 +671,6 @@ export function createRoleMethods(
   }
 
   /**
-   * Guards against deleting system roles. Reassigns affected users back to USER. Only the role
-   * of the caller's tenant partition and its members there are touched
-   * (`tenantPartitionFilter`).
-   *
-   * No existence pre-check is performed: for a nonexistent role the `updateMany`
-   * is a harmless no-op and `findOneAndDelete` returns null. This makes the
-   * function idempotent — a retry after a partial failure will still clean up
-   * orphaned user references and cache entries.
-   *
-   * Without a MongoDB transaction the two writes are non-atomic — if the delete
-   * fails after the reassignment, users will already have been moved to USER
-   * while the role document still exists. Recovery requires the caller to retry
-   * the delete call, which will succeed since the `updateMany` is a no-op on
-   * the second pass.
-   */
-  /**
    * Moves the members of `roleName` in the caller's partition to USER and returns the ids of
    * exactly the accounts it changed. Each batch is one write, conditional on the account still
    * holding the role, that also tags every account it changes with a nonce of its own: when it
@@ -801,6 +785,45 @@ export function createRoleMethods(
     }
   }
 
+  /**
+   * After the role is deleted, moves to USER the accounts an assignment gave its name between
+   * the deletion's last member read and the delete, which no pass could see, and adds them to
+   * `moved`. An assignment that commits after this read finds the role gone when it reads the
+   * role back after its write, and undoes itself (`addRoleMember` and `writeIdpRoleChange` in
+   * `@librechat/api`), so no account keeps a name its partition no longer has. Holders of a role
+   * recreated under the name since are its members and stay. The deletion already committed, so
+   * a failure here is logged, with the accounts it did move still reported, rather than thrown.
+   */
+  async function withLateMembers(
+    roleName: string,
+    partitioned: FilterQuery<IRole>,
+    moved: string[],
+  ): Promise<string[]> {
+    const Role = mongoose.models.Role;
+    const nameIsFree = async () => (await Role.exists(partitioned)) == null;
+    let late: string[];
+    try {
+      late = await reassignMembersToUser(roleName, nameIsFree);
+    } catch (error) {
+      late = error instanceof RoleDeletionError ? error.reassignedUserIds : [];
+      /** `deleted_elsewhere` here means a role of the name exists again: nothing failed. */
+      if (!(error instanceof RoleDeletionError && error.reason === 'deleted_elsewhere')) {
+        logger.error(
+          `[deleteRoleByName] accounts assigned "${roleName}" during its deletion were not all moved to USER:`,
+          error,
+        );
+      }
+    }
+    return [...new Set([...moved, ...late])];
+  }
+
+  /**
+   * Deletes the role named `roleName` in the caller's tenant partition (`tenantPartitionFilter`),
+   * or with `options.id` only that role document, after moving its members there to USER, and
+   * resolves to the role with every account it moved; `null` when there was no such role.
+   * Without a transaction the moves and the delete are separate writes: a failure part way throws
+   * `RoleDeletionError` with the accounts already moved, and a retry moves only those still left.
+   */
   async function deleteRoleByName(
     roleName: string,
     options?: { id?: string },
@@ -826,10 +849,22 @@ export function createRoleMethods(
       try {
         deleted = await Role.findOneAndDelete(role).lean<IRole>();
       } catch (error) {
-        throw new RoleDeletionError('delete_failed', reassignedUserIds, error);
+        /** The delete may have committed with its acknowledgement lost: once the role is gone,
+         * the accounts assigned to it meanwhile are moved and reported too. */
+        const gone = await Role.exists(role).then(
+          (found) => found == null,
+          () => false,
+        );
+        const moved = gone
+          ? await withLateMembers(roleName, partitioned, reassignedUserIds)
+          : reassignedUserIds;
+        throw new RoleDeletionError('delete_failed', moved, error);
       }
       if (deleted) {
-        return { role: deleted, reassignedUserIds };
+        return {
+          role: deleted,
+          reassignedUserIds: await withLateMembers(roleName, partitioned, reassignedUserIds),
+        };
       }
       if (reassignedUserIds.length > 0) {
         /** Another deletion removed the role after this one moved members: they stay moved. */

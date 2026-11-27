@@ -1877,6 +1877,28 @@ describe('setupOpenId', () => {
       );
     });
 
+    it('rejects login and puts the role back when the synced role is deleted during the login', async () => {
+      /** The configured roles exist when sync validates them; the role is gone once written. */
+      findRolesByNames
+        .mockImplementationOnce(async (roleNames) =>
+          roleNames.map((roleName) => ({ name: roleName })),
+        )
+        .mockResolvedValueOnce([]);
+      jwtDecode.mockReturnValue({
+        roles: ['requiredRole', 'STANDARD-USER'],
+        permissions: ['not-admin'],
+      });
+
+      await expect(validate(tokenset)).rejects.toThrow(
+        'OpenID role sync configured roles do not exist: STANDARD-USER',
+      );
+      expect(updateUser).toHaveBeenLastCalledWith(
+        'newUserId',
+        { role: 'USER' },
+        { role: 'STANDARD-USER' },
+      );
+    });
+
     it('can assign a non-admin role after the existing admin demotion path runs', async () => {
       const existingAdminUser = {
         _id: 'existingAdminId',
@@ -2771,7 +2793,9 @@ describe('setupOpenId', () => {
         );
         expect(getAppConfig).toHaveBeenCalledWith(roleConfigRead('USER'));
         expect(getAppConfig).toHaveBeenCalledWith(roleConfigRead('BASIC-USER'));
-        expect(findRolesByNames).toHaveBeenCalledTimes(1);
+        /** Once to validate the configured roles, once to read back the role the write assigned. */
+        expect(findRolesByNames).toHaveBeenCalledTimes(2);
+        expect(findRolesByNames).toHaveBeenLastCalledWith(['BASIC-USER'], 'name');
         expect(updateUser).toHaveBeenCalledWith(
           'newUserId',
           expect.objectContaining({ role: 'BASIC-USER' }),
