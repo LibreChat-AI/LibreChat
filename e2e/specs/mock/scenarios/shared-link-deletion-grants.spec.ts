@@ -43,9 +43,11 @@ const GRANTS = [
   'ensureLinkPermissions creates OWNER AclEntry for legacy link with no entries',
   'grantCreationPermissions creates OWNER and PUBLIC VIEWER AclEntries',
 ];
+const UNCAPTURED = `${RACE} a link created between the erasure capturing the links and deleting them keeps no grant`;
 const RETRIES = [
   'deleteAllSharedLinksWithCleanup awaits ACL cleanup and keeps the links when it fails',
   `${RACE} a retried erasure removes what its window left when the sweep after the delete failed`,
+  `${RACE} a retried erasure removes a grant made across its first cleanup when the last sweep failed`,
 ];
 
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -120,6 +122,7 @@ test.describe('grants written while a shared link is deleted', () => {
 
   test('deleting a link while it is being created leaves no grant @scenario:deleting-a-link-mid-creation-leaves-no-grant', () => {
     expectWriterLeavesNothing('creating the link');
+    expectPassed(UNCAPTURED);
   });
 
   test('links that are not being deleted still get their grants @scenario:links-not-being-deleted-keep-their-grants', () => {

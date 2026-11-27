@@ -639,4 +639,62 @@ describe('grants written while their link is deleted', () => {
     expect(await SharedLink.countDocuments({ _id: { $in: ids } })).toBe(0);
     expect(await AclEntry.countDocuments({ resourceId: { $in: ids } })).toBe(0);
   });
+
+  /** The erasure deletes the user's links by user, so it also removes one it never captured. */
+  test('a link created between the erasure capturing the links and deleting them keeps no grant', async () => {
+    await createTestLink();
+    let created: Link | undefined;
+    const cleanup = AclEntry.collection.deleteMany.bind(AclEntry.collection);
+    jest.spyOn(AclEntry.collection, 'deleteMany').mockImplementationOnce(async (...args) => {
+      created = await createTestLink();
+      await grantCreationPermissions(created._id, userId, true);
+      return cleanup(...args);
+    });
+
+    await deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true });
+
+    expect(created).toBeDefined();
+    expect(await SharedLink.countDocuments({ user: userId })).toBe(0);
+    expect(await AclEntry.countDocuments({ resourceId: created?._id })).toBe(0);
+  });
+
+  /** A creation whose owner grant lands before the erasure's first cleanup and its public one after. */
+  test('a retried erasure removes a grant made across its first cleanup when the last sweep failed', async () => {
+    const link = await createTestLink();
+    let ownerGranted!: () => void;
+    const owner = new Promise<void>((resolve) => (ownerGranted = resolve));
+    let grantPublic!: () => void;
+    const publicGate = new Promise<void>((resolve) => (grantPublic = resolve));
+    const grant = AccessControlService.prototype.grantPermission;
+    jest
+      .spyOn(AccessControlService.prototype, 'grantPermission')
+      .mockImplementation(async function (this: AccessControlService, params) {
+        if (params.principalType === PrincipalType.PUBLIC) {
+          ownerGranted();
+          await publicGate;
+        }
+        return grant.call(this, params);
+      });
+    const creating = grantCreationPermissions(link._id, userId, true);
+    await owner;
+    const deleteLinks = SharedLink.collection.deleteMany.bind(SharedLink.collection);
+    jest.spyOn(SharedLink.collection, 'deleteMany').mockImplementationOnce(async (...args) => {
+      grantPublic();
+      await creating;
+      return deleteLinks(...args);
+    });
+    const sweep = AclEntry.deleteMany.bind(AclEntry);
+    jest
+      .spyOn(AclEntry, 'deleteMany')
+      .mockImplementationOnce(sweep)
+      .mockRejectedValueOnce(new Error('acl down'));
+
+    await expect(deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true })).rejects.toThrow(
+      'acl down',
+    );
+    await deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true });
+
+    expect(await SharedLink.countDocuments({ _id: link._id })).toBe(0);
+    expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+  });
 });

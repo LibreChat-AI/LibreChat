@@ -325,23 +325,23 @@ export async function deleteAllSharedLinksWithCleanup(
   user: string,
   options: { awaitCleanup?: boolean } = {},
 ): Promise<{ message: string; deletedCount: number }> {
+  /**
+   * The cleanup before the delete keeps the links as the retry anchor when it fails, and it keeps
+   * the owner's grants, which name the links once their rows are gone. A request that read a link
+   * before the delete can still grant on it after that cleanup, so the sweep after the delete
+   * removes every entry of the links those grants name, and a retry after it failed finds them.
+   */
   const { deletedIds, ...result } = await getMethods().deleteAllSharedLinks(
     user,
     options.awaitCleanup
       ? async (ids) => {
           if (ids.length > 0) {
-            await cleanupBulkSharedLinkPermissions(ids);
+            await getMethods().deleteSharedLinkAclEntries(ids, user);
           }
         }
       : undefined,
   );
   if (options.awaitCleanup) {
-    /**
-     * The cleanup before the delete keeps the links as the retry anchor when it fails, but a
-     * request that read a link before the delete can still grant on it after that cleanup, so
-     * the entries are swept again. Such grants include the owner's, which outlive a failed sweep
-     * here, and a retry finds the deleted links through them since their rows are gone.
-     */
     const owned = (
       await getMethods().getSoleOwnedResourceIds(
         new mongoose.Types.ObjectId(user),
