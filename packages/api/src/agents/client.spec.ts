@@ -172,6 +172,34 @@ describe('countFormattedMessageTokens media blocks', () => {
     expect(sent[sent.length - 1]?.content).toBe(question);
   });
 
+  it('rejects an OpenRouter recording larger than the context window before invoking the model', async () => {
+    const content = [text, videoUrl(`data:video/mp4;base64,${base64(10)}`)];
+    const graph = new StandardGraph({
+      runId: 'oversized-openrouter-video',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.OPENROUTER,
+          maxContextTokens: 8000,
+          summarizationEnabled: false,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+      indexTokenCountMap: {
+        0: countFormattedMessageTokens({ role: 'user', content }, 'o200k_base'),
+      },
+    });
+    graph.overrideTestModel(['should not be called']);
+    await expect(
+      graph
+        .createAgentNode('primary')
+        .invoke(
+          { messages: [new HumanMessage({ content })] },
+          { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+        ),
+    ).rejects.toThrow('empty_messages');
+  });
+
   it('counts a base64 text document by its decoded text, not its base64', () => {
     const csv = 'id,name,amount\n'.concat('7,Zoë,12.50\n'.repeat(4000));
     const block = {

@@ -11,7 +11,7 @@ import { inOneProject, repoRoot } from './lint.helpers';
  * The mock harness swaps the model before a request leaves the server, and the budget is computed
  * before the run starts, so it is read from one run of the token counter spec. It counts the parts
  * the audio and video encoders build, compares them with the run's own counter, and runs the agents
- * SDK's pruning on a history whose earlier turn carries a recording.
+ * SDK's pruning on a history whose earlier turn, or whose latest turn, carries a recording.
  */
 
 type JestAssertion = { fullName: string; status: string };
@@ -90,8 +90,11 @@ test.describe('audio and video in the context budget', () => {
     expectBothEncodings('adds what the run token counter adds for the same part');
   });
 
-  test('an earlier recording that no longer fits the window is pruned from the request @scenario:long-recording-pruned-before-request', () => {
+  test('a recording that no longer fits the window is pruned, or refused before the provider is called @scenario:oversized-recording-never-sent', () => {
     expectPassed('prunes an earlier OpenRouter recording that no longer fits the context window');
+    expectPassed(
+      'rejects an OpenRouter recording larger than the context window before invoking the model',
+    );
   });
 
   test('Gemini audio, video and PDF media keep their counts @scenario:gemini-media-count-unchanged', () => {
