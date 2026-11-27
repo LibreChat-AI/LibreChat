@@ -20,6 +20,9 @@ const {
 const { getRandomVoiceId, createChunkProcessor, splitTextIntoChunks } = require('./streamAudio');
 const { getAppConfig } = require('~/server/services/Config');
 
+/** Read aloud sends sentence-sized requests, so the first audio does not wait for the whole text. */
+const SPEECH_CHUNK_CHARS = 300;
+
 /**
  * Service class for handling Text-to-Speech (TTS) operations.
  * @class
@@ -326,7 +329,7 @@ class TTSService {
       const voice = await this.getVoice(ttsSchema, requestVoice);
       const nextBudget = createSpeechBudget(appConfig, abortOnClose(res));
 
-      if (text.length < 4096) {
+      if (text.length < SPEECH_CHUNK_CHARS) {
         const response = await this.ttsRequest(
           provider,
           ttsSchema,
@@ -340,7 +343,7 @@ class TTSService {
         return;
       }
 
-      const textChunks = splitTextIntoChunks(text, 1000);
+      const textChunks = splitTextIntoChunks(text, SPEECH_CHUNK_CHARS);
 
       for (const chunk of textChunks) {
         try {

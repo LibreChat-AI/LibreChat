@@ -166,6 +166,36 @@ describe('TTSService input cap', () => {
   });
 });
 
+describe('TTSService read aloud chunking', () => {
+  it('splits text longer than one sentence-sized chunk instead of sending it whole', async () => {
+    const { pipeSegment } = require('@librechat/api');
+    const { splitTextIntoChunks } = require('./streamAudio');
+    const service = new TTSService();
+    jest.spyOn(service, 'getVoice').mockResolvedValue('alloy');
+    splitTextIntoChunks.mockReturnValue([{ text: 'only', isFinished: true }]);
+    jest.spyOn(service, 'ttsRequest').mockResolvedValue({ data: {} });
+    pipeSegment.mockResolvedValue(undefined);
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+      setHeader: jest.fn(),
+      once: jest.fn(),
+      end: jest.fn(),
+    };
+    const input = 'Sentence. '.repeat(50);
+
+    await service.processTextToSpeech(
+      {
+        body: { input },
+        config: { speech: { tts: { openai: { apiKey: 'sk', model: 'tts-1' } } } },
+      },
+      res,
+    );
+
+    expect(splitTextIntoChunks).toHaveBeenCalledWith(input, 300);
+  });
+});
+
 describe('TTSService chunked speech deadlines', () => {
   it('gives each chunk its own deadline and destroys a started response when a later chunk fails', async () => {
     const { pipeSegment } = require('@librechat/api');
