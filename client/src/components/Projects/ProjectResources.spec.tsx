@@ -10,6 +10,7 @@ import type { ReactNode } from 'react';
 import ProjectResources from './ProjectResources';
 
 const mockUploadMutateAsync = jest.fn();
+let mockStartupConfig: unknown = undefined;
 const mockCanUseFileSearch = jest.fn(() => true);
 const mockAddMutateAsync = jest.fn();
 const mockRemoveMutateAsync = jest.fn();
@@ -79,7 +80,7 @@ jest.mock('~/data-provider', () => ({
   useUploadFileMutation: () => ({ mutateAsync: mockUploadMutateAsync, isLoading: false }),
   useAddProjectFileMutation: () => ({ mutateAsync: mockAddMutateAsync, isLoading: false }),
   useRemoveProjectFileMutation: () => ({ mutateAsync: mockRemoveMutateAsync, isLoading: false }),
-  useGetStartupConfig: () => ({ data: undefined }),
+  useGetStartupConfig: () => ({ data: mockStartupConfig }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -218,6 +219,83 @@ describe('ProjectResources', () => {
     expect(screen.queryByText('unsafe internal upload detail')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Dismiss failed.txt upload' })).toBeInTheDocument();
   });
+  it('refuses a file over the project size or type limits before uploading it', async () => {
+    mockStartupConfig = {
+      projects: { files: { fileSizeLimit: 1, supportedMimeTypes: ['^text/plain$'] } },
+    };
+    try {
+      renderResources();
+      const input = screen.getByTestId('project-upload-input');
+      const big = new File(['x'], 'big.txt', { type: 'text/plain' });
+      Object.defineProperty(big, 'size', { value: 2 * 1024 * 1024 });
+      fireEvent.change(input, {
+        target: { files: [big, new File(['y'], 'sheet.csv', { type: 'text/csv' })] },
+      });
+
+      expect(await screen.findByText('com_ui_project_file_too_large')).toBeInTheDocument();
+      expect(screen.getByText('com_ui_project_file_type')).toBeInTheDocument();
+      expect(mockUploadMutateAsync).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Dismiss big.txt upload' })).toBeInTheDocument();
+    } finally {
+      mockStartupConfig = undefined;
+    }
+  });
+
+  it('says the project changed, not that it is full, when the attach lost a revision race', async () => {
+    mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+    mockAddMutateAsync.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { status: 409, data: { code: 'CHAT_PROJECT_CONFLICT' } },
+    });
+    renderResources();
+    fireEvent.change(screen.getByTestId('project-upload-input'), {
+      target: { files: [new File(['x'], 'notes.txt')] },
+    });
+
+    expect(await screen.findByText('com_ui_project_file_conflict')).toBeInTheDocument();
+  });
+
+  it('reads the MIME type from the extension when the browser reports none', async () => {
+    mockStartupConfig = { projects: { files: { supportedMimeTypes: ['^text/markdown$'] } } };
+    mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+    try {
+      renderResources();
+      fireEvent.change(screen.getByTestId('project-upload-input'), {
+        target: { files: [new File(['# Notes'], 'notes.md', { type: '' })] },
+      });
+
+      await waitFor(() => expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText('com_ui_project_file_type')).toBeNull();
+    } finally {
+      mockStartupConfig = undefined;
+    }
+  });
+
+  it('leaves the last place to a valid file selected after a refused one', async () => {
+    mockStartupConfig = {
+      projects: { maxFiles: 1, files: { supportedMimeTypes: ['^text/plain$'] } },
+    };
+    mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+    try {
+      renderResources();
+      fireEvent.change(screen.getByTestId('project-upload-input'), {
+        target: {
+          files: [
+            new File(['y'], 'sheet.csv', { type: 'text/csv' }),
+            new File(['x'], 'notes.txt', { type: 'text/plain' }),
+          ],
+        },
+      });
+
+      await waitFor(() => expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1));
+      const formData = mockUploadMutateAsync.mock.calls[0][0] as FormData;
+      expect((formData.get('file') as File).name).toBe('notes.txt');
+    } finally {
+      mockStartupConfig = undefined;
+    }
+  });
+
   it('reserves remaining capacity across overlapping multi-file selections', async () => {
     let finishFirstUpload!: (file: TFileUpload) => void;
     mockProjectQueryState = { ...mockProjectQueryState, data: undefined, isLoading: true };

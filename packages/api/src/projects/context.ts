@@ -1,3 +1,4 @@
+import { projectFilesEnabled } from 'librechat-data-provider';
 import type { TEndpointOption, TChatProjectsConfig } from 'librechat-data-provider';
 import type { IChatProject, IConversation } from '@librechat/data-schemas';
 import type { CanonicalProjectResource, GetProjectFiles } from './resources';
@@ -44,8 +45,11 @@ export interface ResolveChatProjectContextDeps {
    */
   canUseProjects?: () => Promise<boolean>;
   /** The deployment's `projects` limits. `maxInstructionsLength: 0` keeps stored instructions
-   *  out of every turn, however long ago they were saved. */
-  projectsConfig?: Pick<TChatProjectsConfig, 'maxInstructionsLength'>;
+   *  out of every turn, however long ago they were saved; project files turned off
+   *  (`files.enabled: false` or `maxFiles: 0`) keep attached files out the same way. */
+  projectsConfig?: Partial<
+    Pick<TChatProjectsConfig, 'maxInstructionsLength' | 'maxFiles' | 'files'>
+  >;
 }
 
 export const CHAT_PROJECT_CONTEXT_UNAVAILABLE = 'Project context unavailable';
@@ -263,9 +267,10 @@ export async function resolveChatProjectContext(
     typeof project._id === 'string' && project._id !== ''
       ? project._id
       : (project._id?.toString() ?? projectId);
-  const file_ids = Array.isArray(project.file_ids)
-    ? project.file_ids.filter((fileId): fileId is string => typeof fileId === 'string')
-    : [];
+  const file_ids =
+    projectFilesEnabled(deps.projectsConfig) && Array.isArray(project.file_ids)
+      ? project.file_ids.filter((fileId): fileId is string => typeof fileId === 'string')
+      : [];
   const resources =
     includeResources === false
       ? []

@@ -48,6 +48,31 @@ function setup(overrides: Partial<Parameters<typeof createProjectHandlers>[0]> =
 }
 
 describe('ChatProject handlers', () => {
+  it.each([
+    ['Project files are turned off', 403, 'CHAT_PROJECT_FILES_OFF'],
+    ['Project file too large', 400, 'CHAT_PROJECT_FILE_TOO_LARGE'],
+    ['Project file type not allowed', 400, 'CHAT_PROJECT_FILE_TYPE'],
+    ['Project storage limit reached', 409, 'CHAT_PROJECT_STORAGE_LIMIT'],
+  ] as const)('maps the attach refusal "%s" to %i %s', async (message, status, code) => {
+    const { handlers } = setup({
+      addChatProjectFile: jest.fn().mockRejectedValue(new ChatProjectError(code, message)),
+    });
+    const { res, result } = response();
+    await handlers.addProjectFile(request({ params: { projectId }, body: { file_id: 'f' } }), res);
+
+    expect(result.statusCode).toBe(status);
+    expect(result.body).toEqual({ error: message, code });
+  });
+
+  it('answers 500 for an attach failure that is not a typed refusal', async () => {
+    const { handlers } = setup({
+      addChatProjectFile: jest.fn().mockRejectedValue(new Error('Project files are turned off')),
+    });
+    const { res, result } = response();
+    await handlers.addProjectFile(request({ params: { projectId }, body: { file_id: 'f' } }), res);
+    expect(result.statusCode).toBe(500);
+  });
+
   describe('turned-off fields and the project cap', () => {
     const off = { projects: { maxInstructionsLength: 0, maxDescriptionLength: 0 } };
 

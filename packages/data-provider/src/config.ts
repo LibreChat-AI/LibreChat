@@ -71,7 +71,7 @@ import {
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
-import { fileConfigSchema } from './file-config';
+import { fileConfigSchema, supportedMimeTypesSchema } from './file-config';
 import { clientLimitsSchema } from './clientLimits';
 import type { TClientLimits } from './clientLimits';
 import {
@@ -4946,11 +4946,12 @@ export const openIdDiscoverySchema = z.object({
 export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
 export const chatProjectsConfigSchema = z
   .object({
-    /** Maximum number of reference files attached to one Chat Project. Defaults to 50. */
+    /** Maximum number of reference files attached to one Chat Project. Defaults to 50. `0` turns
+     *  project files off, as `files.enabled: false` does. */
     maxFiles: z
       .number()
       .int()
-      .positive()
+      .min(0)
       .max(MAX_CHAT_PROJECT_FILES_CEILING)
       .optional()
       .default(MAX_CHAT_PROJECT_FILES),
@@ -4974,6 +4975,22 @@ export const chatProjectsConfigSchema = z
       .default(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH),
     /** Most projects one user may own. Unset, there is no cap. Lowering it never removes
      *  projects; it only refuses new ones until the user is under the cap. */
+    /** Project reference files, on top of the deployment's `fileConfig` (which every upload
+     *  already passes). Unset fields add no project-specific limit. */
+    files: z
+      .object({
+        /** `false` turns project files off: none can be attached, attached ones stop reaching
+         *  chats, and the files panel is hidden. Defaults to true. */
+        enabled: z.boolean().optional(),
+        /** Largest file, in MB, that may be attached to a project. */
+        fileSizeLimit: z.number().positive().optional(),
+        /** Largest combined size, in MB, of one project's attached files. */
+        totalSizeLimit: z.number().positive().optional(),
+        /** MIME type patterns (regular expressions, as in `fileConfig`) a project file must match. */
+        supportedMimeTypes: supportedMimeTypesSchema.optional(),
+      })
+      .strict()
+      .optional(),
     maxProjectsPerUser: z
       .number()
       .int()
@@ -4985,6 +5002,13 @@ export const chatProjectsConfigSchema = z
   .prefault({});
 
 export type TChatProjectsConfig = z.infer<typeof chatProjectsConfigSchema>;
+
+/** Whether Chat Projects take reference files on this deployment (`files.enabled`, `maxFiles`). */
+export function projectFilesEnabled(
+  config: Partial<Pick<TChatProjectsConfig, 'files' | 'maxFiles'>> | undefined,
+): boolean {
+  return config?.files?.enabled !== false && config?.maxFiles !== 0;
+}
 
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);

@@ -47,7 +47,7 @@ cache: true
 # Chat Projects: the ceilings a single project may reach. Every field is optional and
 # defaults to the value shown, which is the behavior when the block is absent.
 projects:
-  # Reference files that may be attached to one project (maximum 500).
+  # Reference files that may be attached to one project (maximum 500). 0 turns project files off.
   maxFiles: 50
   # Characters of project instructions stored and sent as guidance (maximum 200000).
   # 0 turns project instructions off: none can be saved, and stored ones never reach the model.
@@ -57,6 +57,14 @@ projects:
   maxDescriptionLength: 1000
   # Most projects one user may own (maximum 10000). Unset, there is no cap.
   # maxProjectsPerUser: 20
+  # Project reference files, on top of fileConfig (which every upload already passes).
+  # files:
+  #   enabled: true            # false (or maxFiles: 0) turns project files off
+  #   fileSizeLimit: 10        # MB per file
+  #   totalSizeLimit: 50       # MB per project
+  #   supportedMimeTypes:      # regex patterns, as in fileConfig
+  #     - "^application/pdf$"
+  #     - "^text/.*$"
 
 # Tool-call previews: a long conversation's tool outputs, arguments and subagent transcripts
 # can run to megabytes, though their cards render collapsed. The web client asks for bounded

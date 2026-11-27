@@ -3,8 +3,8 @@ import { useRecoilValue } from 'recoil';
 import * as Ariakit from '@ariakit/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDefaultLayout } from 'react-resizable-panels';
-import { Constants, QueryKeys } from 'librechat-data-provider';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Constants, QueryKeys, projectFilesEnabled } from 'librechat-data-provider';
 import {
   ArrowLeft,
   ArrowUpDown,
@@ -94,6 +94,7 @@ export default function ProjectWorkspace() {
   /** A limit of 0 turns the field off for the deployment: no editor, and nothing shown. */
   const hasInstructions = startupConfig?.projects?.maxInstructionsLength !== 0;
   const hasDescription = startupConfig?.projects?.maxDescriptionLength !== 0;
+  const hasFiles = isRagEnabled && projectFilesEnabled(startupConfig?.projects);
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const { newConversation } = useNewConvo();
   const activeProjectId = project?._id;
@@ -109,7 +110,7 @@ export default function ProjectWorkspace() {
     panelIds: reversed ? WORKSPACE_PANEL_IDS_RTL : WORKSPACE_PANEL_IDS,
     storage: localStorage,
   });
-  let detailsPanelIds = isRagEnabled ? DETAILS_PANEL_IDS_WITH_FILES : DETAILS_PANEL_IDS;
+  let detailsPanelIds = hasFiles ? DETAILS_PANEL_IDS_WITH_FILES : DETAILS_PANEL_IDS;
   if (!hasInstructions) {
     detailsPanelIds = DETAILS_PANEL_IDS_FILES_ONLY;
   }
@@ -371,9 +372,7 @@ export default function ProjectWorkspace() {
     </section>
   );
 
-  const filesSection = isRagEnabled ? (
-    <ProjectResources key={project._id} project={project} />
-  ) : null;
+  const filesSection = hasFiles ? <ProjectResources key={project._id} project={project} /> : null;
 
   /** react-resizable-panels reads drag deltas physically, so under RTL the group
    *  stays LTR and renders these in reverse, each panel restoring the document

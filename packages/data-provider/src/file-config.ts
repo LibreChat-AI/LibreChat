@@ -619,7 +619,7 @@ export const fileConfig = {
   },
 };
 
-const supportedMimeTypesSchema = z
+export const supportedMimeTypesSchema = z
   .array(
     z.string().superRefine((pattern, context) => {
       try {

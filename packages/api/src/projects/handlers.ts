@@ -18,6 +18,7 @@ import type {
   AvailableProjectFilesResult,
   ChatProjectMethods,
   ChatProjectSortBy,
+  ChatProjectErrorCode,
   ChatProjectSortDirection,
   CreateChatProjectInput,
   UpdateChatProjectInput,
@@ -34,6 +35,14 @@ const PROJECT_NOT_FOUND = 'Project not found';
 const CONVERSATION_NOT_FOUND = 'Conversation not found';
 const PROJECT_FILE_UNAVAILABLE = 'Project file unavailable';
 const PROJECT_FILE_LIMIT_REACHED = 'Project file limit reached';
+/** The status each `projects` refusal answers with; the client maps the code to its copy. */
+const PROJECT_REFUSAL_STATUS: Record<ChatProjectErrorCode, number> = {
+  CHAT_PROJECT_LIMIT: 409,
+  CHAT_PROJECT_FILES_OFF: 403,
+  CHAT_PROJECT_FILE_TOO_LARGE: 400,
+  CHAT_PROJECT_FILE_TYPE: 400,
+  CHAT_PROJECT_STORAGE_LIMIT: 409,
+};
 
 const PROJECT_SORT_FIELDS = new Set<ChatProjectSortBy>(['name', 'createdAt', 'lastConversationAt']);
 
@@ -422,6 +431,17 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       }
       if (error instanceof Error && error.message === PROJECT_FILE_LIMIT_REACHED) {
         return res.status(409).json({ error: PROJECT_FILE_LIMIT_REACHED });
+      }
+      if (error instanceof ChatProjectError) {
+        return res
+          .status(PROJECT_REFUSAL_STATUS[error.code])
+          .json({ error: error.message, code: error.code });
+      }
+      if (error instanceof Error && error.message === CHAT_PROJECT_CONFLICT) {
+        return res.status(409).json({
+          message: 'Project was changed by another session',
+          code: 'CHAT_PROJECT_CONFLICT',
+        });
       }
       logger.error('[projects] Error adding project file', error);
       return res.status(500).json({ error: 'Error adding project file' });

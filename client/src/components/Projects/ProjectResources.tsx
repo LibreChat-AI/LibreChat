@@ -33,8 +33,17 @@ import {
   MAX_CHAT_PROJECT_FILES,
   PermissionTypes,
   Permissions,
+  mbToBytes,
+  inferMimeType,
+  convertStringsToRegex,
 } from 'librechat-data-provider';
-import type { TChatProjectFile, TError, TFile, TFileUpload } from 'librechat-data-provider';
+import type {
+  TFile,
+  TError,
+  TFileUpload,
+  TChatProjectFile,
+  TChatProjectsConfig,
+} from 'librechat-data-provider';
 import type { FileView } from '~/components/Chat/Input/Composer/Files';
 import {
   useAddProjectFileMutation,
@@ -48,6 +57,7 @@ import { useAgentCapabilities, useGetAgentsConfig, useHasAccess, useLocalize } f
 import FileGrid, { FILE_VIEWS } from '~/components/Chat/Input/Composer/Files';
 import { CatalogContent } from '~/components/Chat/Input/Composer/Catalog';
 import { NotificationSeverity, type LocalizeFunction } from '~/common';
+import { getResponseErrorCode } from '~/utils/errors';
 type ProjectResourcesProps = {
   project: { _id: string; fileCount?: number };
 };
@@ -59,6 +69,8 @@ type UploadState = {
   fileId?: string;
   errorMessage?: string;
   status: 'processing' | 'failed';
+  /** Refused by a `projects.files` limit before upload: retrying cannot change that. */
+  refused?: boolean;
 };
 
 const getUploadErrorMessage = (error: unknown, localize: LocalizeFunction): string => {
@@ -73,15 +85,51 @@ const getUploadErrorMessage = (error: unknown, localize: LocalizeFunction): stri
   return localize('com_error_files_upload');
 };
 
-/** Attaching answers 409 only when the project is full; every other failure reads the same. */
+type ProjectFileLimits = NonNullable<TChatProjectsConfig['files']>;
+
+/** Names the `projects.files` limit a file breaks, so it is refused before it is uploaded. */
+const getFileLimitMessage = (
+  file: File,
+  limits: ProjectFileLimits | undefined,
+  localize: LocalizeFunction,
+): string | undefined => {
+  if (limits?.fileSizeLimit != null && file.size > mbToBytes(limits.fileSizeLimit)) {
+    return localize('com_ui_project_file_too_large', { size: limits.fileSizeLimit });
+  }
+  if (
+    limits?.supportedMimeTypes != null &&
+    !convertStringsToRegex(limits.supportedMimeTypes).some((pattern) =>
+      pattern.test(inferMimeType(file.name, file.type)),
+    )
+  ) {
+    return localize('com_ui_project_file_type');
+  }
+  return undefined;
+};
+
+/** Attaching names the project limit a file breaks; any other failure reads the same. */
 const getAssociationErrorMessage = (
   error: unknown,
   localize: LocalizeFunction,
   fileLimit: number,
-): string =>
-  (error as TError | undefined)?.response?.status === 409
+  limits: ProjectFileLimits | undefined,
+): string => {
+  switch (getResponseErrorCode(error)) {
+    case 'CHAT_PROJECT_FILES_OFF':
+      return localize('com_ui_project_files_off');
+    case 'CHAT_PROJECT_FILE_TOO_LARGE':
+      return localize('com_ui_project_file_too_large', { size: limits?.fileSizeLimit ?? '' });
+    case 'CHAT_PROJECT_FILE_TYPE':
+      return localize('com_ui_project_file_type');
+    case 'CHAT_PROJECT_CONFLICT':
+      return localize('com_ui_project_file_conflict');
+    case 'CHAT_PROJECT_STORAGE_LIMIT':
+      return localize('com_ui_project_storage_limit', { size: limits?.totalSizeLimit ?? '' });
+  }
+  return (error as TError | undefined)?.response?.status === 409
     ? localize('com_ui_project_file_limit', { count: fileLimit })
     : localize('com_ui_project_file_attach_error');
+};
 function statusLabel(localize: LocalizeFunction, availability: TChatProjectFile['availability']) {
   return availability === 'ready'
     ? localize('com_ui_project_file_ready')
@@ -100,6 +148,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
   );
   const { data: startupConfig } = useGetStartupConfig();
   const projectFileLimit = startupConfig?.projects?.maxFiles ?? MAX_CHAT_PROJECT_FILES;
+  const fileLimits = startupConfig?.projects?.files;
   const canUseFileSearch = useHasAccess({
     permissionType: PermissionTypes.FILE_SEARCH,
     permission: Permissions.USE,
@@ -246,7 +295,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
       setIsFileMenuOpen(false);
     } catch (error: unknown) {
       showToast({
-        message: getAssociationErrorMessage(error, localize, projectFileLimit),
+        message: getAssociationErrorMessage(error, localize, projectFileLimit, fileLimits),
         severity: NotificationSeverity.ERROR,
         showIcon: true,
       });
@@ -284,7 +333,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     } catch (error: unknown) {
       pendingUploadIdsRef.current.delete(item.id);
       const errorMessage = uploaded
-        ? getAssociationErrorMessage(error, localize, projectFileLimit)
+        ? getAssociationErrorMessage(error, localize, projectFileLimit, fileLimits)
         : getUploadErrorMessage(error, localize);
       setUploading((current) =>
         current.map((candidate) =>
@@ -317,21 +366,41 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
       return;
     }
     const availableCapacity = Math.max(0, projectFileLimit - getEffectiveFileCount());
-    const accepted = selected.slice(0, availableCapacity).map((file) => ({
+    /* Refused files never upload, so they take none of the remaining capacity. */
+    const refused: UploadState[] = [];
+    const valid: File[] = [];
+    for (const file of selected) {
+      const errorMessage = getFileLimitMessage(file, fileLimits, localize);
+      if (errorMessage) {
+        refused.push({
+          id: v4(),
+          filename: file.name,
+          file,
+          errorMessage,
+          status: 'failed',
+          refused: true,
+        });
+      } else {
+        valid.push(file);
+      }
+    }
+    const accepted: UploadState[] = valid.slice(0, availableCapacity).map((file) => ({
       id: v4(),
       filename: file.name,
       file,
       status: 'processing' as const,
     }));
     accepted.forEach((item) => pendingUploadIdsRef.current.add(item.id));
+    if (refused.length || accepted.length) {
+      setUploading((current) => [...current, ...refused, ...accepted]);
+    }
     if (accepted.length) {
-      setUploading((current) => [...current, ...accepted]);
       void processUploads(accepted);
     }
-    if (selected.length > accepted.length) {
+    if (valid.length > accepted.length) {
       showToast({
         message: localize('com_ui_project_file_excess', {
-          count: selected.length - accepted.length,
+          count: valid.length - accepted.length,
         }),
         severity: NotificationSeverity.WARNING,
         showIcon: true,
@@ -353,6 +422,9 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
 
   const retryUpload = (item: UploadState) => {
     if (pendingUploadIdsRef.current.has(item.id) || (!item.fileId && !canUploadFromDevice)) {
+      return;
+    }
+    if (!item.fileId && getFileLimitMessage(item.file, fileLimits, localize) != null) {
       return;
     }
     if (getEffectiveFileCount() >= projectFileLimit) {
@@ -517,15 +589,17 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
                 )}
                 {item.status === 'failed' && (
                   <>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={!item.fileId && !canUploadFromDevice}
-                      onClick={() => retryUpload(item)}
-                    >
-                      {localize('com_ui_retry')}
-                    </Button>
+                    {item.refused !== true && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={!item.fileId && !canUploadFromDevice}
+                        onClick={() => retryUpload(item)}
+                      >
+                        {localize('com_ui_retry')}
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="ghost"

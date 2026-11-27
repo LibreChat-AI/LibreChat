@@ -14,6 +14,7 @@ import {
   configSchema,
   telemetrySchema,
   chatProjectsConfigSchema,
+  projectFilesEnabled,
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
   interfaceSchema,
@@ -3078,7 +3079,31 @@ describe('interface theme config', () => {
     expect(off).toMatchObject({ maxInstructionsLength: 0, maxDescriptionLength: 0 });
     expect(chatProjectsConfigSchema.safeParse({ maxInstructionsLength: -1 }).success).toBe(false);
     expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: -1 }).success).toBe(false);
-    expect(chatProjectsConfigSchema.safeParse({ maxFiles: 0 }).success).toBe(false);
+  });
+
+  it('takes project file controls and refuses unknown keys or bad patterns', () => {
+    const files = {
+      enabled: false,
+      fileSizeLimit: 10,
+      totalSizeLimit: 50,
+      supportedMimeTypes: ['^application/pdf$'],
+    };
+    expect(chatProjectsConfigSchema.parse({ files, maxFiles: 0 })).toMatchObject({
+      files,
+      maxFiles: 0,
+    });
+    expect(chatProjectsConfigSchema.safeParse({ files: { maxFiles: 1 } }).success).toBe(false);
+    expect(chatProjectsConfigSchema.safeParse({ files: { fileSizeLimit: 0 } }).success).toBe(false);
+    expect(
+      chatProjectsConfigSchema.safeParse({ files: { supportedMimeTypes: ['(unclosed'] } }).success,
+    ).toBe(false);
+  });
+
+  it('turns project files off with files.enabled false or maxFiles 0', () => {
+    expect(projectFilesEnabled(undefined)).toBe(true);
+    expect(projectFilesEnabled({ maxFiles: 50 })).toBe(true);
+    expect(projectFilesEnabled({ maxFiles: 0 })).toBe(false);
+    expect(projectFilesEnabled({ files: { enabled: false } })).toBe(false);
   });
 
   it('leaves maxProjectsPerUser unset by default and bounds it when set', () => {
