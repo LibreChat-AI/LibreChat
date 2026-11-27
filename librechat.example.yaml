@@ -1688,7 +1688,7 @@ endpoints:
 #   # Keenable (search provider; keyless by default, a key only lifts rate limits)
 #   keenableApiKey: '${KEENABLE_API_KEY}'
 #   # Content scrapers
-#   firecrawlApiKey: '${FIRECRAWL_API_KEY}'
+#   firecrawlApiKey: '${FIRECRAWL_API_KEY}'  # Required by Firecrawl's hosted API; leave it unset for a self-hosted firecrawlApiUrl without authentication
 #   firecrawlApiUrl: '${FIRECRAWL_API_URL}'
 #   # Outbound search and scrape requests are validated at connect time against
 #   # their resolved IP and blocked from reaching private, loopback, link-local,

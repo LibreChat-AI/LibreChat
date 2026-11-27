@@ -85,6 +85,25 @@ const SCRAPER_PROVIDER_VALUES = new Set<string>(Object.values(ScraperProviders))
 const RERANKER_VALUES = new Set<string>(Object.values(RerankerTypes));
 const DEFAULT_JINA_API_URL = 'https://api.jina.ai/v1/rerank';
 
+/**
+ * Required keys a service may go without at a URL of its own, each with that
+ * URL field and the host of the provider's hosted API, which always needs the
+ * key. A self-hosted Firecrawl runs without authentication unless it is set up
+ * with one, and the search library then sends no Authorization header.
+ */
+const OWN_URL_KEYS: ReadonlyMap<TWebSearchKeys, { url: TWebSearchKeys; host: string }> = new Map([
+  ['firecrawlApiKey', { url: 'firecrawlApiUrl', host: 'api.firecrawl.dev' }],
+]);
+
+/** A required key the deployment holds none of, which the service may go without at its own URL. */
+interface KeylessKey {
+  key: TWebSearchKeys;
+  url: TWebSearchKeys;
+  host: string;
+  /** How the deployment left the key out; see {@link getAbsentKey}. */
+  absent: 'unset' | 'user';
+}
+
 function isUserProvidedEnabled(field: string): boolean {
   return process.env[field] === AuthType.USER_PROVIDED;
 }
@@ -153,6 +172,54 @@ function getCredentialSource(value?: string): CredentialSource | undefined {
     return undefined;
   }
   return { kind: 'config', value: resolved };
+}
+
+/**
+ * How a deployment that holds no key left it out: `unset` when config has none
+ * (no value, a blank one, or a `${VAR}` reference to an unset or blank
+ * variable), `user` when the variable is `user_provided`, which asks each user
+ * for one. A key the deployment holds, or one it cannot read, is neither.
+ */
+function getAbsentKey(value?: string): 'unset' | 'user' | undefined {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return 'unset';
+  }
+  const field = extractVariableName(value);
+  if (field == null) {
+    return undefined;
+  }
+  const envValue = process.env[field]?.trim();
+  if (!envValue) {
+    return 'unset';
+  }
+  return envValue === AuthType.USER_PROVIDED ? 'user' : undefined;
+}
+
+/** The required key a service may go without at its own URL, when the deployment holds none. */
+function getKeylessKey(
+  requiredKeys: TWebSearchKeys[],
+  config: TCustomConfig['webSearch'] | undefined,
+): KeylessKey | undefined {
+  for (const key of requiredKeys) {
+    const own = OWN_URL_KEYS.get(key);
+    if (own == null) {
+      continue;
+    }
+    const absent = getAbsentKey(config?.[key]);
+    if (absent != null) {
+      return { key, ...own, absent };
+    }
+  }
+  return undefined;
+}
+
+/** Whether a URL points at `host`, a provider's hosted API. */
+function isHostedUrl(url: string, host: string): boolean {
+  try {
+    return new URL(url).hostname === host;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -264,19 +331,25 @@ async function isCredentialUsable(
   return isOptIn && apiKey.origin === 'env';
 }
 
-/** A service's configured credentials, required first, or the first required key that is unset. */
+/**
+ * A service's configured credentials, required first, or the first required key
+ * that is unset. `keyless` is a required key the deployment left out that the
+ * service may go without, decided once its URL is resolved.
+ */
 function getServiceCredentials(
   requiredKeys: TWebSearchKeys[],
   optionalKeys: TWebSearchKeys[],
   config: TCustomConfig['webSearch'] | undefined,
+  keyless?: TWebSearchKeys,
 ): ServiceCredential[] | TWebSearchKeys {
   const credentials: ServiceCredential[] = [];
   for (const key of requiredKeys) {
     const source = getCredentialSource(config?.[key]);
-    if (!source) {
+    if (source) {
+      credentials.push({ key, required: true, source });
+    } else if (key !== keyless) {
       return key;
     }
-    credentials.push({ key, required: true, source });
   }
   for (const key of optionalKeys) {
     const source = getCredentialSource(config?.[key]);
@@ -303,6 +376,32 @@ function resolveCredentials(
     resolved.set(key, { key, required, origin, value, field: source.field });
   }
   return resolved;
+}
+
+/**
+ * Lets a service that resolved no key run at the URL it accepted when that URL
+ * is its own rather than the provider's hosted API, sending no key there. A
+ * deployment that asks each user for the key still needs one at a URL of its
+ * own; at a URL the user saved, leaving the key out is the user's choice.
+ * Otherwise names the setting that kept the service off: the URL when one was
+ * set and rejected, else the key.
+ */
+function allowKeyless(
+  { key, url: urlKey, host, absent }: KeylessKey,
+  resolved: ReadonlyMap<TWebSearchKeys, ResolvedCredential>,
+  authResult: WebSearchAuthValues,
+): Pick<WebSearchAuthGap, 'field' | 'variable' | 'reason'> | undefined {
+  const url = authResult[urlKey];
+  const source = resolved.get(urlKey);
+  if (url && !isHostedUrl(url, host) && (absent === 'unset' || source?.origin === 'user')) {
+    /** An empty key, unlike a missing one, keeps the search library from reading its environment key. */
+    authResult[key] = '';
+    return undefined;
+  }
+  if (url == null && source?.value) {
+    return { field: urlKey, variable: source.field, reason: 'rejected' };
+  }
+  return { field: key, variable: resolved.get(key)?.field, reason: 'missing' };
 }
 
 function mapWebSearchSelection(key: string, value: string): [string, string] | undefined {
@@ -790,7 +889,13 @@ export async function loadWebSearchAuth({
       if (requiredKeys.length === 0) continue;
 
       const name = service as string;
-      const credentials = getServiceCredentials(requiredKeys, optionalKeys, webSearchConfig);
+      const keyless = getKeylessKey(requiredKeys, webSearchConfig);
+      const credentials = getServiceCredentials(
+        requiredKeys,
+        optionalKeys,
+        webSearchConfig,
+        keyless?.key,
+      );
       if (typeof credentials === 'string') {
         misses.push({ category, service: name, field: credentials, reason: 'missing' });
         continue;
@@ -798,20 +903,31 @@ export async function loadWebSearchAuth({
 
       const authFields: string[] = [];
       const optionalFields = new Set<string>();
-      for (const { required, source } of credentials) {
+      for (const { key, required, source } of credentials) {
         if (source.kind !== 'env') {
           continue;
         }
         authFields.push(source.field);
-        if (!required) {
+        if (!required || key === keyless?.key) {
           optionalFields.add(source.field);
         }
       }
 
       try {
+        /**
+         * A key that may be left out is looked up as optional, so its absence
+         * does not throw, while a saved value the store cannot read still does
+         * instead of reading as no key.
+         */
         const authValues =
           authFields.length > 0
-            ? await loadAuthValues({ userId, authFields, optional: optionalFields, throwError })
+            ? await loadAuthValues({
+                userId,
+                authFields,
+                optional: optionalFields,
+                throwError,
+                ...(keyless != null && { failOnOptionalError: true }),
+              })
             : {};
         const resolved = resolveCredentials(credentials, authValues);
 
@@ -819,6 +935,10 @@ export async function loadWebSearchAuth({
         for (const credential of resolved.values()) {
           const { key: field, field: variable } = credential;
           if (credential.required && !credential.value) {
+            if (field === keyless?.key) {
+              // Decided below, once the URL it depends on is resolved.
+              continue;
+            }
             miss = { category, service: name, field, variable, reason: 'missing' };
             break;
           }
@@ -835,6 +955,10 @@ export async function loadWebSearchAuth({
           if (credential.origin === 'user') {
             isUserProvided = true;
           }
+        }
+        if (!miss && keyless != null && !resolved.get(keyless.key)?.value) {
+          const gap = allowKeyless(keyless, resolved, authResult);
+          miss = gap && { category, service: name, ...gap };
         }
         blockEnvironmentKeyFallback(authResult, resolved.values());
 

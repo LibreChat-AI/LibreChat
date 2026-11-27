@@ -32,10 +32,15 @@ const ENV_NAMES = [
   'KEENABLE_FETCH_URL',
   'SEARXNG_API_KEY',
   'SEARXNG_INSTANCE_URL',
+  'FIRECRAWL_API_KEY',
+  'FIRECRAWL_API_URL',
+  'FIRECRAWL_BASE_URL',
+  'FIRECRAWL_VERSION',
 ] as const;
 
 interface CapturedRequest {
   path: string;
+  /** The key sent as `X-API-Key` or, by Firecrawl, as a bearer token. */
   apiKey: string | null;
 }
 
@@ -50,7 +55,11 @@ describe('web search credentials reach the search library', () => {
   let results: Array<{ title: string; url: string; snippet: string }> = [];
   const server = http.createServer((req, res) => {
     const apiKey = req.headers['x-api-key'];
-    requests.push({ path: req.url ?? '', apiKey: typeof apiKey === 'string' ? apiKey : null });
+    const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
+    requests.push({
+      path: req.url ?? '',
+      apiKey: typeof apiKey === 'string' ? apiKey : (bearer ?? null),
+    });
     req.resume();
     req.on('end', () => {
       res.setHeader('Content-Type', 'application/json');
@@ -138,7 +147,7 @@ describe('web search credentials reach the search library', () => {
     });
     expect(authenticated).toBe(true);
 
-    /** Firecrawl's option block is typed looser than the library's and no case here scrapes with it. */
+    /** Firecrawl's option block is typed looser than the library's and no case here sets it. */
     const { firecrawlOptions: _firecrawlOptions, ...searchConfig } = authResult;
     const agents = resolveWebSearchSSRFAgents(authResult, webSearchConfig?.allowedAddresses);
     const tool = createSearchTool({ ...searchConfig, ...agents, logger });
@@ -295,6 +304,94 @@ describe('web search credentials reach the search library', () => {
     ]);
   });
 
+  describe('Firecrawl at a URL of its own', () => {
+    /** Searches SearXNG at a URL stored in config, then scrapes its one hit with Firecrawl. */
+    async function scrape(
+      config: TWebSearchConfigInput,
+      userValues?: Record<string, string>,
+    ): Promise<Array<[string, string | null]>> {
+      results = [{ title: 'LibreChat', url: 'https://www.librechat.ai/', snippet: 'Open source' }];
+      const sent = await search(
+        {
+          searchProvider: SearchProviders.SEARXNG,
+          searxngInstanceUrl: `http://${allowedAddress}/search`,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          ...config,
+        },
+        userValues,
+      );
+      return sent.map(({ path, apiKey }) => [path.split('?')[0], apiKey]);
+    }
+
+    it('scrapes an environment Firecrawl URL without a key while FIRECRAWL_API_KEY is unset', async () => {
+      process.env.FIRECRAWL_API_URL = `http://${allowedAddress}/own`;
+
+      expect(await scrape({})).toEqual([
+        ['/search', null],
+        ['/own/v2/scrape', null],
+      ]);
+    });
+
+    it('never lets the search library send FIRECRAWL_API_KEY when the configured key references an unset variable', async () => {
+      process.env.FIRECRAWL_API_KEY = PLATFORM_KEY;
+      process.env.FIRECRAWL_API_URL = `http://${allowedAddress}/own`;
+
+      expect(await scrape({ firecrawlApiKey: '${LC_UNSET_FIRECRAWL_KEY}' })).toEqual([
+        ['/search', null],
+        ['/own/v2/scrape', null],
+      ]);
+    });
+
+    it.each([
+      { state: 'unset', value: undefined },
+      { state: 'user_provided', value: AuthType.USER_PROVIDED },
+    ])(
+      "scrapes a user's own Firecrawl URL without a key while FIRECRAWL_API_KEY is $state",
+      async ({ value }) => {
+        if (value != null) {
+          process.env.FIRECRAWL_API_KEY = value;
+        }
+
+        expect(await scrape({}, { FIRECRAWL_API_URL: `http://${allowedAddress}/user` })).toEqual([
+          ['/search', null],
+          ['/user/v2/scrape', null],
+        ]);
+      },
+    );
+
+    it.each([
+      {
+        origin: 'the environment key',
+        env: PLATFORM_KEY,
+        userValues: {} as Record<string, string>,
+        key: PLATFORM_KEY,
+      },
+      {
+        origin: "a user's saved key",
+        env: AuthType.USER_PROVIDED,
+        userValues: { FIRECRAWL_API_KEY: 'user-own-firecrawl-key-0001' },
+        key: 'user-own-firecrawl-key-0001',
+      },
+    ])(
+      "sends $origin to Firecrawl's default URL, never to one stored in config",
+      async ({ env, userValues, key }) => {
+        process.env.FIRECRAWL_API_KEY = env;
+        /** Stands in for Firecrawl's hosted API, which the library calls when it gets no URL. */
+        process.env.FIRECRAWL_BASE_URL = `http://${allowedAddress}/hosted`;
+
+        const sent = await scrape(
+          { firecrawlApiUrl: `http://${allowedAddress}/stored-in-config` },
+          userValues,
+        );
+
+        expect(sent).toEqual([
+          ['/search', null],
+          ['/hosted/v2/scrape', key],
+        ]);
+      },
+    );
+  });
+
   describe('keys and URLs set by different config layers', () => {
     const SEARXNG_BASE_KEY = 'sx-base-secret-0001';
 
@@ -323,6 +420,35 @@ describe('web search credentials reach the search library', () => {
       const base = { config: { webSearch: config }, webSearch: loadWebSearchConfig(config) };
       return mergeConfigOverrides(base as AppConfig, configs).webSearch;
     }
+
+    it('scrapes at the Firecrawl URL an admin override set beside a blank key, sending no key', async () => {
+      /** The search library falls back to this variable when it receives no key. */
+      process.env.FIRECRAWL_API_KEY = PLATFORM_KEY;
+      results = [{ title: 'LibreChat', url: 'https://www.librechat.ai/', snippet: 'Open source' }];
+
+      /** The admin panel override reported in LibreChat-AI/LibreChat#17215, pointed at this endpoint. */
+      const sent = await searchWith(
+        mergedWebSearch(
+          {},
+          profile(BASE_CONFIG_PRINCIPAL_ID, 0, {
+            searchProvider: SearchProviders.SEARXNG,
+            searxngInstanceUrl: `http://${allowedAddress}/search`,
+            searxngApiKey: '',
+            scraperProvider: ScraperProviders.FIRECRAWL,
+            firecrawlApiUrl: `http://${allowedAddress}`,
+            firecrawlApiKey: '',
+            firecrawlVersion: 'v1',
+            rerankerType: RerankerTypes.NONE,
+            scraperTimeout: 7500,
+          }),
+        ),
+      );
+
+      expect(sent.map(({ path, apiKey }) => [path.split('?')[0], apiKey])).toEqual([
+        ['/search', null],
+        ['/v1/scrape', null],
+      ]);
+    });
 
     it('never sends a base-profile key to a URL only a role profile set', async () => {
       const sent = await searchWith(
