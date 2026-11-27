@@ -34,6 +34,14 @@ describe('canUseProjects', () => {
     ).resolves.toBe(true);
   });
 
+  it('refuses a user whose role no longer exists', async () => {
+    const getRoleByName = jest.fn().mockResolvedValue(null);
+
+    await expect(
+      canUseProjects({ role: 'deleted' }, Permissions.USE, { getRoleByName }),
+    ).resolves.toBe(false);
+  });
+
   it('refuses a user without a role', async () => {
     const getRoleByName = jest.fn();
 

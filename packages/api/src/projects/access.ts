@@ -16,8 +16,9 @@ export interface ProjectsAccessDeps {
 }
 
 /**
- * Whether `user`'s role allows a Chat Projects action. A user with no role holds none; a role
- * that predates the `PROJECTS` permission type holds its defaults (see `hasProjectsPermission`).
+ * Whether `user`'s role allows a Chat Projects action. A user with no role, or whose role no longer
+ * exists, holds none; a role that predates the `PROJECTS` permission type holds its defaults (see
+ * `hasProjectsPermission`).
  * A failed role read throws, so an outage is never mistaken for a refusal or a grant.
  */
 export async function canUseProjects(
@@ -29,6 +30,9 @@ export async function canUseProjects(
     return false;
   }
   const role = await getRoleByName(user.role);
+  if (role == null) {
+    return false;
+  }
   return hasProjectsPermission(
     role?.permissions as Parameters<typeof hasProjectsPermission>[0],
     permission,
