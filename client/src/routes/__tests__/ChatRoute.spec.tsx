@@ -93,10 +93,12 @@ jest.mock('@librechat/client', () => ({
 }));
 jest.mock('~/utils', () => ({
   defaultSpecAwaitsAgents: () => false,
-  processValidSettings: () => ({}),
+  processValidSettings: (params: Record<string, string>) => params,
+  mergeQuerySettingsWithSpec: (_spec: unknown, query: Record<string, unknown>) => query,
   getDefaultModelSpec: () => ({}),
   getLocalStorageItems: () => ({ lastConversationSetup: {} }),
-  hasModelSelection: () => false,
+  hasModelSelection: (selection?: { endpoint?: string; agent_id?: string }) =>
+    Boolean(selection?.endpoint || selection?.agent_id),
   isNotFoundError: () => false,
   isTemporaryConversation: () => false,
   clearMessagesCache: jest.fn(),
@@ -439,3 +441,37 @@ it.each(['startup', 'endpoints'] as const)(
     expect(mockConversation).toMatchObject({ conversationId: 'cold-failure' });
   },
 );
+
+it('reconciles a remounted new-chat route with an existing conversation retained by the shell', async () => {
+  mockConversation = {
+    conversationId: 'chat-a',
+    endpoint: 'agents' as TConversation['endpoint'],
+    agent_id: 'agent-a',
+  };
+  setup(['/c/new?endpoint=agents&agent_id=agent-b']);
+
+  await waitFor(() => expect(mockNewConversation).toHaveBeenCalledTimes(1));
+  expect(mockNewConversation).toHaveBeenCalledWith(
+    expect.objectContaining({
+      keepComposerState: true,
+      preset: expect.objectContaining({
+        endpoint: 'agents',
+        agent_id: 'agent-b',
+      }),
+    }),
+  );
+  expect(mockFetchConversation).not.toHaveBeenCalled();
+  expect(screen.getByTestId('composer')).toBeVisible();
+  expect(screen.getByTestId('composer')).toHaveTextContent('new');
+});
+
+it('reconciles a remounted new-chat route when a first-turn submission is still active', async () => {
+  mockConversation = { conversationId: 'new' };
+  getDefaultStore().set(submissionByIndex(0), firstTurn);
+  setup(['/c/new']);
+
+  await waitFor(() => expect(mockNewConversation).toHaveBeenCalledTimes(1));
+  expect(getDefaultStore().get(submissionByIndex(0))).toEqual({});
+  expect(mockFetchConversation).not.toHaveBeenCalled();
+  expect(screen.getByTestId('composer')).toBeVisible();
+});
