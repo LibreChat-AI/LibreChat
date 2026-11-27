@@ -224,6 +224,20 @@ function describeBinaryResource(bytes: number): string {
   return `Resource Content: ${bytes} bytes of binary data (omitted; not UTF-8 text)`;
 }
 
+/**
+ * Stands in for image data in the text a provider without image input receives. A model cannot
+ * read an image from base64, and a ~650 KB browser screenshot is ~280,000 tokens, more than
+ * many models' context window. The image itself still reaches the user as an attachment
+ * (`imageAttachments`). A remote image keeps its URL, which is short and can be referenced.
+ */
+function describeImageForText(item: t.ImageContent): string {
+  const mimeType = flattenMetadata(item.mimeType || 'unknown type');
+  if (isRemoteImageUrl(item.data)) {
+    return `Image (${mimeType}): ${flattenMetadata(item.data)}`;
+  }
+  return `Image (${mimeType}): ${estimateBase64ImageBytes(item.data)} bytes of image data (omitted from text)`;
+}
+
 function describeResourceLink(item: t.ResourceLink): string[] {
   const lines: string[] = [];
   if (item.name) {
@@ -270,7 +284,7 @@ function parseAsString(result: t.MCPToolCallResponse): string {
             resourceText.push(body.text);
           } else if (body.image) {
             assertImageDataWithinLimit(body.image);
-            resourceText.push(`data:${body.image.mimeType};base64,${body.image.data}`);
+            resourceText.push(describeImageForText(body.image));
           } else if (body.binaryBytes != null) {
             resourceText.push(describeBinaryResource(body.binaryBytes));
           }
@@ -285,6 +299,7 @@ function parseAsString(result: t.MCPToolCallResponse): string {
       }
       if (isImageContent(item)) {
         assertImageDataWithinLimit(item);
+        return describeImageForText(item);
       }
       return JSON.stringify(item, null, 2);
     })
