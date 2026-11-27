@@ -16,10 +16,10 @@ import {
   usePinConversationMutation,
   useDuplicateConversationMutation,
 } from '~/data-provider';
+import { useLocalize, useNavigateToConvo, useNewConvo, useProjectsAccess } from '~/hooks';
 import { findConvoInAllQueries, isTemporaryConversation, hasRealTitle } from '~/utils';
 import useOpenConversationId from '~/hooks/Conversations/useOpenConversationId';
 import DeleteButton from '~/components/Conversations/ConvoOptions/DeleteButton';
-import { useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useProjectMenuItem from '~/hooks/Chat/useProjectMenuItem';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
@@ -185,11 +185,12 @@ export default function useChatOptions({
     );
   };
 
+  const { canUse: canUseProjects } = useProjectsAccess();
   const projectItem = useProjectMenuItem({
     conversationId,
     chatProjectId,
     /** The header omits this whole group for a conversation that is not saved yet. */
-    enabled: isMenuOpen && exportShare.show && !readOnly && !isTemporary,
+    enabled: isMenuOpen && exportShare.show && !readOnly && !isTemporary && canUseProjects,
     onAssigned: (projectId) => mirrorToOpenChat({ chatProjectId: projectId }),
   });
 
@@ -255,7 +256,7 @@ export default function useChatOptions({
       show: canOrganize,
       icon: <Pin className={iconClass} aria-hidden="true" />,
     },
-    { ...projectItem, show: canOrganize },
+    { ...projectItem, show: canOrganize && canUseProjects },
     {
       label: localize('com_ui_duplicate'),
       onClick: () => duplicateMutation.mutate({ conversationId }),

@@ -61,7 +61,7 @@ import {
   scheduleMCPErrorOutcomes,
   scheduleAuthorizationRejected,
 } from './errors';
-import { useLocalize, useClockFormat, useWeekStart } from '~/hooks';
+import { useLocalize, useClockFormat, useWeekStart, useProjectsAccess } from '~/hooks';
 import { useChatProjectPicker } from './useScheduleProjects';
 import { VariableEditor } from '~/components/Variables';
 import ScheduleMCPRecovery from './ScheduleMCPRecovery';
@@ -281,6 +281,10 @@ export default function ScheduleDialog({
     isFetchingNextPage: isFetchingMoreProjects,
   } = useChatProjectPicker(open);
   const selectedProjectId = watch('chatProjectId');
+  const { canUse: canUseProjects } = useProjectsAccess();
+  /** A role without Chat Projects gets no project choice; a pinned or required project is the
+   *  operator's, so it still shows and the server still enforces it. */
+  const showProjectField = canUseProjects || pinnedProjectId != null || requireProject;
 
   /** Clearing the scope needs a real OPTION, not just the placeholder: with only live
    *  projects in the list, a schedule that has one could never be set back to none, and
@@ -715,7 +719,7 @@ export default function ScheduleDialog({
                   />
                   <FieldMessage id="schedule-agent-message" message={errors.agent_id?.message} />
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-2" hidden={!showProjectField}>
                   <Label htmlFor="schedule-project" className="text-sm font-medium">
                     {localize('com_ui_project')}
                   </Label>

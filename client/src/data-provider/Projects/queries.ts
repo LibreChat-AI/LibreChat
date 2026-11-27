@@ -14,14 +14,15 @@ import type {
   QueryObserverResult,
   UseQueryOptions,
 } from '@tanstack/react-query';
-
 import { ProjectNamesContext } from '~/Providers/ProjectNamesContext';
+import useProjectsAccess from '~/hooks/Roles/useProjectsAccess';
 
 export const useProjectsInfiniteQuery = (
   params: ProjectListParams = {},
   config?: UseInfiniteQueryOptions<ProjectListResponse, unknown>,
 ) => {
   const { sortBy, sortDirection, search, limit } = params;
+  const { canUse } = useProjectsAccess();
 
   return useInfiniteQuery<ProjectListResponse>({
     queryKey: [QueryKeys.projects, { sortBy, sortDirection, search, limit }],
@@ -38,6 +39,7 @@ export const useProjectsInfiniteQuery = (
     staleTime: 5 * 60 * 1000,
     cacheTime: 30 * 60 * 1000,
     ...config,
+    enabled: canUse && (config?.enabled ?? true),
   });
 };
 
@@ -45,15 +47,16 @@ export const useProjectQuery = (
   projectId?: string | null,
   config?: UseQueryOptions<TChatProject>,
 ): QueryObserverResult<TChatProject, unknown> => {
+  const { canUse } = useProjectsAccess();
   return useQuery<TChatProject>(
     [QueryKeys.project, projectId],
     () => dataService.getProjectById(projectId ?? ''),
     {
-      enabled: Boolean(projectId),
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
       refetchOnMount: false,
       ...config,
+      enabled: canUse && Boolean(projectId) && (config?.enabled ?? true),
     },
   );
 };
@@ -74,13 +77,14 @@ export const useProjectFilesQuery = (
   projectId?: string | null,
   config?: UseQueryOptions<TChatProjectFile[]>,
 ): QueryObserverResult<TChatProjectFile[], unknown> => {
+  const { canUse } = useProjectsAccess();
   return useQuery<TChatProjectFile[]>(
     [QueryKeys.projectFiles, projectId],
     () => dataService.getProjectFiles(projectId ?? ''),
     {
-      enabled: Boolean(projectId),
       refetchOnWindowFocus: false,
       ...config,
+      enabled: canUse && Boolean(projectId) && (config?.enabled ?? true),
     },
   );
 };
@@ -90,6 +94,7 @@ export const useProjectAvailableFilesInfiniteQuery = (
   config?: UseInfiniteQueryOptions<ProjectAvailableFilesResponse, unknown>,
 ) => {
   const queryParams = { limit: params.limit, search: params.search };
+  const { canUse } = useProjectsAccess();
 
   return useInfiniteQuery<ProjectAvailableFilesResponse>({
     queryKey: [QueryKeys.projectAvailableFiles, projectId, queryParams],
@@ -99,8 +104,8 @@ export const useProjectAvailableFilesInfiniteQuery = (
         cursor: pageParam?.toString(),
       }),
     getNextPageParam: (lastPage) => lastPage?.nextCursor ?? undefined,
-    enabled: Boolean(projectId),
     refetchOnWindowFocus: false,
     ...config,
+    enabled: canUse && Boolean(projectId) && (config?.enabled ?? true),
   });
 };

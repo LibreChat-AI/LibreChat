@@ -15,6 +15,12 @@ jest.mock('librechat-data-provider', () => {
   };
 });
 
+const mockProjectsAccess = { current: { loaded: true, canUse: true, canCreate: true } };
+jest.mock('~/hooks/Roles/useProjectsAccess', () => ({
+  __esModule: true,
+  default: () => mockProjectsAccess.current,
+}));
+
 const getProjectById = dataService.getProjectById as jest.MockedFunction<
   typeof dataService.getProjectById
 >;
@@ -62,6 +68,19 @@ describe('useProjectName', () => {
 
   afterEach(() => {
     queryClient.clear();
+    mockProjectsAccess.current = { loaded: true, canUse: true, canCreate: true };
+  });
+
+  it('asks the server for nothing without PROJECTS.USE', async () => {
+    mockProjectsAccess.current = { loaded: true, canUse: false, canCreate: false };
+    const { result } = renderName(queryClient, 'p9');
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current).toBeUndefined();
+    expect(listProjects).not.toHaveBeenCalled();
+    expect(getProjectById).not.toHaveBeenCalled();
   });
 
   it('names a project the sidebar has listed without asking the server', () => {

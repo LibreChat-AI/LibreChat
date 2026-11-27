@@ -58,9 +58,9 @@ import {
   updatedRangeAtom,
 } from './facets';
 import { useGetConversationTags, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useHasAccess, useLocalize, useProjectsAccess } from '~/hooks';
 import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
-import { useHasAccess, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 const itemClassName =
@@ -869,6 +869,8 @@ const ChatFilterMenu = () => {
     permission: Permissions.USE,
   });
 
+  const { canUse: canUseProjects } = useProjectsAccess();
+
   const alphabetical = isAlphabeticalSort(sort.field);
 
   /** Ascending means A first for titles and oldest first for instants, so the same
@@ -1056,7 +1058,7 @@ const ChatFilterMenu = () => {
         </PropertyRow>
 
         {/* The archive and search already list every chat, project or not. */}
-        {status === 'active' && (
+        {status === 'active' && canUseProjects && (
           <>
             <Ariakit.MenuSeparator className="border-border-medium my-1 h-px" />
             <Toggle

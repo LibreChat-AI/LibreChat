@@ -22,6 +22,7 @@ import {
   useLocalStorage,
   useNavScrolling,
   useScrollFade,
+  useProjectsAccess,
 } from '~/hooks';
 import { chatFacetParamsAtom, useFreshLocalDay } from '~/components/Conversations/facets';
 import ProjectsSection from '~/components/Conversations/ProjectsSection';
@@ -55,6 +56,10 @@ const ConversationsSection = memo(() => {
   /** Keeps the date facets' midnight anchor advancing while the list is mounted. */
   useFreshLocalDay();
   const search = useRecoilValue(store.search);
+  /** Settled only once the role has loaded, so an allowed account keeps today's first list
+   *  query instead of fetching every chat and then again without its project chats. */
+  const projects = useProjectsAccess();
+  const projectsOff = projects.loaded && !projects.canUse;
   /** The same projects ProjectsSection reads, so an empty Chats list can tell "every
    *  chat lives under a project" from "this account has nothing yet". Shared key, so
    *  this costs no second request. */
@@ -69,14 +74,17 @@ const ConversationsSection = memo(() => {
   /** Only a loaded, empty project list proves the account has nothing yet. While the
    *  projects are loading or failed to load, an empty Chats list claims no more than
    *  that nothing sits outside a project. */
-  const hasProjects = !projectsLoaded || (projectsData?.pages[0]?.projects?.length ?? 0) > 0;
+  const hasProjects =
+    !projectsOff && (!projectsLoaded || (projectsData?.pages[0]?.projects?.length ?? 0) > 0);
   /** By default each project chat shows only under its project. Turning the preference on
    *  lists it under Chats too, badged with its folder, for users who look for recent work
    *  there first. Search and the archived view stay whole either way: both are places the user
    *  goes to find something, and a project chat that appears in neither list nor result
    *  would have no way back. So does a list whose projects failed to load, which would
-   *  otherwise hide every project chat behind a section that cannot show them. */
+   *  otherwise hide every project chat behind a section that cannot show them, and so does
+   *  a role without Chat Projects, which has no section at all. */
   const scopeToUnassigned =
+    !projectsOff &&
     !showProjectChats &&
     !isArchivedView &&
     !search.debouncedQuery &&
@@ -240,7 +248,7 @@ const ConversationsSection = memo(() => {
             {/* `min-h-full` keeps the sections filling a tall sidebar, so the chats
             list still claims the space below them when there is little to show. */}
             <div ref={setScrollContent} className="flex min-h-full flex-col">
-              {!search.query && (
+              {!search.query && !projectsOff && (
                 <ProjectsSection toggleNav={toggleNav} isAuthenticated={isAuthenticated} />
               )}
               {!search.query && (
