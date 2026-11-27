@@ -449,7 +449,12 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
      * hold no slot); the slot index is what makes two concurrent creates unable to share the
      * last place. Each collision moves to a distinct slot, so cap + 1 attempts suffice. */
     for (let attempt = 0; attempt <= cap; attempt++) {
-      const owned = await ChatProject.find({ user }).select('slot').lean<{ slot?: number }[]>();
+      /* Reading `cap` rows is enough: below the cap that is every project, and at the cap it is
+       * already enough to refuse, however many projects predate it. */
+      const owned = await ChatProject.find({ user })
+        .select('slot')
+        .limit(cap)
+        .lean<{ slot?: number }[]>();
       if (owned.length >= cap) {
         throw projectLimitReached();
       }
