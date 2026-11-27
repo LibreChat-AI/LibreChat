@@ -1,3 +1,5 @@
+import { FileContext } from 'librechat-data-provider';
+import type { AxiosRequestConfig } from 'axios';
 import { createRagContextHandlers } from './context';
 
 const req: { user: { id: string }; config?: { timeouts?: { ragMs?: number } } } = {
@@ -106,6 +108,180 @@ describe('legacy RAG context', () => {
     await expect(handlers?.createContext()).rejects.toBe(failure);
     expect(logAxiosError).toHaveBeenCalledWith({
       message: 'Error creating context',
+      error: failure,
+    });
+  });
+});
+
+describe('legacy RAG context for files embedded under an agent', () => {
+  const agentFile = {
+    file_id: 'agent-file',
+    filename: 'policy.pdf',
+    type: 'application/pdf',
+    embedded: true,
+    context: FileContext.agents,
+    metadata: { embeddedEntities: ['agent_a'] },
+  };
+
+  /**
+   * Mirrors rag-api v0.9.0: the top chunk's owner must be the entity_id or the token's user.
+   * `topOwner` picks that owner from the question, as ranking does.
+   */
+  function fakeRag(topOwner: (query?: string) => string) {
+    const allowed = (owner: string, entityId?: string) =>
+      owner === entityId || owner === req.user.id;
+    return {
+      get: jest.fn().mockImplementation(async (_url: string, config?: AxiosRequestConfig) => ({
+        data: allowed(topOwner(), config?.params?.entity_id) ? 'whole policy' : '',
+      })),
+      post: jest
+        .fn()
+        .mockImplementation(async (_url: string, body: { query?: string; entity_id?: string }) => ({
+          data: allowed(topOwner(body.query), body.entity_id)
+            ? [[{ page_content: 'Policy excerpt' }, 0.1]]
+            : [],
+        })),
+    };
+  }
+
+  function setupWithRag(
+    httpClient: ReturnType<typeof fakeRag>,
+    extra: Pick<Parameters<typeof createRagContextHandlers>[0], 'getAgents'> = {},
+    fullContextSetting?: string,
+    userMessageContent = 'what does the policy say?',
+  ) {
+    const logAxiosError = jest.fn(() => 'logged');
+    const handlers = createRagContextHandlers({
+      req,
+      userMessageContent,
+      ragApiUrl: 'http://rag',
+      fullContextSetting,
+      httpClient,
+      generateShortLivedToken: () => 'signed-token',
+      isEnabled: (setting?: string | boolean | null) => setting === 'true',
+      logAxiosError,
+      ...extra,
+    });
+    return { handlers, logAxiosError };
+  }
+
+  const sentEntities = (post: jest.Mock) =>
+    post.mock.calls.map(([, body]: [string, { entity_id?: string }]) => body.entity_id);
+
+  it('reads the agent namespace on /query so the context is not empty', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const { handlers } = setupWithRag(httpClient);
+    await handlers?.processFile(agentFile);
+    expect(await handlers?.createContext()).toContain('Policy excerpt');
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+    expect(httpClient.post.mock.calls[0][1]).toEqual({
+      file_id: 'agent-file',
+      query: 'what does the policy say?',
+      k: 4,
+      entity_id: 'agent_a',
+    });
+  });
+
+  it('reads the agent namespace for the full document', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const { handlers } = setupWithRag(httpClient, {}, 'true');
+    await handlers?.processFile(agentFile);
+    expect(await handlers?.createContext()).toContain('whole policy');
+    expect(httpClient.get.mock.calls[0][1]).toMatchObject({ params: { entity_id: 'agent_a' } });
+  });
+
+  it("sends one unchanged request for the user's own file", async () => {
+    const httpClient = fakeRag(() => req.user.id);
+    const { handlers } = setupWithRag(httpClient);
+    await handlers?.processFile(files[0]);
+    expect(await handlers?.createContext()).toContain('Policy excerpt');
+    expect(sentEntities(httpClient.post)).toEqual([undefined]);
+  });
+
+  it('retries the real question under the agent whose chunk ranks first for it', async () => {
+    const httpClient = fakeRag((query) => (query?.includes('renewal') ? 'agent_b' : 'agent_a'));
+    const { handlers } = setupWithRag(httpClient, {}, undefined, 'when is the renewal?');
+    await handlers?.processFile({
+      ...agentFile,
+      metadata: { embeddedEntities: ['agent_a', 'agent_b'] },
+    });
+    expect(await handlers?.createContext()).toContain('Policy excerpt');
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a', 'agent_b']);
+  });
+
+  it('recovers the listing agent when only the user namespace is recorded', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const getAgents = jest.fn(async () => [
+      { id: 'agent_a', tool_resources: { file_search: { file_ids: ['agent-file'] } } },
+    ]);
+    const { handlers } = setupWithRag(httpClient, { getAgents });
+    await handlers?.processFile({ ...agentFile, metadata: { embeddedEntities: [req.user.id] } });
+    expect(await handlers?.createContext()).toContain('Policy excerpt');
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a']);
+  });
+
+  it('moves past a candidate whose request fails', async () => {
+    const httpClient = fakeRag(() => 'agent_b');
+    httpClient.post.mockRejectedValueOnce(new Error('Request failed with status code 404'));
+    const { handlers } = setupWithRag(httpClient);
+    await handlers?.processFile({
+      ...agentFile,
+      metadata: { embeddedEntities: ['agent_a', 'agent_b'] },
+    });
+    expect(await handlers?.createContext()).toContain('Policy excerpt');
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a', 'agent_b']);
+  });
+
+  it('raises a failed candidate request when the plain request is empty', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const failure = new Error('Request failed with status code 503');
+    httpClient.post.mockRejectedValueOnce(failure);
+    const { handlers, logAxiosError } = setupWithRag(httpClient);
+    await handlers?.processFile(agentFile);
+    await expect(handlers?.createContext()).rejects.toBe(failure);
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a', undefined]);
+    expect(logAxiosError).toHaveBeenCalledWith({
+      message: 'Error creating context',
+      error: failure,
+    });
+  });
+
+  it('ends with the plain request when no candidate returns content', async () => {
+    const httpClient = fakeRag(() => 'agent_z');
+    const { handlers } = setupWithRag(httpClient);
+    await handlers?.processFile(agentFile);
+    await handlers?.createContext();
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a', undefined]);
+  });
+
+  it('falls back to the plain request when the namespace cannot be resolved', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const failure = new Error('lookup failed');
+    const getAgents = jest.fn(async () => {
+      throw failure;
+    });
+    const { handlers, logAxiosError } = setupWithRag(httpClient, { getAgents });
+    await handlers?.processFile({ ...agentFile, metadata: undefined });
+    await handlers?.createContext();
+    expect(sentEntities(httpClient.post)).toEqual([undefined]);
+    expect(logAxiosError).toHaveBeenCalledWith({
+      message: 'Error resolving the RAG namespaces of agent files',
+      error: failure,
+    });
+  });
+
+  it('keeps the recorded agent namespace when the listing lookup fails', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const failure = new Error('lookup failed');
+    const getAgents = jest.fn(async () => {
+      throw failure;
+    });
+    const { handlers, logAxiosError } = setupWithRag(httpClient, { getAgents });
+    await handlers?.processFile(agentFile);
+    expect(await handlers?.createContext()).toContain('Policy excerpt');
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a']);
+    expect(logAxiosError).toHaveBeenCalledWith({
+      message: 'Error resolving the RAG namespaces of agent files',
       error: failure,
     });
   });
