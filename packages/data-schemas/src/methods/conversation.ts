@@ -216,6 +216,7 @@ export interface AgentEventActorReconciliationStorageMetrics {
 }
 
 const ARCHIVE_CONVERSATION_BATCH_SIZE = 500;
+const ARCHIVE_RETENTION_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_MAX_PASSES = 2;
 const PROJECT_DISCOVERY_MAX_ATTEMPTS = 3;
@@ -290,6 +291,65 @@ async function refreshChatProjectStatsInBatches(
     logger.error(
       `[refreshChatProjectStatsInBatches] Left ${pending.length} project(s) unreconciled: ${pending.join(', ')}`,
     );
+  }
+}
+
+type ArchiveCandidate = Pick<
+  IConversation,
+  '_id' | 'chatProjectId' | 'conversationId' | 'expiredAt' | 'tenantId'
+>;
+
+/** The retention an archive-all sweep gives the chats it archives, resolved once per sweep. */
+type ArchiveRetention = { temporary: boolean; deadline: Date };
+
+/** What every batch of one archive-all sweep shares. */
+type ArchiveSweep = {
+  user: string;
+  filter: FilterQuery<IConversation>;
+  archivedAt: Date;
+  retention: ArchiveRetention | null;
+};
+
+/**
+ * What the request's mode does to a chat it archives, mirroring `saveConvo`: under `all` a chat
+ * without a deadline gets the general-chat one, under `ephemeral` a chat becomes temporary on the
+ * temporary-chat deadline unless it already holds one. `null` when the mode leaves chats as they are.
+ */
+function resolveArchiveRetention(
+  interfaceConfig?: AppConfig['interfaceConfig'],
+): ArchiveRetention | null {
+  const temporary = isForcedTemporaryRetention(interfaceConfig?.retentionMode);
+  if (!temporary && interfaceConfig?.retentionMode !== RetentionMode.ALL) {
+    return null;
+  }
+  try {
+    return {
+      temporary,
+      deadline: temporary
+        ? createTempChatExpirationDate(interfaceConfig)
+        : createChatExpirationDate(interfaceConfig, false),
+    };
+  } catch (error) {
+    logger.error('[archiveAllConvos] Error creating chat expiration date:', error);
+    return { temporary, deadline: createFallbackRetentionDate() };
+  }
+}
+
+/**
+ * Runs `task` over `items`, a bounded slice at a time. Every task of a slice settles before a
+ * failure is rethrown, so none is still writing once the sweep reports it.
+ */
+async function forEachInSlices<T>(items: T[], task: (item: T) => Promise<void>): Promise<void> {
+  for (let index = 0; index < items.length; index += ARCHIVE_RETENTION_CONCURRENCY) {
+    const results = await Promise.allSettled(
+      items.slice(index, index + ARCHIVE_RETENTION_CONCURRENCY).map(task),
+    );
+    const failure = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (failure) {
+      throw failure.reason;
+    }
   }
 }
 
@@ -664,7 +724,11 @@ export interface ConversationMethods {
       allowEmpty?: boolean;
     },
   ): Promise<DeleteResult & { messages: DeleteResult; conversationIds: string[] }>;
-  archiveAllConvos(user: string): Promise<{ archivedCount: number }>;
+  /** Applies the request's retention mode to each chat it archives, as archiving one chat does. */
+  archiveAllConvos(
+    user: string,
+    interfaceConfig?: AppConfig['interfaceConfig'],
+  ): Promise<{ archivedCount: number }>;
 }
 
 export interface ConversationMethodDeps
@@ -2361,17 +2425,27 @@ export function createConversationMethods(
    * concurrent writers release the counts once; the tags are cleared in the same write and
    * released from the document it replaced, so a later delete cannot release them again. Inside a
    * transaction the counts are released on commit. Resolves whether this call converted the chat.
+   *
+   * A caller's own `filter` and `set` join the same write, so its change lands with the
+   * conversion or not at all.
    */
   async function convertToTemporary(
     userId: string,
     _id: Types.ObjectId,
     expiredAt: Date,
+    {
+      filter,
+      set,
+    }: {
+      filter?: FilterQuery<IConversation>;
+      set?: Pick<IConversation, 'isArchived' | 'archivedAt'>;
+    } = {},
   ): Promise<boolean> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const replaced = await withoutMeiliIndexing(
       Conversation.findOneAndUpdate(
-        { _id, isTemporary: { $ne: true } },
-        { $set: { isTemporary: true, expiredAt, tags: [] } },
+        { ...filter, _id, isTemporary: { $ne: true } },
+        { $set: { ...set, isTemporary: true, expiredAt, tags: [] } },
         { new: false, timestamps: false, session: deps?.saveSession },
       ),
     )
@@ -4476,11 +4550,68 @@ export function createConversationMethods(
   }
 
   /**
+   * Archives one batch of an archive-all sweep and resolves how many chats it archived. Under a
+   * retention mode the archive write carries what archiving the chat alone would give it, so no
+   * chat is archived without its retention, and the chat's responses take its deadline first, the
+   * order `saveConvo` keeps.
+   */
+  async function archiveBatch(
+    { user, filter, archivedAt, retention }: ArchiveSweep,
+    conversations: ArchiveCandidate[],
+    ids: Types.ObjectId[],
+  ): Promise<number> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const retain = (conversation: ArchiveCandidate, expiredAt: Date) =>
+      retainResponses(
+        { userId: user, tenantId: conversation.tenantId },
+        conversation.conversationId,
+        expiredAt,
+      );
+
+    if (retention?.temporary) {
+      /** One write per chat: converting releases the bookmarks of the document it replaced. */
+      let converted = 0;
+      await forEachInSlices(conversations, async (conversation) => {
+        const expiredAt = conversation.expiredAt ?? retention.deadline;
+        await retain(conversation, expiredAt);
+        const set = { isArchived: true, archivedAt };
+        if (await convertToTemporary(user, conversation._id, expiredAt, { filter, set })) {
+          converted++;
+        }
+      });
+      return converted;
+    }
+
+    let archived = 0;
+    /** Under `all` a chat without a deadline gains the general-chat one; a held deadline stays. */
+    const pending = retention ? conversations.filter(({ expiredAt }) => expiredAt == null) : [];
+    if (retention && pending.length > 0) {
+      await forEachInSlices(pending, (conversation) => retain(conversation, retention.deadline));
+      const stamped = await Conversation.updateMany(
+        { ...filter, _id: { $in: pending.map(({ _id }) => _id) }, expiredAt: null },
+        {
+          $set: { isArchived: true, archivedAt, isTemporary: false, expiredAt: retention.deadline },
+        },
+        { timestamps: false },
+      );
+      archived += stamped.modifiedCount ?? 0;
+    }
+    const result = await Conversation.updateMany(
+      { ...filter, _id: { $in: ids } },
+      { $set: { isArchived: true, archivedAt } },
+      { timestamps: false },
+    );
+    return archived + (result.modifiedCount ?? 0);
+  }
+
+  /**
    * Archives every conversation the user can currently see in one pass. Temporary and
    * retention-expired conversations are left alone: they are already hidden from the
    * chat list, so archiving them would only resurrect them in the archived view.
+   *
+   * Each chat it archives gets the retention the request's mode gives a chat archived alone.
    */
-  async function archiveAllConvos(user: string) {
+  async function archiveAllConvos(user: string, interfaceConfig?: AppConfig['interfaceConfig']) {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const projectIds = new Set<string>();
     /** One stamp for the whole sweep so the archived view groups the run together
@@ -4488,6 +4619,8 @@ export function createConversationMethods(
      * recovery below can find everything this call committed without holding an id
      * per conversation in memory. */
     const archivedAt = new Date();
+    /** Resolved once, like `archivedAt`, so every chat the sweep stamps shares one deadline. */
+    const retention = resolveArchiveRetention(interfaceConfig);
     let archivedCount = 0;
     /** A write whose result never came back may still have committed, so reconciliation
      * keys off the attempt rather than off `archivedCount`: a stepdown between commit and
@@ -4519,10 +4652,10 @@ export function createConversationMethods(
           ? { $gt: lastConversationId, $lte: snapshotBoundary._id }
           : { $lte: snapshotBoundary._id };
         const conversations = await Conversation.find({ ...filter, _id: idRange })
-          .select('_id chatProjectId')
+          .select('_id chatProjectId conversationId expiredAt tenantId')
           .sort({ _id: 1 })
           .limit(ARCHIVE_CONVERSATION_BATCH_SIZE)
-          .lean<Array<Pick<IConversation, '_id' | 'chatProjectId'>>>();
+          .lean<ArchiveCandidate[]>();
         if (conversations.length === 0) {
           break;
         }
@@ -4544,12 +4677,11 @@ export function createConversationMethods(
          * into the legacy group the archived table sorts and dates by `createdAt`.
          */
         attemptedArchiveWrite = true;
-        const result = await Conversation.updateMany(
-          { ...filter, _id: { $in: conversationIds } },
-          { $set: { isArchived: true, archivedAt } },
-          { timestamps: false },
+        const batchArchivedCount = await archiveBatch(
+          { user, filter, archivedAt, retention },
+          conversations,
+          conversationIds,
         );
-        const batchArchivedCount = result.modifiedCount ?? 0;
         archivedCount += batchArchivedCount;
 
         if (batchArchivedCount > 0) {

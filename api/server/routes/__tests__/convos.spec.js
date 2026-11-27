@@ -2233,7 +2233,12 @@ describe('Convos Routes', () => {
   });
 
   describe('POST /archive/all', () => {
+    const { configMiddleware } = require('~/server/middleware');
     const { archiveAllConvos } = require('~/models');
+
+    afterEach(() => {
+      configMiddleware.mockImplementation((req, res, next) => next());
+    });
 
     it('delegates archive-all requests through the package API handler', async () => {
       archiveAllConvos.mockResolvedValue({ archivedCount: 4 });
@@ -2243,7 +2248,23 @@ describe('Convos Routes', () => {
       expect(response.status).toBe(200);
       expect(response.body).toEqual({ archivedCount: 4 });
       expect(archiveAllHandler).toHaveBeenCalledTimes(1);
-      expect(archiveAllConvos).toHaveBeenCalledWith('test-user-123');
+      expect(archiveAllConvos).toHaveBeenCalledWith('test-user-123', undefined);
+    });
+
+    /** Nothing mounts the config ahead of the convos router, so without loading it here the
+     * sweep never sees the retention mode it applies to the chats it archives. */
+    it('loads the config before the handler and hands it the retention mode', async () => {
+      const interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 24 };
+      configMiddleware.mockImplementation((req, res, next) => {
+        req.config = { ...req.config, interfaceConfig };
+        next();
+      });
+      archiveAllConvos.mockResolvedValue({ archivedCount: 1 });
+
+      const response = await request(app).post('/api/convos/archive/all');
+
+      expect(response.status).toBe(200);
+      expect(archiveAllConvos).toHaveBeenCalledWith('test-user-123', interfaceConfig);
     });
   });
 
