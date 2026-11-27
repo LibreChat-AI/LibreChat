@@ -689,8 +689,11 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     /* A storage cap is checked against the files attached at this revision, and the attach
      * below only lands while the project is still at it, so concurrent attaches cannot pass
      * the cap together; one that lost the race reads the project again. */
-    const capsStorage = fileLimits?.totalSizeLimit != null && !alreadyAttached;
-    if (capsStorage) {
+    /* Every capped write carries the revision guard, an attach of an already attached file
+     * included: if that file is removed and another added meanwhile, the revision moves and the
+     * retry checks the storage again instead of adding the file back unchecked. */
+    const capsStorage = fileLimits?.totalSizeLimit != null;
+    if (capsStorage && !alreadyAttached) {
       const attached = await File.find({
         file_id: { $in: project.file_ids ?? [] },
         user,

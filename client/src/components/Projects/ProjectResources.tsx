@@ -34,6 +34,7 @@ import {
   PermissionTypes,
   Permissions,
   mbToBytes,
+  inferMimeType,
   convertStringsToRegex,
 } from 'librechat-data-provider';
 import type {
@@ -68,6 +69,8 @@ type UploadState = {
   fileId?: string;
   errorMessage?: string;
   status: 'processing' | 'failed';
+  /** Refused by a `projects.files` limit before upload: retrying cannot change that. */
+  refused?: boolean;
 };
 
 const getUploadErrorMessage = (error: unknown, localize: LocalizeFunction): string => {
@@ -95,7 +98,9 @@ const getFileLimitMessage = (
   }
   if (
     limits?.supportedMimeTypes != null &&
-    !convertStringsToRegex(limits.supportedMimeTypes).some((pattern) => pattern.test(file.type))
+    !convertStringsToRegex(limits.supportedMimeTypes).some((pattern) =>
+      pattern.test(inferMimeType(file.name, file.type)),
+    )
   ) {
     return localize('com_ui_project_file_type');
   }
@@ -367,7 +372,14 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     for (const file of selected) {
       const errorMessage = getFileLimitMessage(file, fileLimits, localize);
       if (errorMessage) {
-        refused.push({ id: v4(), filename: file.name, file, errorMessage, status: 'failed' });
+        refused.push({
+          id: v4(),
+          filename: file.name,
+          file,
+          errorMessage,
+          status: 'failed',
+          refused: true,
+        });
       } else {
         valid.push(file);
       }
@@ -410,6 +422,9 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
 
   const retryUpload = (item: UploadState) => {
     if (pendingUploadIdsRef.current.has(item.id) || (!item.fileId && !canUploadFromDevice)) {
+      return;
+    }
+    if (!item.fileId && getFileLimitMessage(item.file, fileLimits, localize) != null) {
       return;
     }
     if (getEffectiveFileCount() >= projectFileLimit) {
@@ -574,15 +589,17 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
                 )}
                 {item.status === 'failed' && (
                   <>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={!item.fileId && !canUploadFromDevice}
-                      onClick={() => retryUpload(item)}
-                    >
-                      {localize('com_ui_retry')}
-                    </Button>
+                    {item.refused !== true && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={!item.fileId && !canUploadFromDevice}
+                        onClick={() => retryUpload(item)}
+                      >
+                        {localize('com_ui_retry')}
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="ghost"

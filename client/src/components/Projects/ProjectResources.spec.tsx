@@ -235,6 +235,8 @@ describe('ProjectResources', () => {
       expect(await screen.findByText('com_ui_project_file_too_large')).toBeInTheDocument();
       expect(screen.getByText('com_ui_project_file_type')).toBeInTheDocument();
       expect(mockUploadMutateAsync).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Dismiss big.txt upload' })).toBeInTheDocument();
     } finally {
       mockStartupConfig = undefined;
     }
@@ -252,6 +254,22 @@ describe('ProjectResources', () => {
     });
 
     expect(await screen.findByText('com_ui_project_file_conflict')).toBeInTheDocument();
+  });
+
+  it('reads the MIME type from the extension when the browser reports none', async () => {
+    mockStartupConfig = { projects: { files: { supportedMimeTypes: ['^text/markdown$'] } } };
+    mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+    try {
+      renderResources();
+      fireEvent.change(screen.getByTestId('project-upload-input'), {
+        target: { files: [new File(['# Notes'], 'notes.md', { type: '' })] },
+      });
+
+      await waitFor(() => expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText('com_ui_project_file_type')).toBeNull();
+    } finally {
+      mockStartupConfig = undefined;
+    }
   });
 
   it('leaves the last place to a valid file selected after a refused one', async () => {

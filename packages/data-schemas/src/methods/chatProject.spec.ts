@@ -1200,6 +1200,42 @@ describe('projects.files', () => {
     expect(project?.file_ids?.length).toBeGreaterThan(0);
   });
 
+  it('rechecks storage when an already attached file is replaced while its attach is in flight', async () => {
+    const projectId = await newProject();
+    await reference('old', { bytes: 2 * MB });
+    await reference('new', { bytes: 2 * MB });
+    const limits = { files: { totalSizeLimit: 3 } };
+    await methods.addChatProjectFile(owner, projectId, 'old', limits);
+
+    /* The re-attach of `old` reads the project, then `old` is swapped for `new` before its write. */
+    const findOneAndUpdate = ChatProject.findOneAndUpdate.bind(ChatProject);
+    let swapped = false;
+    const spy = jest.spyOn(ChatProject, 'findOneAndUpdate').mockImplementation(((
+      filter: Record<string, unknown>,
+      update: Record<string, unknown>,
+      options: Record<string, unknown>,
+    ) => {
+      const query = findOneAndUpdate(filter, update, options);
+      if (!swapped && JSON.stringify(update).includes('"old"')) {
+        swapped = true;
+        const exec = query.exec.bind(query);
+        jest.spyOn(query, 'exec').mockImplementation(async () => {
+          spy.mockRestore();
+          await methods.removeChatProjectFile(owner, projectId, 'old');
+          await methods.addChatProjectFile(owner, projectId, 'new', limits);
+          return exec();
+        });
+      }
+      return query;
+    }) as never);
+
+    await expect(methods.addChatProjectFile(owner, projectId, 'old', limits)).rejects.toThrow(
+      'Project storage limit reached',
+    );
+    spy.mockRestore();
+    expect((await methods.getChatProject(owner, projectId))?.file_ids).toEqual(['new']);
+  });
+
   it('leaves attaches unchanged when projects.files is unset', async () => {
     const projectId = await newProject();
     await reference('plain', { bytes: 600 * MB, type: 'application/octet-stream' });
