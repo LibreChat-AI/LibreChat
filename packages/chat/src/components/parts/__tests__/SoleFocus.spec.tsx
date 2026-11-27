@@ -6,15 +6,10 @@ import { act, render, screen } from '@testing-library/react';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { SoleToolContext } from '../../../react/parts/disclosure';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import BashCall from '../BashCall';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string): string =>
-      key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../useExpandCollapse', () => ({
   __esModule: true,
@@ -110,6 +105,6 @@ describe('a sole call that drops its row on completion', () => {
 
     rerender(tree(true));
 
-    expect(region()).toHaveTextContent('com_ui_command_finished');
+    expect(region()).toHaveTextContent('Ran command');
   });
 });

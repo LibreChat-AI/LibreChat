@@ -5,27 +5,10 @@ import React from 'react';
 import { Tools } from 'librechat-data-provider';
 import { render, screen } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import MemoryCall from '../MemoryCall';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string, params?: { tokens?: number }): string => {
-      const translations: Record<string, string> = {
-        com_ui_memory_saving: 'Saving memory',
-        com_ui_memory_saved: 'Saved memory',
-        com_ui_memory_deleting: 'Deleting memory',
-        com_ui_memory_removed: 'Deleted memory',
-        com_ui_memory_deleted: 'Memory deleted',
-        com_ui_memory: 'Memory',
-        com_ui_cancelled: 'Cancelled',
-        com_ui_tool_failed: 'failed',
-        com_ui_memory_would_exceed: `Cannot save: remove ${params?.tokens} tokens to make space.`,
-      };
-      return translations[key] ?? key;
-    },
-}));
+beforeAll(initEnglish);
 
 jest.mock('../ProgressText', () => ({
   __esModule: true,
@@ -197,7 +180,7 @@ describe('MemoryCall', () => {
     );
 
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Cannot save: remove 47 tokens to make space.',
+      'Cannot save - would exceed limit by 47 tokens. Delete existing memories to make space.',
     );
     expect(screen.queryByText('requested value')).not.toBeInTheDocument();
   });

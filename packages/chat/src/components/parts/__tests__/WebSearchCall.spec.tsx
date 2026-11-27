@@ -16,29 +16,14 @@ import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { setDefaultMessagePartsHost } from '../../../react/host';
 import { SearchContext } from '../../../react/parts/search';
 import { WebSearchCall as WebSearch } from '../WebSearch';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import { HeaderActionSlotContext } from '../slot';
 import { FailedRevealContext } from '../reveal';
 import { ROW_GLYPH_SLOT } from '../rows';
 
 setDefaultMessagePartsHost(createMessagePartsHost());
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
-    const translations: Record<string, string> = {
-      com_ui_web_searching: 'Searching the web',
-      com_ui_web_searching_again: 'Searching again',
-      com_ui_web_search_processing: 'Processing results',
-      com_ui_web_search_reading: 'Reading sources',
-      com_ui_web_searched: 'Searched the web',
-      com_ui_web_search_source: `${values?.count ?? 1} source`,
-      com_ui_web_search_sources: `${values?.count ?? 0} sources`,
-      com_ui_web_search_details: 'Search details',
-      com_ui_search_query: 'Query',
-    };
-    return translations[key] || key;
-  },
-}));
+beforeAll(initEnglish);
 
 jest.mock('../Favicon', () => ({
   __esModule: true,
@@ -572,7 +557,7 @@ describe('WebSearch', () => {
         initialProgress: 0.5,
       });
 
-      const matches = screen.getAllByText('Searching again');
+      const matches = screen.getAllByText('Searching the web again');
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
   });

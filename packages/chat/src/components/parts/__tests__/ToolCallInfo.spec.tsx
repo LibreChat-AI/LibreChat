@@ -3,12 +3,10 @@
  */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import ToolCallInfo from '../ToolCallInfo';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => (key === 'com_ui_parameters' ? 'Parameters' : key),
-}));
+beforeAll(initEnglish);
 
 jest.mock('../OutputRenderer', () => ({
   __esModule: true,

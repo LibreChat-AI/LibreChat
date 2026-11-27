@@ -12,15 +12,10 @@ import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SubagentProgress from '../SubagentProgress';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string, values?: Record<string, string | number>): string =>
-      values == null ? key : `${key}(${Object.values(values).join(',')})`,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../../core/parts/toolLabels', () => ({
   ...jest.requireActual('../../../core/parts/toolLabels'),
@@ -110,8 +105,8 @@ describe('BackgroundTaskCard subagent header', () => {
     expect(
       within(card).getByText('Asking the reviewer to restate its findings'),
     ).toBeInTheDocument();
-    expect(within(card).getByText('com_ui_background_tasks_result_claimed')).toBeInTheDocument();
-    expect(card).not.toHaveTextContent('com_ui_subagent_status_finished');
+    expect(within(card).getByText('Result claimed')).toBeInTheDocument();
+    expect(card).not.toHaveTextContent('Finished');
     expect(card).not.toHaveTextContent('agent_reviewer');
     expect(card).not.toHaveTextContent('task-1');
     expect(card).not.toHaveTextContent('A long brief');
@@ -180,8 +175,8 @@ describe('BackgroundTaskCard subagent header', () => {
       [],
     );
     const card = screen.getByTestId('background-task-card');
-    expect(within(card).getByText('com_ui_background_tasks_subagent')).toBeInTheDocument();
-    expect(within(card).getByText('com_ui_failed')).toBeInTheDocument();
+    expect(within(card).getByText('Subagent')).toBeInTheDocument();
+    expect(within(card).getByText('Failed')).toBeInTheDocument();
     expect(card).not.toHaveTextContent('agent_unknown');
   });
 });
@@ -262,22 +257,22 @@ describe('SubagentProgress timeline', () => {
   it('reads each step as a sentence, tallies folded ranges, and marks the finish', () => {
     render(<SubagentProgress digest={finished} settled />);
     const progress = screen.getByTestId('subagent-progress');
-    expect(progress).toHaveTextContent('com_ui_subagent_progress_tool_calls(30)');
-    expect(progress).toHaveTextContent('com_ui_subagent_progress_steps(17)');
-    expect(progress).not.toHaveTextContent('com_ui_subagent_progress_failed');
+    expect(progress).toHaveTextContent('30 tool calls');
+    expect(progress).toHaveTextContent('across 17 steps');
+    expect(progress).not.toHaveTextContent(/\d+ failed/);
     const rows = within(progress).getAllByRole('listitem');
     expect(rows).toHaveLength(4);
-    expect(rows[0]).toHaveTextContent('com_ui_subagent_progress_steps_range(1–10)');
-    expect(rows[0]).toHaveTextContent('com_ui_subagent_progress_more(3)');
+    expect(rows[0]).toHaveTextContent('Steps 1–10');
+    expect(rows[0]).toHaveTextContent('+3 more');
     expect(within(rows[0]).getByText('9')).toBeInTheDocument();
     expect(rows[1]).toHaveTextContent('Fetching a sample pull request');
-    expect(rows[1]).toHaveTextContent('com_ui_subagent_progress_more(2)');
+    expect(rows[1]).toHaveTextContent('+2 more');
     expect(rows[2]).toHaveTextContent('Code');
-    expect(rows[3]).toHaveTextContent('com_ui_subagent_progress_wrote_reply');
-    expect(rows[3]).toHaveTextContent('com_ui_subagent_progress_chars(1,284)');
-    const finish = within(rows[3]).getByRole('img', { name: 'com_ui_background_tasks_completed' });
+    expect(rows[3]).toHaveTextContent('Wrote the reply');
+    expect(rows[3]).toHaveTextContent('1,284 characters');
+    const finish = within(rows[3]).getByRole('img', { name: 'Completed' });
     expect(finish).toHaveClass('bg-status-success');
-    const earlier = within(rows[2]).getByRole('img', { name: 'com_ui_background_tasks_completed' });
+    const earlier = within(rows[2]).getByRole('img', { name: 'Completed' });
     expect(earlier).not.toHaveClass('bg-status-success');
   });
 
@@ -315,16 +310,14 @@ describe('SubagentProgress timeline', () => {
       />,
     );
     const progress = screen.getByTestId('subagent-progress');
-    expect(progress).toHaveTextContent('com_ui_subagent_progress_failed(1)');
+    expect(progress).toHaveTextContent('1 failed');
     const rows = within(progress).getAllByRole('listitem');
     expect(rows).toHaveLength(3);
-    expect(rows[0]).toHaveTextContent('com_ui_failed');
+    expect(rows[0]).toHaveTextContent('Failed');
     expect(rows[1]).toHaveTextContent('Reading the diff');
     expect(within(rows[1]).getByRole('img')).not.toHaveClass('bg-status-success');
-    expect(rows[2]).toHaveTextContent('com_ui_subagent_progress_thinking');
-    expect(
-      within(rows[2]).getByRole('img', { name: 'com_ui_background_tasks_running' }),
-    ).toBeInTheDocument();
+    expect(rows[2]).toHaveTextContent('Thinking');
+    expect(within(rows[2]).getByRole('img', { name: 'Running' })).toBeInTheDocument();
   });
 
   it('nests a nested subagent run beneath the call that started it', () => {
@@ -361,7 +354,7 @@ describe('SubagentProgress timeline', () => {
     const lists = screen.getAllByRole('list');
     expect(lists).toHaveLength(2);
     expect(lists[0]).toHaveTextContent('Asking a helper');
-    expect(lists[0]).toHaveTextContent('com_ui_subagent_progress_nested(1,1)');
+    expect(lists[0]).toHaveTextContent('Turns 1 · Tool calls 1');
     expect(lists[1]).toHaveTextContent('Listing files');
   });
 });

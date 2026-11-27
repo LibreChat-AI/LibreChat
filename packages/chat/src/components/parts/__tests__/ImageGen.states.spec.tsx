@@ -3,6 +3,7 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import OpenAIImageGen from '../ImageGen';
 
 jest.mock('../../../core/scaleImage', () => ({
@@ -23,11 +24,12 @@ jest.mock('../Image', () => ({
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
   PixelCard: ({ progress }: { progress: number }) => (
     <div data-testid="pixel-card" data-progress={progress} />
   ),
 }));
+
+beforeAll(initEnglish);
 
 jest.mock('../ToolIcon', () => ({
   __esModule: true,

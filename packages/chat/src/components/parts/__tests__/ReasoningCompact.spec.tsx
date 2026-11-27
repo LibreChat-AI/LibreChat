@@ -7,13 +7,11 @@ import '@testing-library/jest-dom';
 import type { ReactNode } from 'react';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import { ReasoningCompact } from '../Reasoning';
 import { ROW_GLYPH_SLOT } from '../rows';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('lucide-react', () => ({
   Lightbulb: () => <span data-testid="thoughts-icon" />,

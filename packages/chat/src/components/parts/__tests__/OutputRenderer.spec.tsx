@@ -5,6 +5,7 @@ import React from 'react';
 import copy from 'copy-to-clipboard';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ToolContentPendingContext } from '../../../react/parts/disclosure';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import { isError } from '../../../core/parts/output';
 import OutputRenderer from '../OutputRenderer';
 
@@ -31,10 +32,7 @@ jest.mock('../CopyButton', () => ({
 
 jest.mock('copy-to-clipboard', () => jest.fn());
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 describe('OutputRenderer', () => {
   beforeEach(() => {
@@ -74,14 +72,14 @@ describe('OutputRenderer', () => {
     const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
     const { unmount } = render(<OutputRenderer text={text} />);
     expect(screen.getByText(/line 1/).textContent?.split('\n')).toHaveLength(30);
-    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show more')).not.toBeInTheDocument();
     unmount();
 
     render(<OutputRenderer text={text} variant="terminal" />);
     const pre = screen.getByText(/line 30/);
     expect(pre.textContent).toBe(text);
     expect(pre).toHaveClass('max-h-[18.75rem]', 'overflow-auto');
-    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show more')).not.toBeInTheDocument();
   });
 
   it('opens terminal output on its last lines and default output on its first', () => {

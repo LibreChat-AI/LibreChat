@@ -5,14 +5,12 @@ import React from 'react';
 import copy from 'copy-to-clipboard';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { RunCodeProps } from '../CodeBar';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import CodeBlock from '../CodeBlock';
 
 jest.mock('copy-to-clipboard', () => ({ __esModule: true, default: jest.fn() }));
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 let observed: Element[] = [];
 let report: ((visible: boolean) => void) | undefined;
@@ -52,13 +50,13 @@ describe('CodeBlock', () => {
     expect(code).toHaveClass('hljs', 'language-python');
     expect(code).toHaveTextContent('print(1)');
     expect(screen.getByText('python')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_copy_code' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_download_code' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy code' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download code' })).toBeInTheDocument();
   });
 
   it('copies the code’s text, trimmed', () => {
     render(<CodeBlock lang="python" codeChildren={'  print(1)\n'} />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_copy_code' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy code' }));
     expect(copy).toHaveBeenCalledWith('print(1)', { format: 'text/plain' });
   });
 
@@ -100,13 +98,13 @@ describe('CodeBlock', () => {
     );
     expect(run).not.toHaveBeenCalled();
     expect(screen.queryByTestId('output')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_copy_code' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy code' })).toBeInTheDocument();
   });
 
   it('shows a plugin’s payload as wrapped JSON with no actions', () => {
     const { container } = render(<CodeBlock lang="json" plugin={true} codeChildren="{}" />);
     expect(container.querySelector('code')).not.toHaveClass('hljs');
-    expect(screen.queryByRole('button', { name: 'com_ui_copy_code' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
   });
 
   it('floats its actions only while the block is hovered and its bar is out of view', () => {

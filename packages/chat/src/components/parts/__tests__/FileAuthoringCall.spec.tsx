@@ -3,25 +3,10 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import FileAuthoringCall from '../FileAuthoringCall';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string, values?: Record<string | number, string>): string => {
-      const translations: Record<string, string> = {
-        com_ui_created_file: 'Created {{0}}',
-        com_ui_creating_file: 'Creating {{0}}',
-        com_ui_updated_file: 'Updated {{0}}',
-        com_ui_edited_file: 'Edited {{0}}',
-        com_ui_editing_file: 'Editing {{0}}',
-        com_ui_cancelled: 'Cancelled',
-        com_ui_tool_failed: 'failed',
-      };
-      return (translations[key] ?? key).replace('{{0}}', values?.[0] ?? '');
-    },
-}));
+beforeAll(initEnglish);
 
 jest.mock('../ProgressText', () => ({
   __esModule: true,

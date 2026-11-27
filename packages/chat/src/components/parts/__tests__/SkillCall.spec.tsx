@@ -6,15 +6,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { LoadedSkill, MessagePartsShare } from '../../../react/host';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SkillCall from '../SkillCall';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize:
-    () =>
-    (key: string): string =>
-      key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../ProgressText', () => ({
   __esModule: true,
@@ -81,11 +76,11 @@ describe('SkillCall', () => {
     renderSkill({ skillId: SKILL_ID });
 
     expect(lookup).toHaveBeenLastCalledWith(SKILL_ID, true);
-    expect(screen.getByText('com_ui_skill_current_version')).toBeInTheDocument();
+    expect(screen.getByText('Current skill version')).toBeInTheDocument();
     expect(screen.getByText(/Summarize merged PRs\./)).toBeInTheDocument();
     expect(screen.queryByText(/loaded\. Follow the instructions/)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_open_skill' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open skill' }));
     expect(open).toHaveBeenCalledTimes(1);
   });
 
@@ -105,9 +100,9 @@ describe('SkillCall', () => {
     renderSkill({ skillId: 'aaaaaaaaaaaaaaaaaaaaaaaa' });
 
     expect(lookup).toHaveBeenLastCalledWith('aaaaaaaaaaaaaaaaaaaaaaaa', true);
-    expect(screen.getByText('com_ui_output')).toBeInTheDocument();
+    expect(screen.getByText('Output')).toBeInTheDocument();
     expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open skill' })).not.toBeInTheDocument();
   });
 
   it('keeps the output of a call saved without a skill id and looks nothing up', () => {
@@ -115,10 +110,10 @@ describe('SkillCall', () => {
 
     expect(lookup).toHaveBeenCalled();
     expect(lookup).not.toHaveBeenCalledWith(expect.anything(), true);
-    expect(screen.getByText('com_ui_output')).toBeInTheDocument();
+    expect(screen.getByText('Output')).toBeInTheDocument();
     expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_skill_current_version')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Current skill version')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open skill' })).not.toBeInTheDocument();
   });
 
   it('keeps the output in a shared transcript and looks nothing up', () => {
@@ -127,10 +122,10 @@ describe('SkillCall', () => {
 
     expect(lookup).toHaveBeenCalled();
     expect(lookup).not.toHaveBeenCalledWith(expect.anything(), true);
-    expect(screen.getByText('com_ui_output')).toBeInTheDocument();
+    expect(screen.getByText('Output')).toBeInTheDocument();
     expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
     expect(screen.queryByText(/Summarize merged PRs\./)).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_skill_current_version')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Current skill version')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open skill' })).not.toBeInTheDocument();
   });
 });

@@ -23,12 +23,14 @@ import {
 import { isPreviewedToolCallPart, PreviewedToolCallPart, withFullToolCall } from '../hydration';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
   Spinner: (props: React.HTMLAttributes<HTMLSpanElement>) => <span {...props} />,
 }));
+
+beforeAll(initEnglish);
 
 /** The host's request for one stored tool call. */
 const getToolCallPart = jest.fn<Promise<ToolCallPartResponse>, [ToolCallPartParams]>();
@@ -171,7 +173,7 @@ describe('previewed tool-call parts', () => {
     renderPart(previewPart());
 
     fireEvent.click(screen.getByText('toggle'));
-    expect(await screen.findByRole('status')).toHaveTextContent('com_ui_tool_content_loading');
+    expect(await screen.findByRole('status')).toHaveTextContent('Loading the full tool call…');
     expect(getToolCallPart).toHaveBeenCalledWith({
       conversationId: 'convo-1',
       messageId: 'msg-1',
@@ -196,10 +198,10 @@ describe('previewed tool-call parts', () => {
 
     fireEvent.click(screen.getByText('toggle'));
     const alert = await screen.findByRole('alert', undefined, { timeout: 5_000 });
-    expect(alert).toHaveTextContent('com_ui_tool_content_error');
+    expect(alert).toHaveTextContent("Couldn't load the full tool call.");
     expect(screen.getByTestId('output')).toHaveTextContent('…');
 
-    fireEvent.click(screen.getByText('com_ui_retry'));
+    fireEvent.click(screen.getByText('Retry'));
     await waitFor(() => expect(screen.getByTestId('output').textContent).toBe(fullOutput));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(getToolCallPart).toHaveBeenCalledTimes(3);
@@ -314,8 +316,8 @@ describe('task-authorized tool preview loading', () => {
 
   it('keeps a view-only nested preview from requesting private child messages', async () => {
     renderPart(previewPart(), { sole: true, contentQuery: null });
-    expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_tool_content_error');
-    expect(screen.queryByText('com_ui_retry')).not.toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the full tool call.");
+    expect(screen.queryByText('Retry')).not.toBeInTheDocument();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(getToolCallPart).not.toHaveBeenCalled();
   });
@@ -363,8 +365,8 @@ describe('a previewed tool call under a host that cannot load stored calls', () 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText('toggle'));
-    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_tool_content_error');
-    expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load the full tool call.");
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     expect(screen.getByTestId('output')).toHaveTextContent('…');
     expect(getToolCallPart).not.toHaveBeenCalled();
   });
