@@ -1615,7 +1615,7 @@ describe('createRemoteAgentAuth', () => {
 
       expect(deps.updateUser).toHaveBeenCalledWith(
         'uid123',
-        { role: 'STANDARD-USER' },
+        { role: 'STANDARD-USER', roleToken: expect.any(String) },
         { role: 'user' },
       );
       expect(req.user).toMatchObject({ role: 'STANDARD-USER' });
@@ -1636,7 +1636,7 @@ describe('createRemoteAgentAuth', () => {
 
       expect(deps.updateUser).toHaveBeenCalledWith(
         'uid123',
-        { role: 'STANDARD-USER' },
+        { role: 'STANDARD-USER', roleToken: expect.any(String) },
         { role: 'user' },
       );
       expect(recordAuditEntry).toHaveBeenCalledWith(
@@ -1700,7 +1700,7 @@ describe('createRemoteAgentAuth', () => {
       expect(updateUser).toHaveBeenNthCalledWith(
         1,
         'uid123',
-        { role: 'STANDARD-USER' },
+        { role: 'STANDARD-USER', roleToken: expect.any(String) },
         { role: 'user' },
       );
       expect(updateUser).toHaveBeenNthCalledWith(
@@ -1746,7 +1746,11 @@ describe('createRemoteAgentAuth', () => {
       const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
       await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
 
-      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'USER' }, { role: 'user' });
+      expect(deps.updateUser).toHaveBeenCalledWith(
+        'uid123',
+        { role: 'USER', roleToken: expect.any(String) },
+        { role: 'user' },
+      );
       expect(req.user).toMatchObject({ role: 'USER' });
     });
 
@@ -1762,7 +1766,11 @@ describe('createRemoteAgentAuth', () => {
       const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
       await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
 
-      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'USER' }, { role: 'user' });
+      expect(deps.updateUser).toHaveBeenCalledWith(
+        'uid123',
+        { role: 'USER', roleToken: expect.any(String) },
+        { role: 'user' },
+      );
       expect(req.user).toMatchObject({ role: 'USER' });
     });
 
@@ -1812,7 +1820,7 @@ describe('createRemoteAgentAuth', () => {
 
       expect(deps.updateUser).toHaveBeenCalledWith(
         'uid123',
-        { role: 'USER' },
+        { role: 'USER', roleToken: expect.any(String) },
         { role: 'STANDARD-USER' },
       );
       expect(req.user).toMatchObject({ role: 'USER' });
@@ -1848,7 +1856,7 @@ describe('createRemoteAgentAuth', () => {
       expect(lookupTenants).toEqual(['tenant-role-sync', 'tenant-role-sync', 'tenant-role-sync']);
       expect(deps.updateUser).toHaveBeenCalledWith(
         'uid123',
-        { role: 'BASIC-USER' },
+        { role: 'BASIC-USER', roleToken: expect.any(String) },
         { role: 'user' },
       );
       expect(req.user).toMatchObject({ tenantId: 'tenant-role-sync', role: 'BASIC-USER' });

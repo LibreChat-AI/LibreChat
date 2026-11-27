@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { PrincipalType, SystemRoles, partialWithoutDefaults } from 'librechat-data-provider';
 import {
   logger,
@@ -404,28 +405,30 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
    * The previous role an add's undo put back by name may no longer be `held`, the role the user
    * had when the add began: deleted after its own deletion swept its members, or replaced by a
    * role created under its name since. It is read back, and unless it is still `held` the user
-   * moves on to USER, which always exists, while they still hold the name; the move is audited
-   * as the deletion's would have been. A read or write that fails keeps the restored role.
+   * moves on to USER, which always exists, while the undo's write (`token`) is still theirs; the
+   * move is audited as the deletion's would have been. A read or write that fails keeps the
+   * restored role.
    */
   async function leaveDeletedRole(
     req: ServerRequest,
     userId: string,
-    role: string,
-    held: IRole | null,
+    { role, token, held }: { role: string; token: string; held: IRole | null },
   ) {
     const lookup = await readRole(role);
     if (!lookup.known || (held != null && isSameRole(held, lookup.role))) {
       return;
     }
-    const moved = await updateUser(userId, { role: SystemRoles.USER }, { role }).catch(
-      (error: unknown) => {
-        logger.error(
-          `[adminRoles] user ${userId} may still hold the deleted role "${role}" an add restored:`,
-          getSafeErrorMetadata(error),
-        );
-        return null;
-      },
-    );
+    const moved = await updateUser(
+      userId,
+      { role: SystemRoles.USER },
+      { role, roleToken: token },
+    ).catch((error: unknown) => {
+      logger.error(
+        `[adminRoles] user ${userId} may still hold the deleted role "${role}" an add restored:`,
+        getSafeErrorMetadata(error),
+      );
+      return null;
+    });
     if (moved) {
       await emitRevocationAudit(req, {
         action: 'role.member_removed',
@@ -1261,8 +1264,14 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         isSystemRoleName(name) || isSystemRoleName(previous) ? null : await getRoleByName(previous);
 
       /** Conditional on the role read above: an overlapping identical request matches nothing,
-       * so exactly one request records the transition. */
-      const updated = await updateUser(userId, { role: name }, { role: user.role });
+       * so exactly one request records the transition. The token lets an undo match this write
+       * and no later assignment of the same name. */
+      const token = randomUUID();
+      const updated = await updateUser(
+        userId,
+        { role: name, roleToken: token },
+        { role: user.role },
+      );
       if (!updated) {
         const current = await findUser({ _id: userId });
         if (!current) {
@@ -1313,13 +1322,19 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         /**
          * A deletion of the role whose last member read came before this write cannot see the
          * user, so the role is read back. Gone, replaced under its name or unreadable, the add is
-         * undone while the user still holds the name (`leaveDeletedRole` when the previous role is
-         * gone too). An add another write moved the user out of first (the deletion's own sweep,
-         * which audits its move) stood until then and is audited.
+         * undone while this write (`token`) is still the user's last assignment
+         * (`leaveDeletedRole` when the previous role is gone too). An add another write moved the
+         * user out of or past first (the deletion's own sweep, which audits its move, or a later
+         * assignment of a role recreated under the name) stood until then and is audited.
          */
         const lookup = await readRole(name);
         if (!lookup.known || !isSameRole(existing, lookup.role)) {
-          const outcome = await updateUser(userId, { role: previous }, { role: name }).then(
+          const restored = randomUUID();
+          const outcome = await updateUser(
+            userId,
+            { role: previous, roleToken: restored },
+            { role: name, roleToken: token },
+          ).then(
             (undone) => (undone ? 'undone' : 'moved'),
             (undoError) => {
               logger.error(
@@ -1330,7 +1345,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
             },
           );
           if (outcome === 'undone' && !isSystemRoleName(previous)) {
-            await leaveDeletedRole(req, userId, previous, held);
+            await leaveDeletedRole(req, userId, { role: previous, token: restored, held });
           }
           if (outcome !== 'undone') {
             await recordAdded();

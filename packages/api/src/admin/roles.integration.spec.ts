@@ -222,6 +222,37 @@ describe('adding a member to a role while it is deleted', () => {
     },
   );
 
+  it('an undone add leaves a later add of the role recreated under its name in place', async () => {
+    await methods.createRoleByName({ name: 'editor' });
+    await methods.createRoleByName({ name: 'viewer' });
+    const userId = await createMember('viewer');
+    const entries: RecordAuditEntryInput[] = [];
+    let deleted: Reply | undefined;
+    let later: Reply | undefined;
+    /** After the first add's write and before it reads the role back, the role is deleted
+     * (moving the user to USER), recreated under its name, and a second add assigns the user to
+     * the new role: the first add's undo must not take that assignment back. */
+    const handlers = roleHandlers(entries, {
+      updateUser: async (id, data, expected) => {
+        const updated = await methods.updateUser(id, data, expected as FilterQuery<IUser>);
+        if (data.role === 'editor' && deleted === undefined) {
+          deleted = await call(handlers.deleteRole, { name: 'editor' });
+          await methods.createRoleByName({ name: 'editor' });
+          later = await call(handlers.addRoleMember, { name: 'editor' }, { userId });
+        }
+        return updated;
+      },
+    });
+
+    const first = await call(handlers.addRoleMember, { name: 'editor' }, { userId });
+
+    const success = { status: 200, body: { success: true } };
+    expect(deleted).toEqual(success);
+    expect(later).toEqual(success);
+    expect(first).toEqual({ status: 404, body: { error: 'Role not found' } });
+    expect(await storedRole(userId)).toBe('editor');
+  });
+
   it('keeps an admin when the last two are added to a role deleted before either reads it back', async () => {
     await methods.createRoleByName({ name: 'editor' });
     const admins = [

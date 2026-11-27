@@ -537,8 +537,8 @@ describe('writeIdpRoleChange', () => {
 
     expect(sync.updateUser).toHaveBeenLastCalledWith(
       'u1',
-      { role: SystemRoles.USER },
-      { role: 'BASIC-USER' },
+      { role: SystemRoles.USER, roleToken: expect.any(String) },
+      { role: 'BASIC-USER', roleToken: expect.any(String) },
     );
     expect(sync.recordAuditEntry).not.toHaveBeenCalled();
   });
@@ -554,8 +554,8 @@ describe('writeIdpRoleChange', () => {
     expect(sync.updateUser).toHaveBeenCalledTimes(2);
     expect(sync.updateUser).toHaveBeenLastCalledWith(
       'u1',
-      { role: 'STANDARD-USER' },
-      { role: 'BASIC-USER' },
+      { role: 'STANDARD-USER', roleToken: expect.any(String) },
+      { role: 'BASIC-USER', roleToken: expect.any(String) },
     );
     expect(sync.recordAuditEntry).not.toHaveBeenCalled();
   });
@@ -565,12 +565,18 @@ describe('writeIdpRoleChange', () => {
 
     await expect(sync.write()).rejects.toThrow('configured roles do not exist: BASIC-USER');
 
+    /** Each compensating write matches the token of the write it undoes, and no later one. */
+    const [write, undo, fallback] = sync.updateUser.mock.calls;
+    expect(undo[2]).toEqual({ role: 'BASIC-USER', roleToken: write[1].roleToken });
+    expect(fallback[2]).toEqual({ role: 'STANDARD-USER', roleToken: undo[1].roleToken });
+    expect(undo[1].roleToken).not.toBe(write[1].roleToken);
+
     expect(sync.getRolesByNames).toHaveBeenLastCalledWith(['STANDARD-USER'], 'name');
     expect(sync.updateUser).toHaveBeenCalledTimes(3);
     expect(sync.updateUser).toHaveBeenLastCalledWith(
       'u1',
       { role: SystemRoles.USER },
-      { role: 'STANDARD-USER' },
+      { role: 'STANDARD-USER', roleToken: expect.any(String) },
     );
     expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
     expect(sync.recordAuditEntry).toHaveBeenCalledWith(
@@ -599,7 +605,7 @@ describe('writeIdpRoleChange', () => {
     expect(sync.updateUser).toHaveBeenLastCalledWith(
       'u1',
       { role: SystemRoles.USER },
-      { role: 'STANDARD-USER' },
+      { role: 'STANDARD-USER', roleToken: expect.any(String) },
     );
     expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
   });
@@ -620,8 +626,8 @@ describe('writeIdpRoleChange', () => {
 
     expect(sync.updateUser).toHaveBeenLastCalledWith(
       'u1',
-      { role: SystemRoles.USER },
-      { role: 'BASIC-USER' },
+      { role: SystemRoles.USER, roleToken: expect.any(String) },
+      { role: 'BASIC-USER', roleToken: expect.any(String) },
     );
     expect(sync.recordAuditEntry).not.toHaveBeenCalled();
   });
@@ -660,13 +666,13 @@ describe('writeIdpRoleChange', () => {
     expect(updateUser).toHaveBeenNthCalledWith(
       1,
       'u1',
-      { role: SystemRoles.ADMIN },
+      { role: SystemRoles.ADMIN, roleToken: expect.any(String) },
       { role: 'USER' },
     );
     expect(updateUser).toHaveBeenNthCalledWith(
       3,
       'u1',
-      { role: SystemRoles.ADMIN },
+      { role: SystemRoles.ADMIN, roleToken: expect.any(String) },
       { role: 'ROLE-2' },
     );
     expect(recordAuditEntry).not.toHaveBeenCalled();

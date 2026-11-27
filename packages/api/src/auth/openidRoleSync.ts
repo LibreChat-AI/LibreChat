@@ -1,4 +1,5 @@
 import get from 'lodash/get';
+import { randomUUID } from 'node:crypto';
 import { SystemRoles } from 'librechat-data-provider';
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import type { RecordAuditEntry } from '~/admin/audit';
@@ -367,7 +368,7 @@ export async function recordIdpRoleChange({
 const ROLE_WRITE_ATTEMPTS = 3;
 
 /** The part of a stored user the role write reads; callers keep their own user record type. */
-type RoleRecord = { role?: string | null };
+type RoleRecord = { role?: string | null; roleToken?: string };
 
 type IdpRoleWriteInput<T extends RoleRecord> = {
   userId: string;
@@ -378,7 +379,7 @@ type IdpRoleWriteInput<T extends RoleRecord> = {
   updateUser: (
     userId: string,
     update: Partial<T>,
-    expectedState: { role: string | null },
+    expectedState: { role: string | null; roleToken?: string },
   ) => Promise<T | null>;
   findUser: (filter: { _id: string }, fields: string) => Promise<RoleRecord | null>;
   /** Reads roles by name in the active tenant context (`findRolesByNames`), as role sync
@@ -425,15 +426,19 @@ type RoleReadBackDeps<T extends RoleRecord> = Pick<
   'userId' | 'tenantId' | 'getRolesByNames' | 'updateUser'
 >;
 
+/** A role write this module made: the role it assigned and the `roleToken` it stamped, which a
+ * later assignment of the same name replaces. */
+type RoleAssignment = { role: string; token: string };
+
 /**
  * The previous role an undo put back by name may no longer be `held`, the role the account had
  * before the write: deleted after its own deletion swept its members, or replaced by a role
  * created under its name since. It is read back, and unless it is still `held` the account moves
- * on to USER, which always exists, while it still holds the name. Resolves to whether it moved;
- * a read or write that fails keeps the restored role.
+ * on to USER, which always exists, while the undo (`restored`) is still its last assignment.
+ * Resolves to whether it moved; a read or write that fails keeps the restored role.
  */
 async function leaveDeletedRole<T extends RoleRecord>(
-  role: string,
+  { role, token }: RoleAssignment,
   held: StoredRole | null,
   { userId, tenantId, getRolesByNames, updateUser }: RoleReadBackDeps<T>,
 ): Promise<boolean> {
@@ -442,7 +447,11 @@ async function leaveDeletedRole<T extends RoleRecord>(
     if (current != null && held != null && String(current._id) === String(held._id)) {
       return false;
     }
-    return (await updateUser(userId, { role: SystemRoles.USER } as Partial<T>, { role })) != null;
+    const moved = await updateUser(userId, { role: SystemRoles.USER } as Partial<T>, {
+      role,
+      roleToken: token,
+    });
+    return moved != null;
   } catch (error) {
     logger.error(
       `[openidRoleSync] user ${userId} may still hold the deleted role "${role}" its sync restored:`,
@@ -455,15 +464,17 @@ async function leaveDeletedRole<T extends RoleRecord>(
 /**
  * A role deletion whose last member read came before a write cannot see the account it moved
  * into the role, so the role is read back after the write. When it is gone, or cannot be read,
- * the previous role is put back while the account still holds the assigned one.
+ * the previous role is put back while the write (`assigned`) is still the account's last
+ * assignment.
  */
 async function readBackRole<T extends RoleRecord>(
-  role: string,
+  assigned: RoleAssignment,
   previousRole: string | null,
   held: StoredRole | null,
   deps: RoleReadBackDeps<T>,
 ): Promise<RoleReadBack> {
   const { userId, tenantId, getRolesByNames, updateUser } = deps;
+  const { role } = assigned;
   let error: unknown;
   try {
     if ((await findRole(role, tenantId, getRolesByNames)) != null) {
@@ -473,12 +484,17 @@ async function readBackRole<T extends RoleRecord>(
     error = readError;
   }
   try {
-    const undone = await updateUser(userId, { role: previousRole } as Partial<T>, { role });
+    const token = randomUUID();
+    const undone = await updateUser(
+      userId,
+      { role: previousRole, roleToken: token } as Partial<T>,
+      { role, roleToken: assigned.token },
+    );
     const fellBack =
       undone != null &&
       previousRole != null &&
       !systemRoles.has(previousRole) &&
-      (await leaveDeletedRole(previousRole, held, deps));
+      (await leaveDeletedRole({ role: previousRole, token }, held, deps));
     return { kept: false, stood: undone == null, fellBack, error };
   } catch (undoError) {
     logger.error(
@@ -522,16 +538,22 @@ export async function writeIdpRoleChange<T extends RoleRecord>({
       assignsCustomRole(role, previousRole) && previousRole && !systemRoles.has(previousRole)
         ? await findRole(previousRole, tenantId, getRolesByNames)
         : null;
-    const user = await updateUser(userId, update, { role: previousRole });
+    /** A write that changes the role stamps a token, so its undo matches this write and no later
+     * assignment of the same name. */
+    const token = role !== previousRole ? randomUUID() : undefined;
+    const user = await updateUser(userId, token ? { ...update, roleToken: token } : update, {
+      role: previousRole,
+    });
     if (user) {
-      const check: RoleReadBack = assignsCustomRole(role, previousRole)
-        ? await readBackRole(role, previousRole, held, {
-            userId,
-            tenantId,
-            getRolesByNames,
-            updateUser,
-          })
-        : { kept: true };
+      const check: RoleReadBack =
+        token && assignsCustomRole(role, previousRole)
+          ? await readBackRole({ role, token }, previousRole, held, {
+              userId,
+              tenantId,
+              getRolesByNames,
+              updateUser,
+            })
+          : { kept: true };
       if (check.kept || check.stood) {
         await recordIdpRoleChange({
           recordAuditEntry,

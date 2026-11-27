@@ -108,6 +108,10 @@ test.describe('assigning a role while it is deleted', () => {
     );
     expectPassed(
       'handlers',
+      `${ADMIN_RACE} an undone add leaves a later add of the role recreated under its name in place`,
+    );
+    expectPassed(
+      'handlers',
       `${ADMIN_RACE} keeps an admin when the last two are added to a role deleted before either reads it back`,
     );
   });

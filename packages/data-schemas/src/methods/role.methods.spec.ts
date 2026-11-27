@@ -1885,6 +1885,30 @@ describe('updateUsersRoleByIds', () => {
   });
 });
 
+describe('role tokens of a rename', () => {
+  /** The stored token, which reads leave out unless they ask for it. */
+  const roleToken = async (id: unknown) =>
+    (await User.findById(id).select('+roleToken').lean())?.roleToken;
+
+  it('replaces the token of every member a rename or its undo moves, leaving reads without it', async () => {
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'viewer', username: 'bob' },
+    ]);
+    await User.updateMany({}, { $set: { roleToken: 'before' } });
+
+    await updateUsersByRole('editor', 'writer');
+    const renamed = await roleToken(alice._id);
+    await updateUsersRoleByIds([alice._id.toString()], 'editor', { fromRole: 'writer' });
+
+    expect(renamed).toBeDefined();
+    expect(renamed).not.toBe('before');
+    expect(await roleToken(alice._id)).not.toBe(renamed);
+    expect(await roleToken(bob._id)).toBe('before');
+    expect((await User.findById(alice._id).lean())?.roleToken).toBeUndefined();
+  });
+});
+
 describe('countUsersByRole', () => {
   it('returns the count of users with the given role', async () => {
     await User.create([

@@ -896,7 +896,7 @@ export function createRoleMethods(
     const User = mongoose.models.User as Model<IUser>;
     const affectedUserIds = await findUserIdsByRole(oldRole);
     await User.updateMany(roleMembersFilter(oldRole, 'updateUsersByRole'), {
-      $set: { role: newRole },
+      $set: { role: newRole, roleToken: new mongoose.Types.ObjectId().toString() },
     });
     await invalidateAuthUserDocCache(affectedUserIds);
   }
@@ -928,7 +928,7 @@ export function createRoleMethods(
         _id: { $in: userIds },
         ...(options?.fromRole !== undefined ? { role: options.fromRole } : {}),
       },
-      { $set: { role: newRole } },
+      { $set: { role: newRole, roleToken: new mongoose.Types.ObjectId().toString() } },
     );
     await invalidateAuthUserDocCache(userIds);
   }

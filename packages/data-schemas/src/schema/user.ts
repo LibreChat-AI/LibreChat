@@ -73,6 +73,16 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: String,
       default: SystemRoles.USER,
     },
+    /**
+     * Replaced by every write that assigns a role it chose (an admin adding a member, OpenID role
+     * sync changing the role, a role rename moving its members), so a write that undoes one of
+     * them matches that exact assignment: a role deleted and recreated under its name lets a
+     * later assignment reuse the name.
+     */
+    roleToken: {
+      type: String,
+      select: false,
+    },
     googleId: {
       type: String,
     },

@@ -1894,8 +1894,8 @@ describe('setupOpenId', () => {
       );
       expect(updateUser).toHaveBeenLastCalledWith(
         'newUserId',
-        { role: 'USER' },
-        { role: 'STANDARD-USER' },
+        { role: 'USER', roleToken: expect.any(String) },
+        { role: 'STANDARD-USER', roleToken: expect.any(String) },
       );
     });
 

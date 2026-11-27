@@ -2009,7 +2009,7 @@ describe('createAdminRolesHandlers', () => {
 
       expect(deps.updateUser).toHaveBeenCalledWith(
         validUserId,
-        { role: 'editor' },
+        { role: 'editor', roleToken: expect.any(String) },
         expect.any(Object),
       );
       expect(status).toHaveBeenCalledWith(200);
@@ -2155,7 +2155,7 @@ describe('createAdminRolesHandlers', () => {
       expect(status).toHaveBeenCalledWith(200);
       expect(deps.updateUser).toHaveBeenCalledWith(
         validUserId,
-        { role: 'editor' },
+        { role: 'editor', roleToken: expect.any(String) },
         expect.any(Object),
       );
     });
@@ -2214,7 +2214,7 @@ describe('createAdminRolesHandlers', () => {
 
       expect(deps.updateUser).toHaveBeenCalledWith(
         validUserId,
-        { role: SystemRoles.ADMIN },
+        { role: SystemRoles.ADMIN, roleToken: expect.any(String) },
         expect.any(Object),
       );
       /** A system role is never deleted, so the add does not read it back. */
@@ -2308,8 +2308,8 @@ describe('createAdminRolesHandlers', () => {
 
         expect(add.deps.updateUser).toHaveBeenLastCalledWith(
           validUserId,
-          { role: 'viewer' },
-          { role: 'editor' },
+          { role: 'viewer', roleToken: expect.any(String) },
+          { role: 'editor', roleToken: expect.any(String) },
         );
         expect(add.status).toHaveBeenCalledWith(404);
         expect(add.json).toHaveBeenCalledWith({ error: 'Role not found' });
@@ -2321,11 +2321,17 @@ describe('createAdminRolesHandlers', () => {
         async (_label, restored) => {
           const add = await addWhileDeleting(null, mockUser({ role: 'viewer' }), { restored });
 
+          /** Each compensating write matches the token of the write it undoes, and no later one. */
+          const [write, undo, fallback] = (add.deps.updateUser as jest.Mock).mock.calls;
+          expect(undo[2]).toEqual({ role: 'editor', roleToken: write[1].roleToken });
+          expect(fallback[2]).toEqual({ role: 'viewer', roleToken: undo[1].roleToken });
+          expect(undo[1].roleToken).not.toBe(write[1].roleToken);
+
           expect(add.deps.updateUser).toHaveBeenCalledTimes(3);
           expect(add.deps.updateUser).toHaveBeenLastCalledWith(
             validUserId,
             { role: SystemRoles.USER },
-            { role: 'viewer' },
+            { role: 'viewer', roleToken: expect.any(String) },
           );
           expect(add.status).toHaveBeenCalledWith(404);
           expect(add.recordAuditEntry).toHaveBeenCalledTimes(1);
@@ -2377,8 +2383,8 @@ describe('createAdminRolesHandlers', () => {
 
         expect(add.deps.updateUser).toHaveBeenLastCalledWith(
           validUserId,
-          { role: SystemRoles.ADMIN },
-          { role: 'editor' },
+          { role: SystemRoles.ADMIN, roleToken: expect.any(String) },
+          { role: 'editor', roleToken: expect.any(String) },
         );
         /** Before the write and after it, ahead of the read-back. */
         expect(add.deps.countUsersByRole).toHaveBeenCalledTimes(2);
@@ -2402,8 +2408,8 @@ describe('createAdminRolesHandlers', () => {
 
         expect(add.deps.updateUser).toHaveBeenLastCalledWith(
           validUserId,
-          { role: 'viewer' },
-          { role: 'editor' },
+          { role: 'viewer', roleToken: expect.any(String) },
+          { role: 'editor', roleToken: expect.any(String) },
         );
         expect(add.status).toHaveBeenCalledWith(500);
         expect(add.json).toHaveBeenCalledWith({ error: 'Failed to add role member' });
