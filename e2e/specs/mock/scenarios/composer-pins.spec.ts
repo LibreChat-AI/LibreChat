@@ -92,19 +92,19 @@ async function settleRows(page: Page) {
     .toBeGreaterThanOrEqual(3);
 }
 
-/** Waits for the MCP section, the catalog's last wave. The list is windowed and the section
- *  sits at its end, so the list is scrolled there the way a reader would. */
+/** Waits for the MCP section, the catalog's last wave, and brings its header into view. The list
+ *  is windowed, so a header below the fold (above recent files, under favorites) is not in the
+ *  document until the list scrolls to it; the arrows move the highlight, which the list follows,
+ *  and the MCP header's Show all is one of its stops. */
 async function settleCatalog(page: Page) {
   const header = palette(page).getByRole('columnheader', { name: MCP_SECTION, exact: true });
-  await expect(async () => {
-    await palette(page)
-      .getByRole('grid')
-      .evaluate((grid) => {
-        grid.scrollTop = grid.scrollHeight;
-      });
-    await expect(header).toBeVisible({ timeout: 1000 });
-  }).toPass({ timeout: 20000 });
   await settleRows(page);
+  await expect(async () => {
+    if ((await header.count()) === 0) {
+      await paletteSearch(page).press('ArrowDown');
+    }
+    await expect(header).toBeVisible({ timeout: 250 });
+  }).toPass({ timeout: 30000, intervals: [0] });
 }
 
 async function removeServerFavorites(page: Page, token: string) {
