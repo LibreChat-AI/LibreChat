@@ -34,6 +34,14 @@ export function isAgentsStream(response: Response) {
   return isAgentGenerationStart(response);
 }
 
+/** The request that stops an Assistants run: a Stop, or the pane leaving the run's stream. */
+export function isAssistantsStop(response: Response) {
+  return (
+    response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === '/api/assistants/v2/chat/abort'
+  );
+}
+
 export function isAgentGenerationStart(response: Response) {
   const { pathname } = new URL(response.url());
   const isAgentsChat = pathname === '/api/agents/chat' || pathname.startsWith('/api/agents/chat/');
@@ -50,6 +58,14 @@ export const modelSelectorTrigger = (page: Page) =>
 
 export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * Whether a computed color paints nothing. Only a four-part `rgba()` whose last part is zero
+ * does: matching a bare trailing `, 0)` also catches opaque black, `rgb(0, 0, 0)`, and every
+ * color with no blue in it.
+ */
+export const isTransparentColor = (color: string) =>
+  color === 'transparent' || /^rgba\(.*,\s*0\)$/.test(color);
+
 /** Open the model selector, choose an endpoint, then its model (committed on the model click). */
 export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const trigger = modelSelectorTrigger(page);
@@ -59,7 +75,10 @@ export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const expands = (await option.getAttribute('aria-expanded')) != null;
   await option.click();
   if (expands) {
-    await page.getByRole('option', { name: endpoint.model, exact: true }).click();
+    await page
+      .getByRole('option')
+      .filter({ has: page.getByText(endpoint.model, { exact: true }) })
+      .click();
   }
   await expect(trigger).toContainText(expands ? endpoint.model : endpoint.label);
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
@@ -425,6 +444,8 @@ export async function getCodeExecs(page: Page): Promise<CodeExecRecord[]> {
 
 export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
 export type RagQueryRecord = { file_id: string; query: string };
+/** The owners of the stored copies of the file one file_search query read. */
+export type RagAnswerRecord = { file_id: string; owners: string[] };
 
 /** Every `/query` the fake RAG service received from file_search. */
 export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
@@ -432,6 +453,14 @@ export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
   expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
   const body = (await response.json()) as { queries: RagQueryRecord[] };
   return body.queries;
+}
+
+/** Which stored copies the fake RAG service answered each file_search query from. */
+export async function getRagAnswers(page: Page): Promise<RagAnswerRecord[]> {
+  const response = await page.request.get(`${RAG_API_BASE}/__debug/embedded`);
+  expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
+  const body = (await response.json()) as { answers: RagAnswerRecord[] };
+  return body.answers;
 }
 
 /** Files the fake code server received via /upload (proof they reached the code env). */
@@ -448,6 +477,16 @@ export async function getRagEmbedded(page: Page): Promise<RagEmbedRecord[]> {
   expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
   const body = (await response.json()) as { embedded: RagEmbedRecord[] };
   return body.embedded;
+}
+
+/** Store a copy of a file's vectors in the fake RAG server under an entity or a user, as a
+ *  deployment already holding them would; nothing is recorded as embedded. */
+export async function seedRagCopy(
+  page: Page,
+  copy: { file_id: string; filename: string; entity_id?: string; user_id?: string },
+): Promise<void> {
+  const response = await page.request.post(`${RAG_API_BASE}/__debug/store`, { data: copy });
+  expect(response.ok(), 'fake RAG server /__debug/store should respond').toBeTruthy();
 }
 
 /** Clear both fake servers' recorded provisioning (call at test start for isolation). */

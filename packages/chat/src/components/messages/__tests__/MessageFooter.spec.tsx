@@ -3,7 +3,9 @@
  */
 import { Provider, createStore } from 'jotai';
 import { render, screen, act } from '@testing-library/react';
+import type { RowReach } from '../../../react/messages/offscreen';
 import type { MessageFooterProps } from '../MessageFooter';
+import { RowReachProvider } from '../../../react/messages/offscreen';
 import { submissionStartFamily } from '../../../react/generation';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import MessageFooter from '../MessageFooter';
@@ -94,5 +96,47 @@ describe('MessageFooter', () => {
   it('hides the sibling controls until hover while the latest reply streams', () => {
     const streaming = renderFooter({ isSubmitting: true, isLatestMessage: true });
     expect(streaming).toHaveClass('no-touch:opacity-0', 'group-hover:opacity-100');
+  });
+
+  describe('in a row a long thread mounted away from the reader', () => {
+    const footer = (reach: RowReach, props: Partial<MessageFooterProps> = {}) => (
+      <RowReachProvider reach={reach}>
+        <MessageFooter
+          index={0}
+          isSubmitting={false}
+          isLatestMessage={false}
+          isUserSide={false}
+          toolbar={<button type="button">Copy to clipboard</button>}
+          {...props}
+        />
+      </RowReachProvider>
+    );
+
+    it('leaves the toolbar out until the row comes near, holding its place', () => {
+      const reach: RowReach = { reached: false, listeners: new Set() };
+      const { container } = render(footer(reach));
+
+      expect(screen.queryByRole('button', { name: 'Copy to clipboard' })).toBeNull();
+      /** Not empty, or `empty:hidden` would collapse the height the footer holds. */
+      expect(container.firstElementChild?.childElementCount).toBe(1);
+
+      act(() => {
+        reach.reached = true;
+        for (const listener of reach.listeners) {
+          listener(false);
+        }
+      });
+      expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeInTheDocument();
+    });
+
+    it('mounts the toolbar of a row that came near before its footer did', () => {
+      render(footer({ reached: true, listeners: new Set() }));
+      expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeInTheDocument();
+    });
+
+    it('never leaves it out of the latest message, which the shortcuts press', () => {
+      render(footer({ reached: false, listeners: new Set() }, { isLatestMessage: true }));
+      expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeInTheDocument();
+    });
   });
 });

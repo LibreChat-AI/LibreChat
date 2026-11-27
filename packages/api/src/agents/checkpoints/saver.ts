@@ -11,6 +11,7 @@ import type {
 } from '@langchain/langgraph-checkpoint';
 import type {
   CheckpointRepository,
+  CheckpointReadOptions,
   CheckpointIdentity,
   SerializedCheckpoint,
   MongoCheckpointRepositoryOptions,
@@ -88,6 +89,7 @@ export class OwnedMongoSaver extends BaseCheckpointSaver {
   private async tuple(
     doc: SerializedCheckpoint,
     requested: CheckpointIdentity,
+    options?: CheckpointReadOptions,
   ): Promise<CheckpointTuple> {
     const owner = requested.owner;
     const legacy =
@@ -99,7 +101,7 @@ export class OwnedMongoSaver extends BaseCheckpointSaver {
       checkpoint_ns: doc.identity.checkpointNs,
       checkpoint_id: doc.identity.checkpointId,
     };
-    const rows = await this.repository.readWrites({ ...requested, ...doc.identity });
+    const rows = await this.repository.readWrites({ ...requested, ...doc.identity }, options);
     const pendingWrites: CheckpointPendingWrite[] = await Promise.all(
       rows.map(
         async (row) =>
@@ -149,8 +151,11 @@ export class OwnedMongoSaver extends BaseCheckpointSaver {
   override async getTuple(config: RunnableConfig): Promise<CheckpointTuple | undefined> {
     if (config.configurable?.thread_id === undefined) return undefined;
     const key = identity(config);
-    const doc = await this.repository.get(key);
-    return doc == null ? undefined : this.tuple(doc, key);
+    // Verification, graph reloads and resume protection all require the complete current tuple.
+    // History listing retains the connection's read preference.
+    const options: CheckpointReadOptions = { consistency: 'authoritative' };
+    const doc = await this.repository.get(key, options);
+    return doc == null ? undefined : this.tuple(doc, key, options);
   }
 
   override async *list(

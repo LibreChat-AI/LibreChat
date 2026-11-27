@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
@@ -9,42 +9,35 @@ import {
   submissionByIndex,
   ChatSessionProvider,
   useScrollbarGutterSeed,
-  AskAnswerHostProvider,
+  useChatSessionMessages,
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
-import type { ChatScreenMessagesSlots } from '@librechat/chat/components';
-import type { TChatProject, TMessage } from 'librechat-data-provider';
+import type { TChatProject, TSubmission } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
 import { AgentsMapContext, useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { ComposerPreferencesContext } from '~/Providers/ComposerPreferencesContext';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
-import PendingSteers from './Messages/Content/Parts/PendingSteers';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
+import { preloadMessages, renderMessages } from './Messages/load';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { TargetContext } from '~/Providers/TargetContext';
-import PendingTurn from './Messages/PendingTurn';
-import { FLAT_THREAD } from './Messages/Thread';
 import useTarget from '~/hooks/Chat/target';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
+import WelcomeBackdrop from './Backdrop';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
 import Lia from '~/components/Lia';
+import AskHost from './AskHost';
 import Landing from './Landing';
 import Header from './Header';
 import store from '~/store';
-
-/** The app's pieces of the package message list. */
-const messagesSlots: ChatScreenMessagesSlots = {
-  flatThread: FLAT_THREAD,
-  renderPendingTurn: (props) => <PendingTurn {...props} />,
-  renderPendingSteers: (props) => <PendingSteers {...props} />,
-};
 
 type ChatViewProps = {
   index?: number;
@@ -70,27 +63,127 @@ function renderFooter(placement: 'full' | 'composer' | 'band') {
   return <Footer />;
 }
 
+function warmMessages() {
+  preloadMessages().catch(() => undefined);
+}
+
+type ChatViewScreenProps = Required<Pick<ChatViewProps, 'index' | 'routePending'>> &
+  Pick<ChatViewProps, 'project'> & {
+    conversationId?: string;
+    fileMap: ReturnType<typeof useFileMapContext>;
+    isSubmitting: boolean;
+    enterToSend: boolean;
+    autoSendText: number;
+    speechSettingsInitialized: boolean;
+    centerFormOnLanding: boolean;
+    landingFooter: ReturnType<typeof useLandingFooter>;
+    configuredFooter: ReturnType<typeof useConfiguredFooter>;
+    submission: TSubmission | null;
+  };
+
+/**
+ * The pane's screen, which is what the session's messages are drawn in. It subscribes to them
+ * itself and is the one thing under the pane's providers that does, so while a reply streams it
+ * re-renders with every frame and the providers around it do not.
+ */
+function ChatViewScreen({
+  index,
+  project,
+  routePending,
+  conversationId,
+  fileMap,
+  isSubmitting,
+  enterToSend,
+  autoSendText,
+  speechSettingsInitialized,
+  centerFormOnLanding,
+  landingFooter,
+  configuredFooter,
+  submission,
+}: ChatViewScreenProps) {
+  const { messages, isLoading } = useChatSessionMessages(conversationId, index);
+  return (
+    <ChatScreen
+      index={index}
+      conversationId={conversationId}
+      messages={messages}
+      fileMap={fileMap}
+      isLoading={isLoading}
+      project={project}
+      landingFooter={landingFooter}
+      configuredFooter={configuredFooter}
+      renderHeader={({ parentConversationId, readOnly }) => (
+        <Header parentConversationId={parentConversationId} readOnly={readOnly} />
+      )}
+      renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
+      renderMessages={renderMessages}
+      landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
+      renderColumn={(column, { isLanding }) => (
+        <OwnerTextProvider
+          messages={messages}
+          conversationId={conversationId}
+          isSubmitting={isSubmitting}
+        >
+          {/* The welcome screen only, behind its column: a theme's backdrop covers the
+              greeting and the composer together and goes with them on the first message. It
+              paints nothing unless the theme asks and the build registers one. */}
+          {isLanding && <WelcomeBackdrop />}
+          {column}
+        </OwnerTextProvider>
+      )}
+      starters={<ConversationStarters />}
+      renderComposer={({ isLanding, footerBelow, project: composerProject, placeholder }) => (
+        /* Typing a first message is the cue that the list is next. */
+        <div className="contents" onFocusCapture={warmMessages}>
+          <ChatForm
+            index={index}
+            routePending={routePending}
+            placeholder={placeholder}
+            project={composerProject}
+            isLandingPage={isLanding}
+            enterToSend={enterToSend}
+            autoSendText={autoSendText}
+            speechSettingsInitialized={speechSettingsInitialized}
+            footerBelow={footerBelow}
+            centerFormOnLanding={centerFormOnLanding}
+          />
+        </div>
+      )}
+      renderFooter={renderFooter}
+      renderMascot={(bandRef, landing) => (
+        <Lia bandRef={bandRef} landing={landing} submission={submission} />
+      )}
+    />
+  );
+}
+
 function ChatViewPane({
   index = 0,
   project,
   routePending = false,
   conversationId,
-  messages,
-  isLoading,
 }: ChatViewProps & {
   conversationId?: string;
-  messages: TMessage[] | null;
-  isLoading: boolean;
 }) {
   const rootSubmission = useAtomValue(submissionByIndex(index));
   const { saveDrafts } = useChatSettings();
   const enterToSend = useRecoilValue(store.enterToSend);
   const autoSendText = useRecoilValue(store.autoSendText);
+  const modularChat = useRecoilValue(store.modularChat);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const pendingAction = useAtomValue(
     pendingApprovalActionFamily(conversationId ?? Constants.NEW_CONVO),
   );
+
+  /** A routed conversation shows its messages as soon as they arrive, so the list's code
+   *  loads alongside them instead of after. */
+  const routedConversation = conversationId != null && conversationId !== Constants.NEW_CONVO;
+  useEffect(() => {
+    if (routedConversation) {
+      preloadMessages().catch(() => undefined);
+    }
+  }, [routedConversation]);
 
   /** The welcome screen reserves the message column's scrollbar band before any
    *  column exists to measure it (see the column classes in `ChatPane`). */
@@ -105,16 +198,24 @@ function ChatViewPane({
   const methods = useForm<ChatFormValues>({
     defaultValues: { text: '' },
   });
+  const composerPreferences = useMemo(
+    () => ({ enterToSend, autoSendText, speechSettingsInitialized, modularChat }),
+    [enterToSend, autoSendText, speechSettingsInitialized, modularChat],
+  );
 
   const fileMap = useFileMapContext();
   const chat = useChatContext();
   const target = useTarget(chat.conversation, chat.setConversation);
   const agentsMap = useAgentsMapContext();
   const assistantsMap = useAssistantsMapContext();
-  const selectedAgents = useMemo(
-    () => (target.agent ? { ...agentsMap, [target.agent.id]: target.agent } : agentsMap),
-    [agentsMap, target.agent],
-  );
+  const selectedAgents = useMemo(() => {
+    const agent = target.agent;
+    if (!agent) {
+      return agentsMap;
+    }
+    // Keep chat metadata already authorized by the catalog, such as the agent's skill scope.
+    return { ...agentsMap, [agent.id]: { ...agentsMap?.[agent.id], ...agent } };
+  }, [agentsMap, target.agent]);
   const selectedAssistants = useMemo(
     () =>
       target.assistant && chat.conversation?.endpoint
@@ -135,6 +236,8 @@ function ChatViewPane({
       ready: target.ready && (addedChatHelpers.conversation == null || addedTarget.ready),
       pending: target.pending || (addedChatHelpers.conversation != null && addedTarget.pending),
       failed: target.failed || (addedChatHelpers.conversation != null && addedTarget.failed),
+      denied: target.denied || (addedChatHelpers.conversation != null && addedTarget.denied),
+      missing: target.missing || (addedChatHelpers.conversation != null && addedTarget.missing),
       retry: () => {
         target.retry();
         if (addedChatHelpers.conversation) addedTarget.retry();
@@ -147,73 +250,39 @@ function ChatViewPane({
     <TargetContext.Provider value={readiness}>
       <AgentsMapContext.Provider value={selectedAgents}>
         <AssistantsMapContext.Provider value={selectedAssistants}>
-          <AskAnswerHostProvider saveDrafts={saveDrafts}>
+          <AskHost saveDrafts={saveDrafts}>
             <ChatFormProvider {...methods}>
               <ComposerRestoreProvider>
                 <QueuedTurnPortalProvider>
                   <AddedChatContext.Provider value={addedChatHelpers}>
                     <ApprovalProvider pendingAction={pendingAction}>
-                      <Presentation routePending={routePending}>
-                        <TraceSurface conversationId={conversationId}>
-                          <ChatScreen
-                            index={index}
-                            conversationId={conversationId}
-                            messages={messages}
-                            fileMap={fileMap}
-                            isLoading={isLoading}
-                            project={project}
-                            landingFooter={landingFooter}
-                            configuredFooter={configuredFooter}
-                            renderHeader={({ parentConversationId, readOnly }) => (
-                              <Header
-                                parentConversationId={parentConversationId}
-                                readOnly={readOnly}
-                              />
-                            )}
-                            renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
-                            messagesSlots={messagesSlots}
-                            landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                            renderColumn={(column) => (
-                              <OwnerTextProvider
-                                messages={messages}
-                                conversationId={conversationId}
-                                isSubmitting={chat.isSubmitting}
-                              >
-                                {column}
-                              </OwnerTextProvider>
-                            )}
-                            starters={<ConversationStarters />}
-                            renderComposer={({ isLanding, footerBelow, project, placeholder }) => (
-                              <ChatForm
-                                index={index}
-                                routePending={routePending}
-                                placeholder={placeholder}
-                                project={project}
-                                isLandingPage={isLanding}
-                                enterToSend={enterToSend}
-                                autoSendText={autoSendText}
-                                speechSettingsInitialized={speechSettingsInitialized}
-                                footerBelow={footerBelow}
-                                centerFormOnLanding={centerFormOnLanding}
-                              />
-                            )}
-                            renderFooter={renderFooter}
-                            renderMascot={(bandRef, landing) => (
-                              <Lia
-                                bandRef={bandRef}
-                                landing={landing}
-                                submission={rootSubmission}
-                              />
-                            )}
-                          />
-                        </TraceSurface>
-                      </Presentation>
+                      <ComposerPreferencesContext.Provider value={composerPreferences}>
+                        <Presentation routePending={routePending}>
+                          <TraceSurface conversationId={conversationId}>
+                            <ChatViewScreen
+                              index={index}
+                              project={project}
+                              routePending={routePending}
+                              conversationId={conversationId}
+                              fileMap={fileMap}
+                              isSubmitting={chat.isSubmitting}
+                              enterToSend={enterToSend}
+                              autoSendText={autoSendText}
+                              speechSettingsInitialized={speechSettingsInitialized}
+                              centerFormOnLanding={centerFormOnLanding}
+                              landingFooter={landingFooter}
+                              configuredFooter={configuredFooter}
+                              submission={rootSubmission}
+                            />
+                          </TraceSurface>
+                        </Presentation>
+                      </ComposerPreferencesContext.Provider>
                     </ApprovalProvider>
                   </AddedChatContext.Provider>
                 </QueuedTurnPortalProvider>
               </ComposerRestoreProvider>
             </ChatFormProvider>
-          </AskAnswerHostProvider>
+          </AskHost>
         </AssistantsMapContext.Provider>
       </AgentsMapContext.Provider>
     </TargetContext.Provider>
@@ -226,14 +295,7 @@ function ChatView(props: ChatViewProps) {
 
   return (
     <ChatSessionProvider index={index} conversationId={conversationId} historyReady={historyReady}>
-      {({ messages, isLoading }) => (
-        <ChatViewPane
-          {...props}
-          conversationId={conversationId}
-          messages={messages}
-          isLoading={isLoading}
-        />
-      )}
+      <ChatViewPane {...props} conversationId={conversationId} />
     </ChatSessionProvider>
   );
 }

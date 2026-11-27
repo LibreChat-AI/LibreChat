@@ -21,11 +21,8 @@ import {
   getPredecessorMismatchStartResponse,
   START_GENERATION_READINESS_TIMEOUT_MS,
 } from './start';
-import {
-  GENERATION_PROTOCOL_VERSION,
-  getGenerationProtocolVersion,
-  supportsGenerationProtocolV2,
-} from '../protocol';
+import { GENERATION_PROTOCOL_VERSION, getGenerationProtocolVersion } from '../protocol';
+import { restoreRefusedStart, restoreReleasedSource } from './steers';
 
 /**
  * Starts a generation (the POST that returns the stream to attach to) through the host
@@ -198,24 +195,10 @@ export async function startGeneration(
 
   const startError = toStartGenerationError(lastError);
   const errorData = startError?.response?.data;
-  const responseStatus = startError?.response?.status;
-  if (responseStatus != null && responseStatus >= 400 && responseStatus < 500) {
-    const recoverySteerId = getRecoverySteerId(currentSubmission);
-    const conversationId = currentSubmission.conversation?.conversationId;
-    const recoveryRejected =
-      errorData != null &&
-      typeof errorData === 'object' &&
-      'code' in errorData &&
-      (errorData.code === 'RECOVERY_PAYLOAD_MISMATCH' ||
-        errorData.code === 'INVALID_RECOVERY_REQUEST');
-    if (recoveryRejected && recoverySteerId != null && conversationId) {
-      host.steers.blockRecovery(conversationId, recoverySteerId);
-    }
-    // The server rejected admission before exposing a generation. Restore
-    // the exact queue row/position; ambiguous transport/5xx outcomes must
-    // first reconcile durable state instead of risking a duplicate start.
-    host.steers.restoreQueued(currentSubmission);
-  } else {
+  // The server rejected admission before exposing a generation. Restore
+  // the exact queue row/position; ambiguous transport/5xx outcomes must
+  // first reconcile durable state instead of risking a duplicate start.
+  if (!restoreRefusedStart(host.steers, currentSubmission, startError)) {
     const recoverySteerId = getRecoverySteerId(currentSubmission);
     const recoveryConvoId = currentSubmission.conversation?.conversationId;
     if (recoverySteerId != null && recoveryConvoId) {
@@ -224,19 +207,13 @@ export async function startGeneration(
         if (signal?.aborted) {
           return null;
         }
-        const releasedSource = status.unrecoveredSteers?.find(
-          (steer) => steer.steerId === recoverySteerId,
+        restoreReleasedSource(
+          host.steers,
+          recoveryConvoId,
+          recoverySteerId,
+          status,
+          GENERATION_PROTOCOL_VERSION,
         );
-        if (
-          status.active === false &&
-          supportsGenerationProtocolV2(status) &&
-          releasedSource != null
-        ) {
-          host.steers.convertToQueued(recoveryConvoId, [releasedSource], {
-            generationProtocolVersion: GENERATION_PROTOCOL_VERSION,
-            allowPreviouslyConvertedIds: [recoverySteerId],
-          });
-        }
       } catch (error) {
         if (signal?.aborted) {
           return null;

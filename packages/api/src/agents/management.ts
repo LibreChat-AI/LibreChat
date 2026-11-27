@@ -174,7 +174,9 @@ const agentManagementGraphResponseSchema: z.ZodType<AgentSubagentGraph> = z
 const agentManagementSubagentsResponseSchema: z.ZodType<AgentSubagentsConfig | undefined> = z
   .object({
     enabled: z.boolean().optional(),
+    graphsEnabled: z.boolean().optional(),
     allowSelf: z.boolean().optional(),
+    shareFiles: z.boolean().optional(),
     agent_ids: z.array(z.string()).optional(),
     graphs: z.array(agentManagementGraphResponseSchema).optional(),
   })
@@ -277,6 +279,7 @@ export function projectAgentManagementResponse(
   return agentManagementResponseSchema.parse({
     id: source.id,
     provider: source.provider,
+    sdk_runtime: source.sdk_runtime,
     model: source.model,
     version: getVersion(source),
     createdAt: toTimestamp(source.createdAt),

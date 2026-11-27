@@ -89,6 +89,7 @@ export const createHost = (
       removeConversationQueries: jest.fn(),
       queueTitleGeneration: jest.fn(),
       addOptimisticConversation: jest.fn((_conversationId, submission) => submission),
+      releaseNewConversation: jest.fn(),
     },
     queue: {
       clearSupersededMarkers: jest.fn(),
@@ -154,15 +155,6 @@ export const createHost = (
       set: jest.fn((next: TMessage[]) => {
         messages = next;
       }),
-    },
-    parts: {
-      applySteer: jest.fn((message) => message),
-      findSteerTarget: jest.fn(() => -1),
-      applyActivityLabel: jest.fn((message) => message),
-      findActivityLabelTarget: jest.fn(() => -1),
-      offsetActivityPhaseBoundary: jest.fn((index, prefix) => index + prefix),
-      applyReasoningLabel: jest.fn((message) => message),
-      findReasoningLabelTarget: jest.fn(() => -1),
     },
     usage: {
       bindResponse: jest.fn(),

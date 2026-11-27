@@ -10,6 +10,7 @@ export const LANGUAGES = {
     label: '中文',
     file: 'README.zh.md',
     script: /\p{Script=Han}/u,
+    fullwidth: true,
   },
   ru: { name: 'Russian', label: 'Русский', file: 'README.ru.md', script: /\p{Script=Cyrillic}/u },
 };
@@ -27,9 +28,9 @@ export const GLOSSARY = [
   'Docker',
   'Helm',
   'Railway',
-  'Zeabur',
   'Sealos',
   'API',
+  'RAG',
   'URL',
   'SDK',
   'OAuth',
@@ -155,6 +156,8 @@ function proseWords(markdown, context = '', withAttributes = true) {
   const text = parts
     .join(' ')
     .replace(/https?:\/\/\S+/g, ' ')
+    // Bare domains, paths and file names such as `librechat.ai/docs` or `librechat.yaml`.
+    .replace(/[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\b(?:\/[\w./-]*)?/gi, ' ')
     .replace(GLOSSARY_PATTERN, ' ');
   return text.match(/\p{L}[\p{L}'’-]*/gu) ?? [];
 }
@@ -191,11 +194,15 @@ function htmlTokens(raw) {
   return tokens;
 }
 
-/** The structure of a chunk with prose masked: everything a translation must reproduce exactly. */
+/**
+ * The structure of a chunk with prose masked: everything a translation must reproduce exactly.
+ * Prose is dropped rather than masked, since word order legitimately moves it around links,
+ * code and emphasis (a verb-final language puts text after a trailing link).
+ */
 function skeleton(markdown) {
   const tokens = [];
   const push = (token) => {
-    if (token !== 'T' || tokens.at(-1) !== 'T') tokens.push(token);
+    if (token !== 'T') tokens.push(token);
   };
   let rawCode = 0;
   const visit = (node) => {
@@ -351,6 +358,115 @@ export const reusable = (cached, source, code, context = '') =>
   typeof cached === 'string' && validate(source, cached, code, context).length === 0
     ? cached
     : undefined;
+
+const FULLWIDTH = { ',': '，', ':': '：', ';': '；', '!': '！', '?': '？' };
+/**
+ * ASCII punctuation touching Chinese text. A space before the mark goes too (`**标题** :`), but a
+ * space after it stays: `**标签：** 正文` needs that space to render bold.
+ */
+const HALFWIDTH =
+  /(?<=[\p{Script=Han}）」』》])[ \t]*([,:;!?])|([,:;!?])(?=[\p{Script=Han}（「『《])/gu;
+/** Source between two text nodes that a reader does not see: emphasis markers and link targets. */
+const INVISIBLE = /^[*_~[\]]*$/;
+/**
+ * One source character, or a whole character reference (`&nbsp;`, `&#32;`) or backslash escape
+ * (`\!`), whose `;` or mark is syntax rather than punctuation and so must never be converted.
+ */
+const RAW_PIECE = /&(?:#\d+|#x[\da-f]+|[a-z][\da-z]*);|\\[!-/:-@[-`{-~]|[\s\S]/gi;
+
+/**
+ * Turns ASCII punctuation beside Chinese text into its full-width form, as Chinese prose writes it.
+ * Each chunk is translated separately, so without this one section uses `，：` and the next `,:`.
+ * Only Markdown text changes: URLs, code, raw HTML and attribute values are left as they are, and
+ * so is text copied verbatim from `source`, such as the list of language names.
+ */
+export function punctuate(markdown, code, source = '') {
+  if (!LANGUAGES[code]?.fullwidth) return markdown;
+  // The text a reader sees, with `offsets` mapping each character back to `markdown`. Text nodes
+  // separated only by markup are joined, so `**[标签](url)**:` sees the colon follow `签`.
+  let visible = '';
+  const offsets = [];
+  let last = null;
+  let autolink = -1;
+  walk(parse(markdown), (node) => {
+    if (!node.position) return;
+    const { start, end } = node.position;
+    // A bare or `<...>` URL is a link whose text is the address itself.
+    if (node.type === 'link' && markdown[start.offset] !== '[') autolink = end.offset;
+    if (node.type !== 'text') return;
+    // Only prose counts as copied: a lone `:` after `**label**` is in the English source too.
+    const copied =
+      end.offset <= autolink || (/\p{L}/u.test(node.value) && source.includes(node.value));
+    const gap = last === null ? '\n' : markdown.slice(last, start.offset);
+    if (!INVISIBLE.test(gap.replace(/\]\([^\s)]*\)/g, ']'))) {
+      visible += '\n';
+      offsets.push(-1);
+    }
+    for (const piece of markdown.slice(start.offset, end.offset).matchAll(RAW_PIECE)) {
+      const at = start.offset + piece.index;
+      if (piece[0].length > 1) {
+        visible += '￼';
+        offsets.push(-1);
+        continue;
+      }
+      visible += piece[0];
+      offsets.push(copied ? -1 : at);
+    }
+    last = end.offset;
+  });
+  const edits = [];
+  for (const match of visible.matchAll(HALFWIDTH)) {
+    const mark = match[1] ?? match[2];
+    const from = offsets[match.index];
+    const to = offsets[match.index + match[0].length - 1] + 1;
+    if (from >= 0 && to - from === match[0].length) edits.push({ from, to, mark: FULLWIDTH[mark] });
+  }
+  return edits.reduceRight(
+    (text, { from, to, mark }) => text.slice(0, from) + mark + text.slice(to),
+    markdown,
+  );
+}
+
+/**
+ * The pull request description for a sync run. `runs` lists each regenerated language with how
+ * many sections went to the model and how many came from the cache.
+ */
+export function describe(runs, force = false) {
+  const lines = runs.map(({ code, translated, cached }) => {
+    const { name, file } = LANGUAGES[code];
+    return `- ${name} (\`${file}\`): ${translated} section(s) translated, ${cached} reused from the cache`;
+  });
+  const cache = force
+    ? 'This run ignored the cache in `.github/readme-i18n.json` and retranslated every section.'
+    : 'Sections whose English text is unchanged come from the cache in `.github/readme-i18n.json`.';
+  return [
+    '## Summary',
+    '',
+    'These READMEs were regenerated from `README.md` on `dev`:',
+    '',
+    ...lines,
+    '',
+    `${cache} Each section is checked against its source for identical links, image paths, HTML tags and list structure before it is accepted.`,
+    '',
+    '## Type of change',
+    '',
+    '* [x] Translation',
+    '',
+    '## Testing',
+    '',
+    '* `node --test scripts/readme/lib.test.mjs` passed in the workflow run.',
+    '* Every regenerated section kept its source links, image paths, HTML tags and list structure.',
+    '',
+    '## Risk / compatibility',
+    '',
+    'None. Only README files and the translation cache change.',
+    '',
+    '## Checklist',
+    '',
+    '* [x] The change does not introduce new warnings or errors',
+    '',
+  ].join('\n');
+}
 
 /** Drops a code fence the model sometimes wraps around its answer. */
 export function cleanOutput(text) {

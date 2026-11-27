@@ -4,9 +4,14 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { revealedQueuedTurnFamily } from '@librechat/chat/react';
-import { QueuedTurnPortalProvider, useQueuedTurnPortal } from '@librechat/chat/components';
+import { MessagePartsHostProvider } from '@librechat/chat/react';
+import {
+  QueuedTurnPortalProvider,
+  PendingTurn,
+  useQueuedTurnPortal,
+} from '@librechat/chat/components';
+import type { MessagePartsHost } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
-import PendingTurn from '~/components/Chat/Messages/PendingTurn';
 import { ChatContext } from '~/Providers';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
@@ -19,6 +24,16 @@ jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
   Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
+const partsHost = {
+  useUser: () => ({ name: 'Danny' }),
+  useUserTextPreferences: () => ({
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+    usernameDisplay: false,
+  }),
+  renderMarkdown: ({ content }: { content: string }) => content,
+} as unknown as MessagePartsHost;
+
 const conversationId = 'convo-queued-turn';
 const conversation = {
   conversationId,
@@ -48,10 +63,12 @@ it('registers the revealed user turn action target only while it is visible', ()
             { conversation, latestMessageId, index: 0 } as React.ContextType<typeof ChatContext>
           }
         >
-          <QueuedTurnPortalProvider>
-            <PendingTurn />
-            <PortalTarget />
-          </QueuedTurnPortalProvider>
+          <MessagePartsHostProvider host={partsHost}>
+            <QueuedTurnPortalProvider>
+              <PendingTurn />
+              <PortalTarget />
+            </QueuedTurnPortalProvider>
+          </MessagePartsHostProvider>
         </ChatContext.Provider>
       </JotaiProvider>
     </RecoilRoot>

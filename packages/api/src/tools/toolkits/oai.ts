@@ -171,3 +171,18 @@ export const oaiToolkit: {
     responseFormat: 'content_and_artifact' as const,
   },
 } as const;
+
+/** Text the model receives when an image API answers without image data. */
+export const EMPTY_IMAGE_MESSAGE =
+  'No image was returned by the image API. The provider may have declined this prompt, so ask the user to rephrase it; if this keeps happening, check the image API configuration.';
+
+/**
+ * The first base64 image of an OpenAI-compatible images response, or `undefined`
+ * when the provider answered without one: a proxy can return HTTP 200 with an
+ * empty `data` array after a provider filter declines the prompt.
+ */
+export function getImageData(
+  response?: { data?: Array<{ b64_json?: string | null }> | null } | null,
+): string | undefined {
+  return response?.data?.[0]?.b64_json ?? undefined;
+}

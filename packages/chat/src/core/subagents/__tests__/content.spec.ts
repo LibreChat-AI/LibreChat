@@ -347,6 +347,44 @@ describe('aggregateSubagentContent', () => {
     ]);
   });
 
+  it('keeps the skill id the server stamped on a completed skill call, early or late', () => {
+    const completed = (id: string) =>
+      makeEvent({
+        phase: 'run_step_completed',
+        data: {
+          result: {
+            type: 'tool_call',
+            tool_call: {
+              id,
+              name: 'skill',
+              args: '{"skillName":"release-notes"}',
+              output: 'Skill "release-notes" loaded. Follow the instructions below.',
+              progress: 1,
+              skillId: '6650f0c2a1b2c3d4e5f60718',
+            },
+          },
+        },
+      });
+    const parts = aggregateSubagentContent([
+      makeEvent({
+        phase: 'run_step',
+        data: {
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: 'skill-1', name: 'skill', args: '{}' }],
+          },
+        },
+      }),
+      completed('skill-1'),
+      completed('skill-late'),
+    ]);
+
+    expect(parts.map((part) => (part as { tool_call: { skillId?: string } }).tool_call)).toEqual([
+      expect.objectContaining({ id: 'skill-1', skillId: '6650f0c2a1b2c3d4e5f60718' }),
+      expect.objectContaining({ id: 'skill-late', skillId: '6650f0c2a1b2c3d4e5f60718' }),
+    ]);
+  });
+
   it('interleaves tool calls between text parts in order', () => {
     const parts = aggregateSubagentContent([
       makeEvent({

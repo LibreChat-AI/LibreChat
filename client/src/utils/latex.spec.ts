@@ -3,13 +3,20 @@ import ReactMarkdown from 'react-markdown';
 import { render } from '@testing-library/react';
 import { math } from 'micromark-extension-math';
 import { mathFromMarkdown } from 'mdast-util-math';
+import { singleDollarMath } from '@librechat/chat';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import type { Options as ReactMarkdownOptions } from 'react-markdown';
 import {
   getRemarkPlugins,
   getRehypePlugins,
 } from '~/components/Chat/Messages/Content/markdownConfig';
-import { singleDollarMath } from './latex';
+import {
+  getLoadedRehypeModules,
+  loadRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 type SpecNode = {
   type: string;
@@ -24,7 +31,7 @@ type SpecNode = {
  */
 const parse = (content: string): SpecNode =>
   fromMarkdown(content, {
-    extensions: [math({ singleDollarTextMath: false }), singleDollarMath],
+    extensions: [math({ singleDollarTextMath: false }), singleDollarMath()],
     mdastExtensions: [mathFromMarkdown()],
   }) as SpecNode;
 
@@ -285,7 +292,9 @@ describe('getRemarkPlugins LaTeX wiring', () => {
   });
 
   test('KaTeX renders the parsed spans without errors', () => {
-    const rehypePlugins = getRehypePlugins() as ReactMarkdownOptions['rehypePlugins'];
+    const rehypePlugins = getRehypePlugins(
+      getLoadedRehypeModules(),
+    ) as ReactMarkdownOptions['rehypePlugins'];
     const remarkPlugins = getRemarkPlugins(true) as ReactMarkdownOptions['remarkPlugins'];
     const { container } = render(
       createElement(

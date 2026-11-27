@@ -72,6 +72,7 @@ describe('useSelectAssistant', () => {
         iconURL: null,
         modelLabel: null,
       }),
+      retarget: true,
     });
   });
 });

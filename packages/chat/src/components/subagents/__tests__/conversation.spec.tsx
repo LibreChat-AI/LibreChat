@@ -4,7 +4,7 @@
 import React, { useContext, useState } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import { Provider as JotaiProvider, createStore } from 'jotai';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, within, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type {
   FullToolCall,
   PartMetadata,
@@ -17,12 +17,18 @@ import type { ChatSurface } from '../../../react/subagents/surface';
 import type { SubagentsHost } from '../../../react/subagents/host';
 import type { TurnAuthor } from '../../../react/subagents/author';
 import type { ChatContract } from '../../../react/chat/contract';
-import { MessagePartsHostProvider, useMessagePartsHost } from '../../../react/host';
+import {
+  emptyToolCallChrome,
+  MessagePartsHostProvider,
+  useMessagePartsHost,
+} from '../../../react/host';
+import { AskAnswerHostProvider, useLiveAskPauses } from '../../../react/parts/ask';
 import { mergeChildConversationTurns } from '../../../react/subagents/adapters';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SubagentConversation from '../conversation';
 
 type Ask = (input: { text: string }) => void;
@@ -33,6 +39,7 @@ const mockRenderedContent = jest.fn<void, [Array<TMessageContentParts | undefine
 const mockPartScope = jest.fn<void, [ChatContract | null, Ask | undefined]>();
 const lastCall = <T,>(calls: T[]): T => calls[calls.length - 1];
 const mockParentAsk = jest.fn();
+const mockAskPauses = jest.fn();
 
 jest.mock('../../messages/MinimalHoverButtons', () => ({
   __esModule: true,
@@ -45,8 +52,9 @@ jest.mock('../../messages/MinimalHoverButtons', () => ({
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useLanguage: () => 'en',
-  useLocalize: () => (key: string) => key,
 }));
+
+beforeAll(initEnglish);
 
 jest.mock('lucide-react', () => ({
   AlertCircle: () => null,
@@ -75,6 +83,8 @@ function partLabel(part: TMessageContentParts | undefined): string {
 
 function ContentPartsMock({ content, messageId }: ContentPartsSlotProps) {
   const host = useMessagePartsHost();
+  const liveAskPauses = useLiveAskPauses();
+  mockAskPauses(liveAskPauses);
   mockPartScope(useContext(ChatContext), hasAsk(host) ? host.useMessagesAsk() : undefined);
   mockRenderedContent(content);
   return (
@@ -110,11 +120,14 @@ const parentHost: AskPartsHost = {
   useFileMap: () => undefined,
   useToast: () => jest.fn(),
   useSandboxStarting: () => false,
+  usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, jest.fn()],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
   useMessagesAsk: () => mockParentAsk,
 };
 
@@ -202,6 +215,26 @@ const turns: ChildConversationTurn[] = [
   },
 ];
 
+describe('child ask pause scope', () => {
+  test.each([false, true])('only shares parent live pauses for interactive=%s', (interactive) => {
+    const pauses = { ids: ['parent-call'], hasUnattributed: false };
+    render(
+      <ChatSurfaceHarness>
+        <AskAnswerHostProvider saveDrafts={false} liveAskPauses={pauses}>
+          <SubagentConversation
+            turns={turns}
+            author={author}
+            parentAuthor={parentAuthor}
+            interactive={interactive}
+          />
+        </AskAnswerHostProvider>
+      </ChatSurfaceHarness>,
+    );
+    expect(mockAskPauses).toHaveBeenCalled();
+    expect(mockAskPauses).toHaveBeenLastCalledWith(interactive ? pauses : null);
+  });
+});
+
 describe('SubagentConversation', () => {
   it('renders parent turns and child activity through the main chat row and content modules', () => {
     const { container } = render(
@@ -212,21 +245,21 @@ describe('SubagentConversation', () => {
 
     /** The parent's briefing is a user turn in the parent's name, filled like
      *  one; only the external event, which no agent wrote, is a system turn. */
-    const briefing = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_dispatch' });
+    const briefing = screen.getByRole('group', { name: 'Assigned a task' });
     expect(briefing).toHaveClass('justify-end');
     expect(within(briefing).getByRole('heading', { name: /Lia$/ })).toBeInTheDocument();
     expect(within(briefing).getByTestId('parent-face')).toBeInTheDocument();
     expect(within(briefing).getByTestId('message-body')).toHaveClass('bg-surface-user-message');
-    expect(screen.queryByText('com_ui_subagent_trigger_parent_dispatch')).not.toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_trigger_external_event')).toBeInTheDocument();
-    expect(screen.getAllByRole('heading', { name: /^com_ui_system_event/ })).toHaveLength(1);
+    expect(screen.queryByText('Assigned a task')).not.toBeInTheDocument();
+    expect(screen.getByText('External event')).toBeInTheDocument();
+    expect(screen.getAllByRole('heading', { name: /^System/ })).toHaveLength(1);
     expect(screen.getAllByRole('heading', { name: 'Research child' })).toHaveLength(2);
     expect(screen.getByText('Investigate the release.')).toBeInTheDocument();
     expect(screen.getByText('Checked the constraints.')).toBeInTheDocument();
     expect(screen.getByText('search')).toBeInTheDocument();
     expect(screen.getByText('The release is ready.')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_thread_status_completed')).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_thread_status_running')).not.toBeInTheDocument();
+    expect(screen.queryByText('Completed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
     /** Both halves of the main chat author column: the shared glyph, and the
      *  streaming dot inset onto that glyph's axis the way main chat insets it. */
     expect(screen.getAllByTestId('child-face')).toHaveLength(2);
@@ -236,21 +269,65 @@ describe('SubagentConversation', () => {
     expect(container.querySelectorAll('.user-turn')).toHaveLength(1);
     expect(container.querySelectorAll('.agent-turn')).toHaveLength(2);
     expect(container.querySelector('[data-subagent-conversation]')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_prompt')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('com_ui_subagent_activity_details_truncated'),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_activity_details_unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Prompt')).not.toBeInTheDocument();
+    expect(screen.queryByText('Some activity details were shortened.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Additional activity details are unavailable.')).toBeInTheDocument();
     expect(screen.getByTestId('stream-elapsed')).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: /com_ui_subagent_trigger_external_event.*chess\.turn\.ready.*speed-chess/,
+        name: /External event.*chess\.turn\.ready.*speed-chess/,
       }),
     );
     expect(screen.getByText('chess.turn.ready')).toBeInTheDocument();
     expect(screen.getByText('speed-chess')).toBeInTheDocument();
     expect(screen.getByText('submit_move')).toBeInTheDocument();
+  });
+
+  it('streams a brief still being written, and says the child starts when it is finished', () => {
+    const writing: ChildConversationTurn = {
+      ...turns[0],
+      taskId: 'task-writing',
+      briefing: true,
+      outcome: undefined,
+      trigger: { kind: 'parent_dispatch', summary: 'Ask the reviewer to restate' },
+      activity: { ...turns[0].activity, status: 'running', items: [], content: [] },
+    };
+    render(
+      <ChatSurfaceHarness>
+        <SubagentConversation turns={[writing]} author={author} parentAuthor={parentAuthor} />
+      </ChatSurfaceHarness>,
+    );
+
+    const brief = screen.getByRole('group', { name: 'Assigned a task' });
+    expect(within(brief).getByText('Ask the reviewer to restate')).toBeInTheDocument();
+    expect(within(brief).getByText('Writing the brief…')).toHaveClass('shimmer');
+    /** Nothing to copy until the brief is whole. */
+    expect(within(brief).queryByRole('button', { name: 'copy' })).toBeNull();
+
+    expect(screen.getByRole('heading', { name: 'Research child' })).toBeInTheDocument();
+    expect(screen.getByText('Starts when the brief is finished.')).toBeInTheDocument();
+    expect(screen.queryByTestId('stream-elapsed')).toBeNull();
+    expect(document.querySelector('.result-thinking')).toBeNull();
+  });
+
+  it('sweeps the empty bubble instead of naming the dispatch while the brief has not begun', () => {
+    const writing: ChildConversationTurn = {
+      ...turns[0],
+      taskId: 'task-empty-brief',
+      briefing: true,
+      outcome: undefined,
+      trigger: { kind: 'parent_dispatch', summary: '' },
+      activity: { ...turns[0].activity, status: 'running', items: [], content: [] },
+    };
+    render(
+      <ChatSurfaceHarness>
+        <SubagentConversation turns={[writing]} author={author} parentAuthor={parentAuthor} />
+      </ChatSurfaceHarness>,
+    );
+    const brief = screen.getByRole('group', { name: 'Assigned a task' });
+    expect(within(brief).getByText('Writing the brief…')).toHaveClass('shimmer');
+    expect(within(brief).queryByText('Assigned a task')).toBeNull();
   });
 
   it('names an empty parent follow-up instead of rendering a blank bubble', () => {
@@ -265,11 +342,9 @@ describe('SubagentConversation', () => {
       </ChatSurfaceHarness>,
     );
 
-    const row = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_continuation' });
+    const row = screen.getByRole('group', { name: 'Followed up on the task' });
     expect(within(row).getByRole('heading', { name: /Lia$/ })).toBeInTheDocument();
-    expect(
-      within(row).getByText('com_ui_subagent_trigger_parent_continuation'),
-    ).toBeInTheDocument();
+    expect(within(row).getByText('Followed up on the task')).toBeInTheDocument();
     expect(within(row).queryByTestId('shared-content-parts')).not.toBeInTheDocument();
   });
 
@@ -289,7 +364,7 @@ describe('SubagentConversation', () => {
       </ChatSurfaceHarness>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(loadDetails).toHaveBeenCalledWith('task-1');
   });
 
@@ -320,12 +395,12 @@ describe('SubagentConversation', () => {
 
     expect(
       screen.getByRole('button', {
-        name: /com_ui_subagent_trigger_external_event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:01:00.000Z/,
+        name: /External event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:01:00.000Z/,
       }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', {
-        name: /com_ui_subagent_trigger_external_event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:02:00.000Z/,
+        name: /External event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:02:00.000Z/,
       }),
     ).toBeInTheDocument();
   });
@@ -1039,3 +1114,209 @@ it.each(['completed', 'failed', 'cancelled', 'interrupted'] as const)(
     expect(content).toHaveLength(3);
   },
 );
+
+describe('recovered turn details', () => {
+  const recovery = {
+    parentConversationId: 'parent',
+    threadId: 'child',
+    selectedTaskId: 'task-1',
+    ready: true,
+  };
+  const capture = (overrides: Record<string, unknown> = {}) => ({
+    messageId: 'task-1:assistant',
+    status: 'completed',
+    recovery: 'partial',
+    content: [{ type: ContentTypes.TEXT, text: 'Captured work.' }],
+    throughSequence: 1,
+    targetThroughSequence: 1,
+    ...overrides,
+  });
+  const shortened: ChildConversationTurn = {
+    ...turns[0],
+    activity: { ...turns[0].activity, activityTruncated: true },
+  };
+  const renderTurn = (
+    turn: ChildConversationTurn,
+    props: Partial<React.ComponentProps<typeof SubagentConversation>> = {},
+  ) =>
+    render(
+      <ChatSurfaceHarness>
+        <SubagentConversation
+          author={author}
+          parentAuthor={parentAuthor}
+          recovery={recovery}
+          turns={[turn]}
+          {...props}
+        />
+      </ChatSurfaceHarness>,
+    );
+
+  afterEach(() => mockRecoveredQuery.mockReset());
+
+  it.each([
+    { label: 'a partial terminal capture', watermark: {} },
+    {
+      label: 'a snapshot short of its target',
+      watermark: { recovery: 'complete', throughSequence: 0 },
+    },
+  ])('reads $label again for a turn the thread view did not shorten', async ({ watermark }) => {
+    let finish: () => void = () => undefined;
+    const refetch = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    mockRecoveredQuery.mockReturnValue({
+      data: capture(watermark),
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    });
+    const loadDetails = jest.fn();
+    renderTurn(turns[0], { onLoadTurnDetails: loadDetails });
+
+    expect(screen.getByText('Captured work.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Additional activity details are unavailable.'),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(loadDetails).not.toHaveBeenCalled();
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+
+    await act(async () => finish());
+    expect(screen.getByText('Additional activity details are unavailable.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+  });
+
+  it('shows what the reread recovered and drops the notice once the capture is complete', async () => {
+    let data = capture();
+    const refetch = jest.fn(async () => {
+      data = capture({
+        recovery: 'complete',
+        content: [
+          { type: ContentTypes.TEXT, text: 'Captured work.' },
+          { type: ContentTypes.TEXT, text: 'Late work.' },
+        ],
+        throughSequence: 2,
+        targetThroughSequence: 2,
+      });
+    });
+    mockRecoveredQuery.mockImplementation(() => ({
+      data,
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    }));
+    renderTurn(turns[0], { onLoadTurnDetails: jest.fn() });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Late work.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Additional activity details are unavailable.'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+  });
+
+  it('offers to read again when the reread fails', async () => {
+    let failed = false;
+    const refetch = jest.fn(() =>
+      Promise.resolve().then(() => {
+        failed = true;
+      }),
+    );
+    mockRecoveredQuery.mockImplementation(() => ({
+      data: capture(),
+      isError: failed,
+      isUnavailable: false,
+      refetch,
+    }));
+    renderTurn(turns[0]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    /** The load error above the turn offers its own retry; the details notice keeps one too. */
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Retry' })[1]);
+    expect(refetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2));
+  });
+
+  it('calls a capture the task no longer serves unavailable after the reread', async () => {
+    let gone = false;
+    const refetch = jest.fn(async () => {
+      gone = true;
+    });
+    mockRecoveredQuery.mockImplementation(() => ({
+      data: capture(),
+      isError: gone,
+      isUnavailable: gone,
+      refetch,
+    }));
+    renderTurn(turns[0]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(
+      await screen.findByText('Additional activity details are unavailable.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it('rereads a partial capture even where the thread view shortened the turn and has no more', async () => {
+    const refetch = jest.fn(() => Promise.resolve());
+    mockRecoveredQuery.mockReturnValue({
+      data: capture(),
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    });
+    const loadDetails = jest.fn();
+    renderTurn(shortened, {
+      onLoadTurnDetails: loadDetails,
+      detailStateByTask: new Map([['task-1', 'unavailable' as const]]),
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(loadDetails).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText('Additional activity details are unavailable.'),
+    ).toBeInTheDocument();
+  });
+
+  it('loads the thread view details while recovered content has nothing to show', () => {
+    const refetch = jest.fn(() => Promise.resolve());
+    mockRecoveredQuery.mockReturnValue({
+      data: capture({ content: [], throughSequence: -1, targetThroughSequence: -1 }),
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    });
+    const loadDetails = jest.fn();
+    renderTurn(shortened, { onLoadTurnDetails: loadDetails });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(loadDetails).toHaveBeenCalledWith('task-1');
+    expect(refetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps a complete capture free of any details notice on a shortened turn', () => {
+    mockRecoveredQuery.mockReturnValue({
+      data: capture({ recovery: 'complete' }),
+      isError: false,
+      isUnavailable: false,
+      refetch: jest.fn(() => Promise.resolve()),
+    });
+    renderTurn(shortened, { onLoadTurnDetails: jest.fn() });
+
+    expect(screen.getByText('Captured work.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Additional activity details are unavailable.'),
+    ).not.toBeInTheDocument();
+  });
+});

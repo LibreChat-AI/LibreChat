@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import { channel } from 'node:diagnostics_channel';
+import { createServer as createTCPServer } from 'node:net';
 import { Providers, initializeModel } from '@librechat/agents';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import type { Dispatcher } from 'undici';
 import { getOpenAIConfig } from './config';
 
@@ -16,18 +17,35 @@ const proxyKeys = [
   'no_proxy',
 ];
 const dispatchers = new Set<Dispatcher>();
+const closers: Array<() => Promise<void>> = [];
 const originalEnv = process.env;
 
 beforeEach(() => {
   process.env = { ...originalEnv };
   for (const key of proxyKeys) delete process.env[key];
 });
-afterEach(() => {
+afterEach(async () => {
   process.env = originalEnv;
+  await Promise.all(closers.splice(0).map((close) => close()));
 });
 afterAll(async () => {
   await Promise.all([...dispatchers].map((dispatcher) => dispatcher.destroy()));
 });
+
+/** A proxy that accepts the TCP connection and never answers the CONNECT request. */
+async function silentProxy(): Promise<string> {
+  const sockets = new Set<Socket>();
+  const server = createTCPServer((socket) => {
+    sockets.add(socket);
+    socket.on('error', () => undefined).on('close', () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  closers.push(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
 
 /** Real sockets and the locked Agent model client: mocked fetch cannot prove Undici's timers. */
 async function request({
@@ -38,6 +56,7 @@ async function request({
   streaming = true,
   cancel = false,
   baseURLIsUserProvided = false,
+  proxy,
 }: {
   directEndpoint: boolean;
   mode: 'headers' | 'idle' | 'active' | 'redirect';
@@ -46,6 +65,7 @@ async function request({
   streaming?: boolean;
   cancel?: boolean;
   baseURLIsUserProvided?: boolean;
+  proxy?: string;
 }) {
   const transportErrors: string[] = [];
   const paths: string[] = [];
@@ -106,6 +126,7 @@ async function request({
       directEndpoint,
       baseURLIsUserProvided,
       allowedAddresses: baseURLIsUserProvided ? ['127.0.0.1'] : undefined,
+      proxy,
       transportTimeouts: { bodyTimeout, headersTimeout },
       streaming,
       modelOptions: { model: 'local-test' },
@@ -149,6 +170,24 @@ describe.each([false, true])('model transport directEndpoint=%s', (directEndpoin
     expect(result.transportErrors).toContain('UND_ERR_BODY_TIMEOUT');
     expect(result.paths).toHaveLength(1);
   });
+});
+
+describe('model transport through a proxy that never answers CONNECT', () => {
+  it.each(['proxy option', 'PROXY environment'])(
+    'enforces the configured header timeout on the handshake (%s)',
+    async (source) => {
+      const proxy = await silentProxy();
+      if (source === 'PROXY environment') process.env.PROXY = proxy;
+      const result = await request({
+        directEndpoint: false,
+        mode: 'headers',
+        proxy: source === 'proxy option' ? proxy : undefined,
+      });
+      expect(result.failure).toBeDefined();
+      expect(result.transportErrors).toContain('UND_ERR_HEADERS_TIMEOUT');
+      expect(result.paths).toEqual([]);
+    },
+  );
 });
 
 describe('direct endpoint stream lifecycle', () => {

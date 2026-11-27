@@ -324,8 +324,45 @@ export function getProps(type: string): Partial<SandpackProviderProps> {
  * `injectExternalResources` throws "Unable to determine file type". */
 const TAILWIND_CDN = 'https://cdn.tailwindcss.com/3.4.17#tailwind.js';
 
+/** The Play CDN appends its generated `<style>` (preflight included) to the end of
+ * `<head>`, so its element resets beat the page's own element rules on source order.
+ * Injected after the CDN in static previews, this moves that style in front of the
+ * first page stylesheet in `<head>`: utilities still win by specificity, while plain
+ * CSS renders as it does standalone. Pages that load the CDN themselves are left alone. */
+const TAILWIND_ORDER_SCRIPT = `(() => {
+  const head = document.head;
+  if (!head || typeof MutationObserver === 'undefined') return;
+  const isSheet = (node) =>
+    (node.tagName === 'STYLE' && node.type !== 'text/tailwindcss') ||
+    (node.tagName === 'LINK' && node.relList.contains('stylesheet'));
+  const isTailwind = (node) =>
+    node.tagName === 'STYLE' &&
+    node.attributes.length === 0 &&
+    node.textContent.includes('! tailwindcss v');
+  const isCdn = (script) => script.src.split('/')[2] === 'cdn.tailwindcss.com';
+  const order = () => {
+    if ([...document.scripts].filter(isCdn).length > 1) return;
+    let first = null;
+    for (const node of head.children) {
+      if (isTailwind(node)) {
+        if (first) head.insertBefore(node, first);
+        return;
+      }
+      if (!first && isSheet(node)) first = node;
+    }
+  };
+  new MutationObserver(order).observe(head, { childList: true });
+})();`;
+
+/** Same `.js` fragment hint as the CDN URL, so the static template injects a `<script>`. */
+export const TAILWIND_ORDER = `data:text/javascript,${encodeURIComponent(TAILWIND_ORDER_SCRIPT)}#tailwind-order.js`;
+
 export const sharedOptions: SandpackProviderProps['options'] = {
   externalResources: [TAILWIND_CDN],
+};
+
+const staticOptions: SandpackProviderProps['options'] = {
+  externalResources: [TAILWIND_CDN, TAILWIND_ORDER],
 };
 
 export type SandpackStartupConfig = Pick<
@@ -337,15 +374,16 @@ export function buildSandpackOptions(
   template: SandpackProviderProps['template'],
   startupConfig?: SandpackStartupConfig,
 ): SandpackProviderProps['options'] {
+  const options = template === 'static' ? staticOptions : sharedOptions;
   if (!startupConfig) {
-    return sharedOptions;
+    return options;
   }
 
   const bundlerURL =
     template === 'static' ? startupConfig.staticBundlerURL : startupConfig.bundlerURL;
   /** An empty env value (e.g. `${SANDPACK_BUNDLER_URL:-}` in Compose) means unset. */
   return {
-    ...sharedOptions,
+    ...options,
     bundlerURL: bundlerURL || undefined,
   };
 }

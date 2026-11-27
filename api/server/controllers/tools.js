@@ -52,7 +52,6 @@ const verifyWebSearchAuth = async (req, res) => {
       userId,
       loadAuthValues,
       webSearchConfig,
-      throwError: false,
     });
 
     return res.status(200).json({

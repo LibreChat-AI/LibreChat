@@ -1,10 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useLayoutEffect } from 'react';
+import { useAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
+import { submissionByIndex } from '@librechat/chat/react';
 import { useRecoilCallback, useRecoilValue } from 'recoil';
-import { useParams, useSearchParams } from 'react-router-dom';
 import { Button, Spinner, useToastContext } from '@librechat/client';
 import { Constants, isForcedTemporaryRetention } from 'librechat-data-provider';
-import type { TPreset, TAgentsMap } from 'librechat-data-provider';
+import {
+  useParams,
+  useLocation,
+  NavigationType,
+  useSearchParams,
+  useNavigationType,
+} from 'react-router-dom';
+import type { TPreset, TAgentsMap, TSubmission } from 'librechat-data-provider';
 import {
   defaultSpecAwaitsAgents,
   mergeQuerySettingsWithSpec,
@@ -28,6 +36,7 @@ import {
   useProjectQuery,
 } from '~/data-provider';
 import { useIdChangeEffect, useAppStartup, useNewConvo, useLocalize } from '~/hooks';
+import { hasRetiredSavedSpec } from '~/utils/convos';
 import { ToolCallsMapProvider } from '~/Providers';
 import ChatView from '~/components/Chat/ChatView';
 import { NotificationSeverity } from '~/common';
@@ -55,24 +64,45 @@ export default function ChatRoute() {
   const index = 0;
   const [searchParams, setSearchParams] = useSearchParams();
   const { conversationId = '' } = useParams();
+  const { key } = useLocation();
+  const navigationType = useNavigationType();
   const projectIdParam = searchParams.get('projectId');
   const chatProjectId = isValidChatProjectId(projectIdParam) ? projectIdParam : null;
   useIdChangeEffect(conversationId);
   usePrefetchConversationMessages(conversationId, isAuthenticated);
   const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
+  const [submission, setSubmission] = useAtom(submissionByIndex(index));
+  const started = submission != null && Object.keys(submission).length > 0;
   const [routeState, setRouteState] = useState({
+    key,
     conversationId,
     pending:
       conversationId !== Constants.NEW_CONVO && conversation?.conversationId !== conversationId,
   });
   /** History navigation changes the route without running the sidebar's conversation setter.
    * Only a route change may request reconciliation: a newly submitted conversation can acquire
-   * its server id before the URL catches up, and must not be reset to a new chat. */
-  if (routeState.conversationId !== conversationId) {
-    setRouteState({ conversationId, pending: conversation?.conversationId !== conversationId });
-  } else if (routeState.pending && conversation?.conversationId === conversationId) {
-    setRouteState({ conversationId, pending: false });
+   * its server id before the URL catches up, and must not be reset to a new chat. Back and
+   * Forward count even when the id stays `new`: a first turn renames its entry past the router,
+   * so returning to the new chat it was sent from moves between two `new` entries. That turn
+   * belongs to the entry it was sent from even before its run names the conversation. */
+  const holds =
+    conversation?.conversationId === conversationId &&
+    (conversationId !== Constants.NEW_CONVO || !started);
+  if (routeState.conversationId !== conversationId || routeState.key !== key) {
+    const moved =
+      routeState.conversationId !== conversationId || navigationType === NavigationType.Pop;
+    setRouteState({ key, conversationId, pending: moved ? !holds : routeState.pending });
+  } else if (routeState.pending && holds) {
+    setRouteState({ key, conversationId, pending: false });
   }
+  /** The reset below is a passive effect, which a history transition commits late, and until it
+   * runs the departed turn's stream keeps writing into the new-chat cache that reset clears.
+   * Dropping the submission here closes that stream within this commit. */
+  useLayoutEffect(() => {
+    if (routeState.pending && started && conversationId === Constants.NEW_CONVO) {
+      setSubmission({} as TSubmission);
+    }
+  }, [routeState.pending, started, conversationId, setSubmission]);
   useAppStartup({ startupConfig, user });
   const { newConversation } = useNewConvo();
   const { showToast } = useToastContext();
@@ -257,11 +287,18 @@ export default function ChatRoute() {
 
       hasSetConversation.current = true;
     } else if (initialConvoQuery.data && endpointsQuery.data) {
-      logger.log('conversation', 'ChatRoute initialConvoQuery', initialConvoQuery.data);
+      const record = initialConvoQuery.data;
+      const unresolvedTarget =
+        'targetResolutionFailed' in record &&
+        record.targetResolutionFailed === true &&
+        !!record.endpoint &&
+        !!record.spec;
+      logger.log('conversation', 'ChatRoute initialConvoQuery', record);
       newConversation({
-        template: initialConvoQuery.data,
+        template: record,
         /* this is necessary to load all existing settings */
-        preset: initialConvoQuery.data as TPreset,
+        preset: record as TPreset,
+        buildDefault: !unresolvedTarget && !hasRetiredSavedSpec(record, endpointsQuery.data),
         keepComposerState: true,
       });
       hasSetConversation.current = true;

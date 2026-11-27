@@ -1,0 +1,14 @@
+# Merge this fragment into your existing librechat.yaml endpoints.agents configuration.
+endpoints:
+  agents:
+    sdkRuntimes:
+      remote-example:
+        remote:
+          url: ws://127.0.0.1:8804/sdk
+          secret: '${SDK_RUNTIME_SECRET}'
+        roles: [ADMIN]
+    checkpointer:
+      type: mongo
+    toolApproval:
+      enabled: true
+      mode: default

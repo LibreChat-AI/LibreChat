@@ -68,6 +68,34 @@ describe('attached workspace Bash contract', () => {
     expect(tool()).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
   });
 
+  test('warns that a background command overlaps later ones only when it is sent detached', () => {
+    const overlap =
+      'A run_in_background command runs alongside later commands in the same worktree; do not background one that later commands depend on finishing first (installs, git operations).';
+    expect(ATTACHED_WORKSPACE_BASH_DESCRIPTION).not.toContain('runs alongside');
+    expect(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION).not.toContain('runs alongside');
+    const detached = buildAttachedWorkspaceBashDescription(false, undefined, false, true);
+    expect(detached.replace(`- ${overlap}\n`, '')).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+    expect(
+      buildAttachedWorkspaceBashDescription(false, undefined, true, true).replace(
+        `- ${overlap}\n`,
+        '',
+      ),
+    ).toBe(ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION);
+    expect(buildAttachedWorkspaceBashDescription(false, undefined, false, false)).toBe(
+      ATTACHED_WORKSPACE_BASH_DESCRIPTION,
+    );
+    const tool = (detachedCommands?: boolean): string =>
+      createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        detachedCommands,
+      }).description;
+    expect(tool(true)).toBe(detached);
+    expect(tool(false)).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+    expect(tool()).toBe(ATTACHED_WORKSPACE_BASH_DESCRIPTION);
+  });
+
   test('states that commands start in cwd so the model does not also cd into it', () => {
     const { properties } = buildAttachedWorkspaceBashSchema();
     expect(properties?.command?.description).toContain(
@@ -528,6 +556,214 @@ describe('createAttachedWorkspaceBashTool', () => {
     ).toEqual([10_000, 80_000, 20_000]);
   });
 
+  describe('detached background commands', () => {
+    const background = { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } };
+    const environment = {
+      fingerprint: 'a'.repeat(64),
+      repo: 'example/app',
+      ref: 'main',
+      actions: ['typecheck'],
+    };
+    const sentRequests = (fetchImpl: CodeBridgeFetch): WorkspaceExecuteCommandRequest[] =>
+      (fetchImpl as jest.Mock).mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+
+    test('marks only a background command detached once the worker negotiated it', async () => {
+      const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+      const bashTool = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        detachedCommands: true,
+        environment,
+        fetchImpl,
+      });
+
+      await bashTool.invoke({ command: 'npm test', cwd: 'packages/api' }, background);
+      await bashTool.invoke({ command: 'npm test', cwd: 'packages/api' });
+      await bashTool.invoke(
+        { command: 'npm test' },
+        { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: false } },
+      );
+      await bashTool.invoke({ environmentAction: 'typecheck' }, background);
+
+      const [detached, foreground, unmarked, action] = sentRequests(fetchImpl);
+      expect(detached).toEqual({
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'project-a',
+        command: 'npm test',
+        cwd: 'packages/api',
+        timeoutMs: 30_000,
+        maxOutputBytes: 256 * 1024,
+        detached: true,
+      });
+      expect(foreground).toMatchObject({ command: 'npm test', cwd: 'packages/api' });
+      expect(foreground).not.toHaveProperty('detached');
+      expect(unmarked).not.toHaveProperty('detached');
+      expect(action).toMatchObject({
+        environmentAction: { name: 'typecheck', fingerprint: 'a'.repeat(64) },
+      });
+      expect(action).not.toHaveProperty('detached');
+    });
+
+    test.each([
+      ['the worker does not advertise it or the environment opted out', false],
+      ['the capability was never resolved', undefined],
+    ])('keeps a background command attached when %s', async (_case, detachedCommands) => {
+      const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+      const bashTool = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        detachedCommands,
+        fetchImpl,
+      });
+
+      await bashTool.invoke({ command: 'npm test' }, background);
+      await bashTool.invoke({ command: 'npm test' });
+
+      expect(sentRequests(fetchImpl)).toEqual([
+        {
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'project-a',
+          command: 'npm test',
+          timeoutMs: 30_000,
+          maxOutputBytes: 256 * 1024,
+        },
+        {
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'project-a',
+          command: 'npm test',
+          timeoutMs: 30_000,
+          maxOutputBytes: 256 * 1024,
+        },
+      ]);
+    });
+
+    test('stays detached when the command is routed into a linked-worktree lane', async () => {
+      const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+      const bashTool = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        linkedWorktrees: true,
+        detachedCommands: true,
+        fetchImpl,
+      });
+
+      await bashTool.invoke({ command: 'npm test', cwd: '.worktrees/fix-a/api' }, background);
+      await bashTool.invoke({ command: 'npm test', cwd: '.worktrees/fix-a/api' });
+
+      const [detached, foreground] = sentRequests(fetchImpl);
+      expect(detached).toEqual({
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'project-a',
+        command: 'npm test',
+        cwd: 'api',
+        worktree: 'fix-a',
+        timeoutMs: 30_000,
+        maxOutputBytes: 256 * 1024,
+        detached: true,
+      });
+      expect(foreground).toMatchObject({ cwd: 'api', worktree: 'fix-a' });
+      expect(foreground).not.toHaveProperty('detached');
+    });
+
+    const durableAdmission = {
+      durableRequests: true,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      multiplier: 1,
+      jitterRatio: 0,
+    };
+    const commandResult = {
+      protocolVersion: 1,
+      operation: 'execute_command',
+      workspaceId: 'primary',
+      exitCode: 0,
+      stdout: 'ready',
+      stderr: '',
+      timedOut: false,
+      truncated: false,
+    };
+
+    test('stays detached on the durable transport', async () => {
+      const fetchImpl = jest.fn().mockImplementation(async (url, init) => {
+        if (String(url).endsWith('/capabilities'))
+          return new Response(JSON.stringify({ durableWorkspaceRequests: 1 }));
+        return new Response(
+          JSON.stringify({
+            requestId: init.headers['X-LibreChat-Workspace-Request-Id'],
+            state: 'completed',
+            result: commandResult,
+          }),
+          { status: 202 },
+        );
+      });
+      const bash = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example/v1',
+        workspaceId: 'primary',
+        authHeaders: () => ({}),
+        maxTimeoutMs: 70000,
+        maxRequestTimeoutMs: 60000,
+        admission: durableAdmission,
+        detachedCommands: true,
+        fetchImpl,
+      });
+
+      expect(await bash.invoke({ command: 'echo ready' }, background)).toContain('ready');
+      const [url, init] = fetchImpl.mock.calls[1];
+      expect(url).toBe('https://code.example/v1/workspace-tools/requests');
+      expect(JSON.parse(init.body)).toEqual({
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        command: 'echo ready',
+        timeoutMs: 70000,
+        maxOutputBytes: 256 * 1024,
+        detached: true,
+      });
+    });
+
+    test('stays detached when the synchronous fallback rebuilds the request', async () => {
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now());
+      try {
+        const fetchImpl = jest
+          .fn()
+          .mockResolvedValueOnce(new Response('{}', { status: 404 }))
+          .mockResolvedValueOnce(new Response(JSON.stringify(commandResult)));
+        const bash = createAttachedWorkspaceBashTool({
+          baseUrl: 'https://code.example/v1',
+          workspaceId: 'primary',
+          authHeaders: () => ({}),
+          maxTimeoutMs: 70000,
+          maxRequestTimeoutMs: 60000,
+          admission: durableAdmission,
+          detachedCommands: true,
+          fetchImpl,
+        });
+
+        expect(await bash.invoke({ command: 'echo ready' }, background)).toContain('ready');
+        const [url, init] = fetchImpl.mock.calls[1];
+        expect(url).toBe('https://code.example/v1/workspace-tools/execute');
+        expect(JSON.parse(init.body)).toEqual({
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          command: 'echo ready',
+          timeoutMs: 40000,
+          maxOutputBytes: 256 * 1024,
+          detached: true,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
   test.each([0, -1, 1.5, NaN, Infinity])(
     'falls back safely for invalid foreground default %s',
     (defaultTimeoutMs) => {
@@ -742,11 +978,11 @@ describe('createAttachedWorkspaceBashTool', () => {
 
   test.each([
     'cd packages/api && npm test',
-    '\n\tcd "packages/api" && printf "%s" "$OLDPWD"',
+    '\n\tcd "packages/api" && pwd -P',
     'cd missing && npm test || printf fallback',
     'cd "$DIRECTORY" && npm test',
     'cd .. && pwd',
-    'cd - && pwd',
+    'cd ./packages && pwd -P',
     'cd',
   ])('preserves the script and root lane while suggesting cwd: %s', async (command) => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
@@ -825,40 +1061,41 @@ describe('createAttachedWorkspaceBashTool', () => {
 
   test('reports the starting directory without changing real Bash state or fallback behavior', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'lc-command-directory-'));
-    const root = join(directory, 'project');
-    await mkdir(join(root, 'child'), { recursive: true });
-    const fetchImpl: CodeBridgeFetch = async (_url, init) => {
-      const request = JSON.parse(String(init?.body)) as WorkspaceExecuteCommandRequest;
-      const stdout = execFileSync('bash', ['-c', request.command], {
-        cwd: request.cwd ? join(root, request.cwd) : root,
-        encoding: 'utf8',
-      });
-      return commandResponse({ stdout });
-    };
-    const bashTool = createAttachedWorkspaceBashTool({
-      baseUrl: 'https://code.example.com/v1',
-      authHeaders: () => ({}),
-      workspaceId: 'project-a',
-      fetchImpl,
-    });
     try {
-      const content = await bashTool.invoke({
-        command: 'cd child && printf "%s/%s" "${OLDPWD##*/}" "${PWD##*/}"',
+      const root = join(directory, 'project');
+      await mkdir(join(root, 'child'), { recursive: true });
+      const run = (command: string, cwd: string) =>
+        execFileSync(process.env.LIBRECHAT_TEST_BASH ?? 'bash', ['-c', command], {
+          cwd,
+          encoding: 'utf8',
+        });
+      const physicalRoot = `${run('pwd -P', directory).trimEnd()}/project`;
+      const physicalChild = `${physicalRoot}/child`;
+      const fetchImpl: CodeBridgeFetch = async (_url, init) => {
+        const request = JSON.parse(String(init?.body)) as WorkspaceExecuteCommandRequest;
+        const stdout = run(request.command, request.cwd ? join(root, request.cwd) : root);
+        return commandResponse({ stdout });
+      };
+      const bashTool = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        fetchImpl,
       });
-      expect(content).toContain('[starting directory: "workspace/"]');
-      expect(content).toContain('stdout:\nproject/child');
-      expect(content).not.toContain(directory);
+      const content = await bashTool.invoke({ command: 'pwd -P && cd ./child && pwd -P' });
+      expect(content.split('\n', 1)[0]).toBe('[starting directory: "workspace/"]');
+      expect(content).toContain(`stdout:\n${physicalRoot}\n${physicalChild}\n`);
       const fallback = await bashTool.invoke({
-        command: 'cd missing 2>/dev/null && printf unexpected || printf fallback',
+        command: 'pwd -P && { cd ./missing 2>/dev/null || printf "fallback\\n"; } && pwd -P',
       });
-      expect(fallback).toContain('stdout:\nfallback');
-      const next = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"' });
-      expect(next).toContain('stdout:\nproject');
-      const scoped = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"', cwd: 'child' });
-      expect(scoped).toContain('[starting directory: "workspace/child"]');
-      expect(scoped).toContain('stdout:\nchild');
+      expect(fallback).toContain(`stdout:\n${physicalRoot}\nfallback\n${physicalRoot}\n`);
+      const next = await bashTool.invoke({ command: 'pwd -P' });
+      expect(next).toContain(`stdout:\n${physicalRoot}\n`);
+      const scoped = await bashTool.invoke({ command: 'pwd -P', cwd: 'child' });
+      expect(scoped.split('\n', 1)[0]).toBe('[starting directory: "workspace/child"]');
+      expect(scoped).toContain(`stdout:\n${physicalChild}\n`);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true, maxRetries: 3 });
     }
   });
 

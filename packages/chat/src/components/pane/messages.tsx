@@ -5,15 +5,12 @@ import { MessagesViewProvider } from '../../react/messages/view';
 import { useChatSurface } from '../../react/subagents/surface';
 import MessagesView from '../messages/MessagesView';
 
-/** The list's slots the app fills: thread mode, pending pieces, scroll control and rail. */
+/** The list's slots a host may replace: the thread, pending pieces, scroll control and rail.
+ *  Flat thread mode is a host setting (`useFlatThread`), and the pending pieces render
+ *  themselves when a slot is absent. */
 export type ChatScreenMessagesSlots = Pick<
   MessagesViewProps,
-  | 'flatThread'
-  | 'renderThread'
-  | 'renderPendingTurn'
-  | 'renderPendingSteers'
-  | 'renderScrollButton'
-  | 'renderNav'
+  'renderThread' | 'renderPendingTurn' | 'renderPendingSteers' | 'renderScrollButton' | 'renderNav'
 >;
 
 /** What the message list receives: the session's messages and the tree built from them. */
@@ -27,7 +24,12 @@ export default function ScreenMessages({
   messagesTree,
   messages,
   slots,
-}: ChatScreenMessagesProps & { slots?: ChatScreenMessagesSlots }): ReactElement {
+  primary,
+}: ChatScreenMessagesProps & {
+  slots?: ChatScreenMessagesSlots;
+  /** `false` for a list mounted beside the page's main one; see `MessagesViewProps.primary`. */
+  primary?: boolean;
+}): ReactElement {
   const { showScrollButton, maximizeChatSpace } = useChatSurface();
   return (
     <MessagesViewProvider>
@@ -37,6 +39,7 @@ export default function ScreenMessages({
         messages={messages}
         showScrollButton={showScrollButton}
         maximizeChatSpace={maximizeChatSpace}
+        primary={primary}
       />
     </MessagesViewProvider>
   );

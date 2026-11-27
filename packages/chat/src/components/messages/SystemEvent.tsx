@@ -1,6 +1,7 @@
 import { cn } from '@librechat/client';
 import { ChevronDown } from 'lucide-react';
 import type { ReactNode, ReactElement } from 'react';
+import { NAV_CLEARANCE } from '../parts/rows';
 
 type SystemEventHeaderProps = {
   icon: ReactNode;
@@ -59,6 +60,7 @@ export default function SystemEventHeader({
         <ChevronDown
           className={cn(
             'text-text-secondary ms-auto size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
+            NAV_CLEARANCE.edge,
             expanded && 'rotate-180',
           )}
           aria-hidden="true"

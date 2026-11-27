@@ -3,12 +3,10 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SendButton from '../SendButton';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const send = () => screen.getByTestId('send-button');
 
@@ -16,6 +14,7 @@ describe('SendButton', () => {
   it('sends text, or attachments alone, and refuses whitespace', () => {
     const { rerender } = render(<SendButton text="hello" disabled={false} />);
     expect(send()).toBeEnabled();
+    expect(send()).toHaveAccessibleName('Send message');
     expect(send()).toHaveAttribute('type', 'submit');
 
     rerender(<SendButton text="   " disabled={false} />);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Spinner } from '@librechat/client';
+import { Alert, Button, Spinner } from '@librechat/client';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { buildLoginRedirectUrl, channelConfigSchema, dataService } from 'librechat-data-provider';
 import type { ChannelIdentityResult, ChannelLinkView } from 'librechat-data-provider';
@@ -60,7 +60,7 @@ function AuthenticatedLink({
 }) {
   const { user, isAuthenticated, isAuthReady } = useAuthContext();
   const location = useLocation();
-  if (!isAuthReady) return <Spinner />;
+  if (!isAuthReady) return <Loading />;
   if (!isAuthenticated)
     return (
       <Navigate
@@ -68,7 +68,7 @@ function AuthenticatedLink({
         replace
       />
     );
-  if (!user?.id) return <Spinner />;
+  if (!user?.id) return <Loading />;
   const principalKey = JSON.stringify([user.tenantId ?? '_', user.id]);
   return (
     <OwnedLink
@@ -78,6 +78,19 @@ function AuthenticatedLink({
       ticket={ticket}
       onResult={onResult}
     />
+  );
+}
+
+function Loading() {
+  const localize = useLocalize();
+  return (
+    <div
+      role="status"
+      className="text-text-secondary flex min-h-screen items-center justify-center gap-2 text-sm"
+    >
+      <Spinner className="size-4" />
+      <span>{localize('com_ui_channel_link_loading')}</span>
+    </div>
   );
 }
 
@@ -107,9 +120,11 @@ function OwnedLink({
   return (
     <>
       {policyError && (
-        <div role="alert" className="text-text-primary mx-auto max-w-lg space-y-3 p-6">
-          <p>{localize('com_ui_channel_link_error')}</p>
+        <div className="mx-auto flex max-w-lg flex-col items-start gap-3 p-6">
+          <Alert variant="error">{localize('com_ui_channel_link_error')}</Alert>
           <Button
+            type="button"
+            variant="outline"
             disabled={config.isFetching || terms.isFetching}
             onClick={() => {
               if (config.isError) void config.refetch();
@@ -121,7 +136,7 @@ function OwnedLink({
         </div>
       )}
       {!policyError && !termsReady && !(requiresTerms && terms.data?.termsAccepted === false) && (
-        <Spinner />
+        <Loading />
       )}
       <Link
         api={dataService.channelIdentityClient}
@@ -197,7 +212,7 @@ export default function ChannelLinkRoute() {
     },
     [pending],
   );
-  if (location.hash) return <Spinner />;
+  if (location.hash) return <Loading />;
   return (
     <AuthContextProvider>
       <AuthenticatedLink

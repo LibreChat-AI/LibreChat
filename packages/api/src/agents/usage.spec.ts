@@ -1,3 +1,4 @@
+import { ContentTypes } from 'librechat-data-provider';
 import type { TContextUsageEvent, TTokenUsageEvent } from 'librechat-data-provider';
 import type { RecordUsageDeps, RecordUsageParams, SubagentUsageEvent } from './usage';
 import type { UsageMetadata } from '../stream/interfaces/IJobStore';
@@ -15,6 +16,7 @@ import {
   hasRecordedProviderUsage,
   hasRecordedPrimaryUsage,
   recordFallbackTokenUsage,
+  getAgentPromptTokenEstimate,
   buildPersistedContextUsage,
   buildAbortedResponseMetadata,
   computeSummaryUsedTokens,
@@ -2749,6 +2751,21 @@ describe('hasRecordedProviderUsage', () => {
   });
 });
 
+describe('getAgentPromptTokenEstimate', () => {
+  it.each<[number, number | undefined, number]>([
+    [2277630, 250000, 250000],
+    [133000, 250000, 133000],
+    [0, 250000, 0],
+    [40, undefined, 40],
+    [40, Infinity, 40],
+    [40, NaN, 40],
+    [40, 0, 40],
+    [40, -1, 40],
+  ])('bounds %s by a valid budget %s to %s', (promptTokens, maxContextTokens, expected) => {
+    expect(getAgentPromptTokenEstimate(promptTokens, maxContextTokens)).toBe(expected);
+  });
+});
+
 describe('recordFallbackTokenUsage', () => {
   const txMetadata = {
     user: 'user-1',
@@ -2759,6 +2776,41 @@ describe('recordFallbackTokenUsage', () => {
     transactions: { enabled: true },
   };
   const estimate = { promptTokens: 40, completionTokens: 7 };
+
+  it('does not estimate failed runs, including partial output and non-primary usage', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      {
+        ...estimate,
+        txMetadata,
+        collectedUsage: [{ input_tokens: 9, output_tokens: 3, usage_type: 'subagent' }],
+        contentParts: [{ type: ContentTypes.TEXT }, { type: ContentTypes.ERROR }],
+      },
+    );
+
+    expect(spendTokens).not.toHaveBeenCalled();
+  });
+
+  it('bounds a successful estimate without treating the budget as exact usage', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      {
+        ...estimate,
+        txMetadata,
+        maxContextTokens: 20,
+        contentParts: [{ type: ContentTypes.TEXT }],
+      },
+    );
+
+    expect(spendTokens).toHaveBeenCalledWith(
+      { ...txMetadata, context: 'message' },
+      { promptTokens: 20, completionTokens: 7 },
+    );
+  });
 
   it('records nothing once provider usage was recorded, even with no output', async () => {
     const spendTokens = jest.fn().mockResolvedValue(undefined);

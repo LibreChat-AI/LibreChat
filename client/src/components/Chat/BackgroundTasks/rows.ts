@@ -28,6 +28,10 @@ export type TaskRow = {
   stepId?: string;
   threadId?: string;
   eventOrigin?: boolean;
+  /** Who a subagent row runs as, for a surface that names and draws the agent. */
+  agentId?: string;
+  subagentType?: string;
+  subagentKind?: ParentSubagentSummary['subagentKind'];
   status: TaskRowStatus;
   startedAt?: number;
   settledAt?: number;
@@ -69,6 +73,9 @@ export function findToolCallArgs(
   const wanted = new Set(
     tasks.map((task) => toolCallKey(task.messageId, task.toolCallId, task.stepId)),
   );
+  /** A call can only answer a task that names its id. Every other call is passed over before
+   *  its keys are built: this pass runs on each update of a streaming thread. */
+  const wantedIds = new Set(tasks.map((task) => task.toolCallId));
   const ambiguous = new Set<string>();
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -77,7 +84,7 @@ export function findToolCallArgs(
       const call = part[ContentTypes.TOOL_CALL] as
         | { id?: string; stepId?: string; args?: ToolCallArgs }
         | undefined;
-      if (call?.id == null) continue;
+      if (call?.id == null || !wantedIds.has(call.id)) continue;
       const keys = new Set([
         toolCallKey(message.messageId, call.id, call.stepId),
         toolCallKey(message.messageId, call.id),
@@ -123,6 +130,30 @@ const toolRow = (
   };
 };
 
+/**
+ * When a child's task began and ended. Its summary's `createdAt` is the time of its newest
+ * record, which is its dispatch while it runs and its reply after, so the start of a finished
+ * task is known only from `startedAt`. Without one, a server that predates it or a dispatch
+ * record the index did not read, a finished task has no duration to show: taking `createdAt`
+ * for the start reads every finished task as having taken no time at all.
+ *
+ * The end is the thread's own timestamp, not the reply's. A child that pauses for an approval
+ * writes its reply at the pause and updates that record when it resumes and ends, so the reply
+ * can be much older than the end of the task.
+ */
+const subagentTimes = (
+  child: ParentSubagentSummary,
+  taskId: string | undefined,
+  running: boolean,
+): Pick<TaskRow, 'startedAt' | 'settledAt'> => {
+  const task = child.tasks.find((candidate) => candidate.taskId === taskId);
+  const started = time(task?.startedAt);
+  if (running) {
+    return { startedAt: started ?? time(task?.createdAt) };
+  }
+  return { startedAt: started, settledAt: time(child.updatedAt) };
+};
+
 const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>): TaskRow => {
   const status = subagentStatus(child.status);
   const running = status === 'running';
@@ -136,9 +167,11 @@ const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>
     toolCallId: child.parentToolCallId,
     threadId: child.threadId,
     eventOrigin: child.origin === 'event',
+    agentId: child.agentId,
+    subagentType: child.subagentType,
+    subagentKind: child.subagentKind,
     status: running && stopping.has(subagentTaskKey(child.threadId, taskId)) ? 'stopping' : status,
-    startedAt: time(child.tasks.find((task) => task.taskId === taskId)?.createdAt),
-    settledAt: running ? undefined : time(child.updatedAt),
+    ...subagentTimes(child, taskId, running),
     ...(running && taskId != null ? { subagent: { threadId: child.threadId, taskId } } : {}),
   };
 };
@@ -194,11 +227,23 @@ export function buildTaskRows({
     )
     .sort((left, right) => {
       const ranked = rank(right) - rank(left);
-      return ranked !== 0 ? ranked : (right.startedAt ?? 0) - (left.startedAt ?? 0);
+      return ranked !== 0
+        ? ranked
+        : (right.startedAt ?? right.settledAt ?? 0) - (left.startedAt ?? left.settledAt ?? 0);
     });
 }
 
 export const countActive = (rows: readonly TaskRow[]) => rows.filter(isActive).length;
+
+/** When the next settled row ages out of the list, or `Infinity` when none will. */
+export const nextTaskExpiry = (rows: readonly TaskRow[]): number =>
+  rows.reduce(
+    (next, row) =>
+      row.settledAt != null && row.delivery == null && !isActive(row)
+        ? Math.min(next, row.settledAt + RECENT_SUBAGENT_WINDOW_MS + 1)
+        : next,
+    Infinity,
+  );
 
 export const countAwaitingDelivery = (rows: readonly TaskRow[]) =>
   rows.filter(isAwaitingDelivery).length;

@@ -1,33 +1,23 @@
 import { memo, useMemo } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import supersub from 'remark-supersub';
 import { Link } from 'react-router-dom';
-import rehypeHighlight from 'rehype-highlight';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { AnchorHTMLAttributes } from 'react';
 import type { PluggableList } from 'unified';
 import type { Element } from 'hast';
+import {
+  DETECT_HIGHLIGHT,
+  toRehypePlugins,
+  useRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
-import { langSubset } from '~/utils';
 
 const REMARK_PLUGINS: PluggableList = [
   supersub,
   remarkGfm,
   [remarkMath, { singleDollarTextMath: false }],
-];
-
-const REHYPE_PLUGINS: PluggableList = [
-  [rehypeKatex],
-  [
-    rehypeHighlight,
-    {
-      detect: true,
-      ignoreMissing: true,
-      subset: langSubset,
-    },
-  ],
 ];
 
 const MARKDOWN_COMPONENTS = { code: codeNoExecution };
@@ -137,6 +127,7 @@ function SkillMarkdownRenderer({
   currentFilePath,
   className,
 }: SkillMarkdownRendererProps) {
+  const rehypePlugins = toRehypePlugins(useRehypeModules(content, true), DETECT_HIGHLIGHT);
   const components = useMemo(
     () => ({
       ...MARKDOWN_COMPONENTS,
@@ -152,7 +143,7 @@ function SkillMarkdownRenderer({
       /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
       remarkPlugins={REMARK_PLUGINS}
       /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
-      rehypePlugins={REHYPE_PLUGINS}
+      rehypePlugins={rehypePlugins}
       components={components as unknown as Record<string, React.ElementType>}
       urlTransform={skillUrlTransform}
       className={

@@ -210,6 +210,7 @@ export function buildSubmissionFromResumeState(
           text: userMessageData.text ?? '',
           isCreatedByUser: true,
           role: 'user',
+          ...(userMessageData.trigger != null && { trigger: userMessageData.trigger }),
         }) as TMessage)
       : (messages[messages.length - 2] ??
         ({

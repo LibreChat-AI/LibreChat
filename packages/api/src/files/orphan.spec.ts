@@ -4,15 +4,16 @@ import { tmpdir } from 'node:os';
 import { FileSources } from 'librechat-data-provider';
 import type { StoredUploadRef } from './orphan';
 import {
-  createOwnedBlobFileDeleter,
-  extractAzureBlobPath,
-  extractFirebaseBlobPath,
-} from '../storage/ownedBlobDelete';
-import {
+  recordAgentUpload,
   resolveStoredUploadTarget,
   withStoredUploadCleanup,
   createStoredUploadDelete,
 } from './orphan';
+import {
+  createOwnedBlobFileDeleter,
+  extractAzureBlobPath,
+  extractFirebaseBlobPath,
+} from '../storage/ownedBlobDelete';
 import { createLocalFileDeleter } from '../storage/local';
 import { createVectorFileDeleter } from './rag';
 
@@ -189,6 +190,108 @@ describe('withStoredUploadCleanup', () => {
       ),
     ).rejects.toBe(failure);
     expect(logger.error).not.toHaveBeenCalled();
+  });
+});
+
+describe('recordAgentUpload', () => {
+  const logger = { error: jest.fn() };
+  const recordExists = jest.fn();
+  const req = { user: { id: 'u1', tenantId: 't1' } };
+  const link = { agent_id: 'agent-1', tool_resource: 'file_search', file_id: 'file-1' };
+  const unlinked = {
+    agent_id: 'agent-1',
+    files: [{ tool_resource: 'file_search', file_id: 'file-1' }],
+  };
+  let deleteFile: jest.Mock;
+  let addLink: jest.Mock;
+  let removeLinks: jest.Mock;
+  const run = (createRecord: () => Promise<unknown>, withLink = true) =>
+    recordAgentUpload({
+      cleanup: { stored, resolveDeleteFile: () => deleteFile, recordExists, req, logger },
+      link: withLink ? link : undefined,
+      addLink,
+      removeLinks,
+      createRecord,
+    });
+
+  beforeEach(() => {
+    logger.error.mockClear();
+    recordExists.mockReset().mockResolvedValue(false);
+    deleteFile = jest.fn().mockResolvedValue(undefined);
+    addLink = jest.fn().mockResolvedValue({});
+    removeLinks = jest.fn().mockResolvedValue({});
+  });
+
+  // @scenario:unlink-on-record-failure
+  it('removes the link and the object when the record write fails and no record exists', async () => {
+    const failure = new Error('createFile failed');
+    await expect(run(() => Promise.reject(failure))).rejects.toBe(failure);
+    expect(addLink).toHaveBeenCalledWith(link);
+    expect(removeLinks).toHaveBeenCalledWith(unlinked);
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  // @scenario:keep-link-when-record-committed
+  it('keeps the link and the object when the rejected record write committed', async () => {
+    recordExists.mockResolvedValue(true);
+    await expect(run(() => Promise.reject(new Error('lost acknowledgement')))).rejects.toThrow(
+      'lost acknowledgement',
+    );
+    expect(removeLinks).not.toHaveBeenCalled();
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
+  // @scenario:keep-link-when-lookup-fails
+  it('removes nothing when the record lookup fails', async () => {
+    recordExists.mockRejectedValue(new Error('database unavailable'));
+    await expect(run(() => Promise.reject(new Error('createFile failed')))).rejects.toThrow(
+      'createFile failed',
+    );
+    expect(removeLinks).not.toHaveBeenCalled();
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
+  // @scenario:revert-rejected-link
+  it('reverts a rejected link write without a record lookup or a record write', async () => {
+    const createRecord = jest.fn();
+    addLink.mockRejectedValue(new Error('Agent not found for adding resource file'));
+    await expect(run(createRecord)).rejects.toThrow('Agent not found for adding resource file');
+    expect(createRecord).not.toHaveBeenCalled();
+    expect(recordExists).not.toHaveBeenCalled();
+    expect(removeLinks).toHaveBeenCalledWith(unlinked);
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  // @scenario:unlink-failure-still-deletes
+  it('still deletes the object and keeps the original error when the unlink fails', async () => {
+    const failure = new Error('createFile failed');
+    removeLinks.mockRejectedValue(new Error('unlink failed: secret-token'));
+    await expect(run(() => Promise.reject(failure))).rejects.toBe(failure);
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      '[withStoredUploadCleanup] Failed to revert upload writes',
+      { type: 'Error' },
+    );
+  });
+
+  // @scenario:no-link-message-attachment
+  it('neither links nor unlinks an upload without a link', async () => {
+    await expect(run(() => Promise.reject(new Error('createFile failed')), false)).rejects.toThrow(
+      'createFile failed',
+    );
+    expect(addLink).not.toHaveBeenCalled();
+    expect(removeLinks).not.toHaveBeenCalled();
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('links before the record write and returns the record', async () => {
+    const createRecord = jest.fn(async () => {
+      expect(addLink).toHaveBeenCalledTimes(1);
+      return { file_id: 'file-1' };
+    });
+    await expect(run(createRecord)).resolves.toEqual({ file_id: 'file-1' });
+    expect(removeLinks).not.toHaveBeenCalled();
+    expect(deleteFile).not.toHaveBeenCalled();
   });
 });
 

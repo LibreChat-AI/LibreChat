@@ -46,6 +46,13 @@ export const SystemCapabilities = {
    * would defeat the forensic guarantee.
    */
   READ_AUDIT_LOG: 'read:audit_log',
+  /**
+   * Dead letters of the agent trigger queue. A delivery carries its owner's identity,
+   * so requeueing one runs an agent as that user: reading the queue and acting on it
+   * are granted separately.
+   */
+  READ_EVENTS: 'read:events',
+  MANAGE_EVENTS: 'manage:events',
 } as const;
 
 /** Base capabilities derived from the SystemCapabilities constant. */
@@ -96,6 +103,7 @@ export const CapabilityImplications: Partial<Record<BaseSystemCapability, BaseSy
     [SystemCapabilities.MANAGE_SKILLS]: [SystemCapabilities.READ_SKILLS],
     [SystemCapabilities.MANAGE_SHARED_LINKS]: [SystemCapabilities.READ_SHARED_LINKS],
     [SystemCapabilities.MANAGE_ASSISTANTS]: [SystemCapabilities.READ_ASSISTANTS],
+    [SystemCapabilities.MANAGE_EVENTS]: [SystemCapabilities.READ_EVENTS],
   };
 
 // ---------------------------------------------------------------------------
@@ -269,6 +277,8 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
       SystemCapabilities.READ_USAGE,
       SystemCapabilities.READ_INSIGHTS,
       SystemCapabilities.READ_AUDIT_LOG,
+      SystemCapabilities.MANAGE_EVENTS,
+      SystemCapabilities.READ_EVENTS,
     ],
   },
 ];

@@ -25,6 +25,7 @@ export * from './Endpoint';
 
 export type { TranslationKeys } from './useLocalize';
 
+export { default as useOnline } from './useOnline';
 export { default as useTimeout } from './useTimeout';
 export { default as useNewConvo } from './useNewConvo';
 export { default as useLocalize } from './useLocalize';
@@ -32,7 +33,6 @@ export { default as useGreeting } from './useGreeting';
 export { useFocusTrap } from '@librechat/client';
 export { default as useFavorites } from './useFavorites';
 export { default as useToolFavorites } from './useToolFavorites';
-export { default as useAdaptiveIcon } from './useAdaptiveIcon';
 export { default as useIsActiveItem } from './useIsActiveItem';
 export { default as useLocalStorage } from './useLocalStorage';
 export { default as useDocumentTitle } from './useDocumentTitle';

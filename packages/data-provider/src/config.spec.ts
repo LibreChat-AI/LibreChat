@@ -20,6 +20,7 @@ import {
   supportsConversationTitleOwnership,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
+  MAX_IDLE_POLLING_INTERVAL_MS,
   DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
   DEFAULT_MCP_APP_PERSISTED_BYTES,
   DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
@@ -36,6 +37,38 @@ import {
   webSearchSchema,
   isSafeLinkUrl,
 } from './config';
+
+describe('local configuration cache limits', () => {
+  it('defaults an explicit block and keeps the policy deployment-only', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).configCache).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.18', configCache: {} }).configCache).toEqual({
+      maxBytes: 16 * 1024 * 1024,
+      maxEntries: 1000,
+    });
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS.configCache).toBe('operator');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, '100'])(
+    'rejects invalid bounds %p',
+    (value) => {
+      for (const field of ['maxBytes', 'maxEntries']) {
+        expect(
+          configSchema.safeParse({ version: '1.3.18', configCache: { [field]: value } }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('accepts explicit positive bounds and rejects unknown settings', () => {
+    expect(
+      configSchema.parse({ version: '1.3.18', configCache: { maxBytes: 4096, maxEntries: 2 } })
+        .configCache,
+    ).toEqual({ maxBytes: 4096, maxEntries: 2 });
+    expect(configSchema.safeParse({ version: '1.3.18', configCache: { maxSize: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
 
 describe('independent browser replay opt-in', () => {
   it('preserves absent configuration for existing environment-based RUM deployments', () => {
@@ -154,6 +187,29 @@ describe('stream keepalive interval', () => {
 
   it.each([1, 999])('rejects a sub-second interval of %p ms', (streamKeepaliveIntervalMs) => {
     expect(agentsEndpointSchema.safeParse({ streamKeepaliveIntervalMs }).success).toBe(false);
+  });
+});
+
+describe('Redis finalization recovery', () => {
+  it.each([
+    [undefined, 30_000],
+    [1200, 1200],
+    [0, 0],
+  ])('parses %s with a %s ms budget', (timeout, expected) => {
+    const config = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+    });
+    expect(config.endpoints?.agents?.redisFinalizationRecoveryTimeoutMs).toBe(expected);
+  });
+
+  it.each([-1, 1.5, 300_001])('rejects a retry budget of %p', (timeout) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -1176,7 +1232,10 @@ describe('attached code environment user config schema', () => {
     [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
-  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    [{ detachedCommands: true }, true],
+    [{ detachedCommands: false }, true],
+    [{ detachedCommands: 'yes' }, false],
+  ])('validates the workspace toggles %p', (workspaces, valid) => {
     const result = configSchema.safeParse({
       version: '1.0',
       endpoints: {
@@ -1444,6 +1503,78 @@ describe('agent pull request config', () => {
 
   it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {
     expect(parse({ cacheTtlSeconds }).success).toBe(false);
+  });
+});
+
+describe('agent events config', () => {
+  const github = {
+    appId: '${GITHUB_APP_ID}',
+    privateKey: '${GITHUB_APP_PRIVATE_KEY}',
+    webhookSecret: '${GITHUB_APP_WEBHOOK_SECRET}',
+  };
+  const parse = (events?: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { agents: { events } } });
+
+  it('is absent unless configured and off unless enabled', () => {
+    const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
+    expect(absent.endpoints?.agents?.events).toBeUndefined();
+    const empty = configSchema.parse({ version: '1.0', endpoints: { agents: { events: {} } } });
+    expect(empty.endpoints?.agents?.events).toEqual({ enabled: false });
+  });
+
+  it('keeps what an operator sets and leaves unset bounds to the reader', () => {
+    const parsed = parse({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+    expect(parsed.success && parsed.data.endpoints?.agents?.events).toEqual({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+  });
+
+  it.each(['appId', 'privateKey', 'webhookSecret'] as const)(
+    'takes %s as an environment variable reference, never a value',
+    (field) => {
+      expect(parse({ github: { ...github, [field]: 'a-literal-value' } }).success).toBe(false);
+      expect(parse({ github: { ...github, [field]: '${lower_Case_1}' } }).success).toBe(true);
+      const { [field]: _omitted, ...rest } = github;
+      expect(parse({ github: rest }).success).toBe(false);
+    },
+  );
+
+  it.each([
+    ['a URL as the host', { github: { ...github, host: 'https://github.example.com' } }],
+    ['a host with a path', { github: { ...github, host: 'github.example.com/api' } }],
+    ['a request timeout of zero', { github: { ...github, requestTimeoutSeconds: 0 } }],
+    ['a request timeout over a minute', { github: { ...github, requestTimeoutSeconds: 61 } }],
+    ['a negative access lifetime', { github: { ...github, accessTtlSeconds: -1 } }],
+    ['an access lifetime over an hour', { github: { ...github, accessTtlSeconds: 3601 } }],
+    ['a fractional access lifetime', { github: { ...github, accessTtlSeconds: 1.5 } }],
+    ['an excerpt under 16 characters', { limits: { excerpt: 15 } }],
+    ['an excerpt over 65,536 characters', { limits: { excerpt: 65_537 } }],
+    ['a fractional excerpt', { limits: { excerpt: 100.5 } }],
+    ['a fan-out of zero', { limits: { fanout: 0 } }],
+    ['a fan-out over 100', { limits: { fanout: 101 } }],
+    ['a switch that is not a boolean', { enabled: 'yes' }],
+  ])('rejects %s', (_name, events) => {
+    expect(parse(events).success).toBe(false);
+  });
+
+  it.each([
+    ['the smallest bounds', { limits: { excerpt: 16, fanout: 1 } }],
+    ['the largest bounds', { limits: { excerpt: 65_536, fanout: 100 } }],
+    ['the longest request timeout', { github: { ...github, requestTimeoutSeconds: 60 } }],
+    ['no reuse of access answers', { github: { ...github, accessTtlSeconds: 0 } }],
+    ['the longest access lifetime', { github: { ...github, accessTtlSeconds: 3600 } }],
+  ])('accepts %s', (_name, events) => {
+    expect(parse(events).success).toBe(true);
+  });
+
+  it('is set in librechat.yaml only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['endpoints.agents.events']).toBe('operator');
   });
 });
 
@@ -3085,6 +3216,8 @@ describe('subagent activity policy', () => {
       endpoints: { agents: { subagentActivity: {} } },
     });
     expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      generationJobs: true,
+      generationContentBytes: 4_194_304,
       contentRecoveryEnabled: false,
       contentPageBytes: 262_144,
       contentFlushMs: 250,
@@ -3214,9 +3347,18 @@ describe('workspace admission configuration', () => {
     { jitterRatio: 1.1 },
     { maxDelayMs: Infinity },
     { queueWaitMs: 1.5 },
+    { resubmissionWindowMs: -1 },
+    { resubmissionWindowMs: 60_001 },
+    { resubmissionWindowMs: 1.5 },
     { unexpected: true },
   ])('rejects an invalid policy %j', (admission) => {
     expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 20_500, 60_000])('accepts a resubmission window of %i ms', (resubmissionWindowMs) => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ admission: { resubmissionWindowMs } }).admission,
+    ).toMatchObject({ resubmissionWindowMs });
   });
 
   it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
@@ -3325,6 +3467,7 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
       clientLimits: 'operator',
       conversationList: 'operator',
       passwordHashing: 'startup',
+      'endpoints.agents.eventDriven': 'startup',
       'interface.colorModeFromUrl': 'startup',
       'fileConfig.skills.deletionCleanupConcurrency': 'operator',
       'endpoints.agents.managementApi': 'operator',
@@ -3338,6 +3481,50 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
       const prefixes = segments.map((_, index) => segments.slice(0, index + 1).join('.'));
       expect(prefixes.filter((prefix) => baseOnly.has(prefix))).toEqual([]);
     }
+  });
+});
+
+describe('idle polling configuration', () => {
+  const parse = (idlePolling: unknown) =>
+    configSchema.safeParse({
+      version: '1.3.19',
+      endpoints: { agents: { eventDriven: { idlePolling } } },
+    });
+
+  it('leaves the deployment-wide ceiling unset, and every loop on its own default, when absent', () => {
+    expect(
+      parse({}).data?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs,
+    ).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.19' }).endpoints?.agents).toBeUndefined();
+  });
+
+  it.each([1_000, 900_000, MAX_IDLE_POLLING_INTERVAL_MS])(
+    'accepts a deployment-wide ceiling of %s ms',
+    (maxIntervalMs) => {
+      expect(
+        parse({ maxIntervalMs }).data?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs,
+      ).toBe(maxIntervalMs);
+    },
+  );
+
+  it.each([
+    ['below one second', { maxIntervalMs: 999 }],
+    ['above one hour', { maxIntervalMs: MAX_IDLE_POLLING_INTERVAL_MS + 1 }],
+    ['fractional', { maxIntervalMs: 1500.5 }],
+    ['not a number', { maxIntervalMs: '15m' }],
+  ])('rejects a ceiling that is %s', (_name, idlePolling) => {
+    expect(parse(idlePolling).success).toBe(false);
+  });
+
+  it('allows up to about one hour, and keeps the per-feature caps on their own defaults', () => {
+    expect(MAX_IDLE_POLLING_INTERVAL_MS).toBe(3_600_000);
+    expect(
+      parse({ maxIntervalMs: 900_000 }).data?.endpoints?.agents?.eventDriven?.idlePolling,
+    ).toMatchObject({
+      maxIntervalMs: 900_000,
+      queuedTurnMaxIntervalMs: 120_000,
+      maintenanceMaxIntervalMs: 120_000,
+    });
   });
 });
 
@@ -3482,4 +3669,117 @@ describe('complete channel operator configuration', () => {
       ).toBe(false);
     },
   );
+});
+
+describe('remote SDK runtime configuration', () => {
+  it('keeps native file reads opt-in and bounds process budgets', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostFiles).toBeUndefined();
+    const parsed = agentsEndpointSchema.parse({
+      sdkHostFiles: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostFiles: true },
+        },
+      },
+    });
+    expect(parsed.sdkHostFiles?.maxChunkBytes).toBe(262144);
+    expect(parsed.sdkRuntimes?.runtime).toMatchObject({ remote: { hostFiles: true } });
+    for (const field of Object.keys(parsed.sdkHostFiles!)) {
+      for (const value of [0, -1, Number.MAX_SAFE_INTEGER])
+        expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { [field]: value } }).success).toBe(
+          false,
+        );
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { unknown: true } }).success).toBe(false);
+  });
+  it('opts into builder models with bounded process-wide admission', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
+    const result = agentsEndpointSchema.parse({
+      sdkHostModels: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostModel: true },
+        },
+      },
+    });
+    expect(result.sdkHostModels).toEqual({
+      maxConcurrentCalls: 32,
+      maxAdmissionEntries: 4096,
+      maxBufferedRequestBytes: 67108864,
+      timeoutMs: 60000,
+      maxRequestBytes: 4194304,
+      maxResponseBytes: 4194304,
+    });
+    expect(result.sdkRuntimes?.runtime).toMatchObject({ remote: { hostModel: true } });
+    for (const field of Object.keys(result.sdkHostModels!)) {
+      expect(agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: 0 } }).success).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: Number.MAX_SAFE_INTEGER } })
+          .success,
+      ).toBe(false);
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostModels: { unknown: true } }).success).toBe(
+      false,
+    );
+  });
+  it('keeps module registrations and supplies remote transport defaults', () => {
+    const result = agentsEndpointSchema.parse({
+      sdkRuntimes: {
+        local: { module: './local.cjs' },
+        remote: { remote: { url: 'wss://runtime.example/sdk', secret: '${SDK_RUNTIME_SECRET}' } },
+      },
+    });
+    expect(result?.sdkRuntimes?.local).toEqual({ module: './local.cjs', roles: ['ADMIN'] });
+    expect(result?.sdkRuntimes?.remote).toEqual({
+      roles: ['ADMIN'],
+      remote: {
+        url: 'wss://runtime.example/sdk',
+        secret: '${SDK_RUNTIME_SECRET}',
+        connectTimeoutMs: 10000,
+        rpcTimeoutMs: 60000,
+        maxFrameBytes: 1048576,
+        maxBufferedBytes: 4194304,
+        maxRunMs: 600000,
+      },
+    });
+  });
+  it('enables recovery explicitly with bounded defaults', () => {
+    const remote = (recovery: unknown) => ({
+      sdkRuntimes: {
+        test: { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', recovery } },
+      },
+    });
+    const registration = agentsEndpointSchema.parse(remote({}))?.sdkRuntimes?.test;
+    expect(
+      registration && 'remote' in registration ? registration.remote.recovery : undefined,
+    ).toEqual({
+      maxDisconnectMs: 15000,
+      retryDelayMs: 250,
+      maxJournalBytes: 67108864,
+    });
+    const routed = agentsEndpointSchema.parse(
+      remote({ routes: { 'worker-a': 'wss://worker-a.internal/sdk' } }),
+    )?.sdkRuntimes?.test;
+    expect(routed && 'remote' in routed ? routed.remote.recovery?.routes : undefined).toEqual({
+      'worker-a': 'wss://worker-a.internal/sdk',
+    });
+    for (const recovery of [
+      { routes: { 'worker-a': 'https://worker-a.internal/sdk' } },
+      { maxDisconnectMs: 0 },
+      { maxDisconnectMs: 60000 },
+      { retryDelayMs: -1 },
+      { maxJournalBytes: 0 },
+      { unknown: true },
+    ])
+      expect(agentsEndpointSchema.safeParse(remote(recovery)).success).toBe(false);
+  });
+  it.each([
+    { module: './local.cjs', remote: { url: 'wss://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'https://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', maxFrameBytes: 0 } },
+  ])('rejects ambiguous or invalid transport registrations', (registration) => {
+    expect(agentsEndpointSchema.safeParse({ sdkRuntimes: { invalid: registration } }).success).toBe(
+      false,
+    );
+  });
 });

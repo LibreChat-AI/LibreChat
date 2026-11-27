@@ -5,7 +5,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
 import { MessageContext, ArtifactProvider, CodeBlockProvider } from '~/Providers';
+import { getLoadedRehypeModules, loadRehypeModules } from '../rehype';
 import Markdown from '../Markdown';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 /**
  * End-to-end artifact-index regression tests. The real `Artifact` component
@@ -52,7 +56,7 @@ const OldMarkdown = ({ content }: { content: string }) => (
         /** @ts-ignore */
         remarkPlugins={getRemarkPlugins()}
         /** @ts-ignore */
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
         components={getMarkdownComponents()}
       >
         {content}

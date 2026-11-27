@@ -1,6 +1,7 @@
 import { isForcedTemporaryRetention } from 'librechat-data-provider';
 import type { TStartupConfig, TLangfuseUnavailableReason } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import { requiresAssistantProtection } from '~/protection/assistant';
 import { isFalseEnv, isTrueEnv } from './utils';
 import { normalizeString } from '~/utils/text';
 
@@ -71,6 +72,9 @@ export function isLangfuseTraceAllowed(
   appConfig: AppConfig | undefined,
   isTemporary?: boolean | null,
 ): boolean {
+  if (requiresAssistantProtection(appConfig)) {
+    return false;
+  }
   if (appConfig?.langfuse?.trace?.temporaryChats === true) {
     return true;
   }

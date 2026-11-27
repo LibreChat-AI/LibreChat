@@ -236,7 +236,8 @@ export function updateContent(
 /**
  * Writes one incoming part into `message.content[index]` and returns the next message. Text and
  * reasoning append, tool calls merge (args concatenate until they arrive as an object), summaries
- * concatenate their content, and a part of a different type never overwrites an occupied slot.
+ * concatenate their content (or replace it on a final update), and a part of a different type
+ * never overwrites an occupied slot.
  * Returns the input message unchanged when the part is rejected.
  */
 function writeContent(
@@ -354,9 +355,11 @@ function writeContent(
   } else if (contentType === ContentTypes.SUMMARY) {
     const currentSummary = updatedContent[index] as SummaryContentPart | undefined;
     const incoming = contentPart as SummaryContentPart;
+    /** A final update carries the whole content: the summary so far is replaced, not extended. */
+    const streamed = finalUpdate ? [] : (currentSummary?.content ?? []);
     updatedContent[index] = {
       ...incoming,
-      content: [...(currentSummary?.content ?? []), ...(incoming.content ?? [])],
+      content: [...streamed, ...(incoming.content ?? [])],
     };
   } else if (contentType === ContentTypes.TOOL_CALL && 'tool_call' in contentPart) {
     const existingContent = updatedContent[index] as Agents.ToolCallContent | undefined;

@@ -3,8 +3,8 @@ import debounce from 'lodash/debounce';
 import { Tools } from 'librechat-data-provider';
 import { SquareTerminal, Check, X } from 'lucide';
 import { MorphIcon, Spinner, TooltipAnchor, useToastContext } from '@librechat/client';
+import type { RunCodeProps } from '@librechat/chat/components';
 import type { IconNode } from '@librechat/client';
-import type { CodeBarProps } from '~/common';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useToolCallMutation } from '~/data-provider';
 import { cn, normalizeLanguage } from '~/utils';
@@ -20,7 +20,7 @@ const stateIcons: Record<RunState, IconNode> = {
   error: X,
 };
 
-const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
+const RunCode: React.FC<RunCodeProps> = React.memo(
   ({ lang, codeRef, blockIndex, iconOnly = false }) => {
     const localize = useLocalize();
     const { showToast } = useToastContext();

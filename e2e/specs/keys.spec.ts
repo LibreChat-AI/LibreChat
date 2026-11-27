@@ -13,7 +13,7 @@ const enterTestKey = async (page: Page, endpoint: string) => {
 test.describe('Key suite', () => {
   // npx playwright test --config=e2e/playwright.config.local.ts --headed e2e/specs/keys.spec.ts
   test('Test Setting and Revoking Keys', async ({ page }) => {
-    await page.goto('http://localhost:3080/', { timeout: 5000 });
+    await page.goto('/', { timeout: 5000 });
     const endpoint = 'openAI';
 
     const newTopicButton = page.getByTestId('new-conversation-menu');
@@ -50,7 +50,7 @@ test.describe('Key suite', () => {
   });
 
   test('Test Setting and Revoking Keys from Settings', async ({ page }) => {
-    await page.goto('http://localhost:3080/', { timeout: 5000 });
+    await page.goto('/', { timeout: 5000 });
     const endpoint = 'openAI';
 
     const newTopicButton = page.getByTestId('new-conversation-menu');

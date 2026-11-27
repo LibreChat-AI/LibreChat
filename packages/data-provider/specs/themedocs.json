@@ -109,5 +109,6 @@
   "tooltipPaddingY",
   "tooltipRadius",
   "tooltipShadow",
-  "tooltipTextSize"
+  "tooltipTextSize",
+  "welcomeBackdrop"
 ]

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { lazy, useMemo } from 'react';
 import { useLocalize } from '@librechat/client';
 import { buildTree } from 'librechat-data-provider';
 import type { TChatProject, TFile, TMessage } from 'librechat-data-provider';
@@ -8,8 +8,8 @@ import type { ChatPaneProps } from './ChatPane';
 import type { ChatPaneChrome } from './chrome';
 import { useChatContext } from '../../react/chat/context';
 import { getChatPaneChrome } from './chrome';
+import { loadScreenMessages } from './load';
 import { getChatPaneView } from './view';
-import ScreenMessages from './messages';
 import ChatPane from './ChatPane';
 
 /** What the composer slot needs from the pane's decisions. */
@@ -24,6 +24,9 @@ export type ChatScreenComposerProps = {
 };
 
 export type { ChatScreenMessagesProps, ChatScreenMessagesSlots };
+
+/** The package list, loaded when a conversation first shows; `ChatPane` suspends the column. */
+const ScreenMessages = lazy(loadScreenMessages);
 
 export type ChatScreenProps = Pick<
   ChatPaneProps,

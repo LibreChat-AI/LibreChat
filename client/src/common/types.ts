@@ -1,4 +1,3 @@
-import { RefObject } from 'react';
 import { isEphemeralAgentId } from 'librechat-data-provider';
 import type {
   TOptions,
@@ -7,6 +6,7 @@ import type {
   PaneOptionSettings,
   MessageAudioProps,
   NewConversationParams,
+  NewConversationOptions,
 } from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type { MessageIconData } from '@librechat/chat/react';
@@ -27,15 +27,6 @@ export interface ConfigFieldDetail {
   /** Whether the field holds a secret and should be masked (defaults to masked when omitted). */
   sensitive?: boolean;
 }
-
-export type CodeBarProps = {
-  lang: string;
-  error?: boolean;
-  plugin?: boolean;
-  blockIndex?: number;
-  allowExecution?: boolean;
-  codeRef: RefObject<HTMLElement>;
-};
 
 export enum PromptsEditorMode {
   SIMPLE = 'simple',
@@ -70,7 +61,7 @@ export type LocalizeFunction = (
 
 export type ChatFormValues = { text: string };
 
-export { mainTextareaId } from '@librechat/chat';
+export { mainTextareaId, composerTextareaId } from '@librechat/chat';
 export const globalAudioId = 'global-audio';
 
 export type NavLink = {
@@ -408,7 +399,7 @@ export type TLoginLayoutContext = {
   setHeaderText: React.Dispatch<React.SetStateAction<string>>;
 };
 
-export type ConvoGenerator = (params: NewConversationParams) => void | t.TConversation;
+export type ConvoGenerator = (params: NewConversationOptions) => void | t.TConversation;
 
 export type { TResData, TBaseResData, TFinalResData } from '@librechat/chat';
 

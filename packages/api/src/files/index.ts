@@ -26,6 +26,8 @@ export * from './upload/fallback';
 export * from './rag';
 export * from './rag/context';
 export * from './rag/search';
+export * from './rag/errors';
+export * from './rag/upload';
 export * from './regexEngine';
 export * from './resize';
 export * from './retention';

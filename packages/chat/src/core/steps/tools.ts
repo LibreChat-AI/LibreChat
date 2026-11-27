@@ -6,6 +6,7 @@ import {
 } from 'librechat-data-provider';
 import type { Agents, TMessage, PartMetadata } from 'librechat-data-provider';
 import { getStepMetadata, updateContent, isOAuthToolCallName } from './content';
+import { parseJsonField } from '../parts/parseJsonField';
 
 type ToolTimingLookup = (
   callId: string,
@@ -20,24 +21,16 @@ const FILE_AUTHORING_TOOLS = new Set(['create_file', 'edit_file']);
  * True when a completed tool call authored a skill file (`create_file` /
  * `edit_file` targeting a `skills/...` path). Skills created or edited
  * mid-chat must invalidate the cached skill queries, or the Skills panel
- * and builder keep showing the pre-authoring catalog.
+ * and builder keep showing the pre-authoring catalog. The tools name the
+ * file `path`; `file_path` is read too, as `FileAuthoringCall` does.
  */
 export function isSkillAuthoringToolCall(toolCall?: Agents.ToolCall): boolean {
   if (!toolCall?.name || !FILE_AUTHORING_TOOLS.has(toolCall.name)) {
     return false;
   }
-  const { args } = toolCall;
-  let filePath: unknown;
-  if (typeof args === 'object' && args !== null) {
-    filePath = (args as { file_path?: unknown }).file_path;
-  } else if (typeof args === 'string') {
-    try {
-      filePath = (JSON.parse(args) as { file_path?: unknown }).file_path;
-    } catch {
-      return false;
-    }
-  }
-  return typeof filePath === 'string' && filePath.startsWith(SKILL_FILE_PREFIX);
+  const filePath =
+    parseJsonField(toolCall.args, 'path') || parseJsonField(toolCall.args, 'file_path');
+  return filePath.startsWith(SKILL_FILE_PREFIX);
 }
 
 /** True when the slot already holds this call settled: an output or full progress. */

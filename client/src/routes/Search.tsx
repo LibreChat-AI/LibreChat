@@ -16,6 +16,7 @@ import { useFileMapContext } from '~/Providers';
 import { fontSizeAtom } from '~/store/fontSize';
 import { cn } from '~/utils';
 import store from '~/store';
+import '~/components/Chat/Messages/hosts';
 
 type MeasuredCellParent = {
   invalidateCellSizeAfterRender?: (cell: { columnIndex: number; rowIndex: number }) => void;

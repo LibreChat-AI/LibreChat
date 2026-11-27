@@ -47,6 +47,8 @@ jest.mock('@librechat/api', () => ({
   buildAbortedResponseMetadata: jest.fn().mockReturnValue(null),
   /** The Assistants stop request is enrolled in the account barrier; its own tests cover that. */
   withAssistantRun: jest.fn((controller) => controller),
+  /** The app's error handler, which answers a stop that failed. */
+  ErrorController: jest.requireActual('@librechat/api').ErrorController,
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -86,9 +88,14 @@ jest.mock('./abortRun', () => ({
   abortRun: jest.fn(),
 }));
 
+const express = require('express');
+const request = require('supertest');
 const { logger } = require('@librechat/data-schemas');
+const { isAssistantsEndpoint } = require('librechat-data-provider');
 const { sendError } = require('~/server/middleware/error');
-const { GenerationJobManager } = require('@librechat/api');
+const { GenerationJobManager, ErrorController, isEnabled } = require('@librechat/api');
+const clearPendingReq = require('~/cache/clearPendingReq');
+const { abortRun } = require('./abortRun');
 const db = require('~/models');
 const { handleAbort, handleAbortError } = require('./abortMiddleware');
 
@@ -381,5 +388,67 @@ describe('abortMiddleware - handleAbort billing', () => {
     expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
     expect(mockSpendTokens).not.toHaveBeenCalled();
     expect(db.saveMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('abortMiddleware - handleAbort failures', () => {
+  /** The stop route as the Assistants chat routers mount it, ahead of the app's error handler. */
+  const buildApp = () => {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.user = { id: 'user-123' };
+      next();
+    });
+    app.post('/abort', handleAbort());
+    app.use(ErrorController);
+    return app;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([
+    [
+      'the Assistants run cannot be read back',
+      () => {
+        isAssistantsEndpoint.mockReturnValueOnce(true);
+        abortRun.mockRejectedValueOnce(new Error('400 E2E run steps unavailable'));
+      },
+    ],
+    [
+      'the stopped reply cannot be saved',
+      () => {
+        GenerationJobManager.getJob.mockResolvedValueOnce({
+          createdAt: 1,
+          metadata: { userId: 'user-123' },
+        });
+        GenerationJobManager.abortJob.mockResolvedValueOnce({
+          success: true,
+          jobData: { conversationId: 'convo-123', responseMessageId: 'msg-123' },
+          content: [],
+          text: 'partial',
+          collectedUsage: [],
+        });
+        db.saveMessage.mockRejectedValueOnce(new Error('write conflict on convo-123'));
+      },
+    ],
+    [
+      'the pending request cannot be cleared',
+      () => {
+        isEnabled.mockReturnValueOnce(true);
+        clearPendingReq.mockRejectedValueOnce(new Error('cache unavailable'));
+      },
+    ],
+  ])('answers a stop that fails because %s, without the error text', async (_case, fail) => {
+    fail();
+
+    const response = await request(buildApp())
+      .post('/abort')
+      .send({ abortKey: 'convo-123:msg-123', endpoint: 'assistants' });
+
+    expect(response.status).toBe(500);
+    expect(response.text).toBe('An unknown error occurred.');
   });
 });

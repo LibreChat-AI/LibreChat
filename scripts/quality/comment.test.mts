@@ -1,9 +1,15 @@
 import { test } from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
+import type { Finding, QualityFindings } from './findings.mts';
 import type { API, Comment, Context, Request } from './comment.mts';
 
 import {
+  GATE_FOOTER,
   acceptRequest,
   gateDecision,
   parseCommand,
@@ -13,6 +19,8 @@ import {
   renderRequest,
 } from './comment.mts';
 import { reportJobs, reportSelection } from './changes.mts';
+import { COMMENT_LIMIT } from './render.mts';
+import { SCHEMA, unavailableMutation, unavailableRisk } from './findings.mts';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -28,6 +36,11 @@ const command = (id = 10, body = '/quality both scopes=all static=off'): Comment
   body,
   user: { login: 'maintainer', type: 'User' },
 });
+const lia = {
+  login: 'lia-by-librechat[bot]',
+  type: 'Bot',
+  id: 328778573,
+} satisfies Comment['user'];
 const record: Request = {
   request: 10,
   pr: 1,
@@ -52,6 +65,23 @@ const prerequisiteJobs = [
   { name: 'Select changed source', conclusion: 'success', status: 'completed', id: 71 },
   { name: 'Verify quality tooling', conclusion: 'success', status: 'completed', id: 72 },
 ];
+interface Job {
+  name: string;
+  conclusion: string | null;
+  status: string;
+  id: number;
+  steps?: { name: string; conclusion: string | null }[];
+}
+const reportJob: Job = {
+  name: 'Quality report',
+  conclusion: 'success',
+  status: 'completed',
+  id: 95,
+  steps: [
+    { name: 'Upload quality report', conclusion: 'success' },
+    { name: 'Upload report findings', conclusion: 'success' },
+  ],
+};
 const run = (status = 'completed', conclusion: string | null = 'success') => ({
   id: 55,
   repository: { full_name: context.repository },
@@ -72,11 +102,12 @@ class GitHub implements API {
   comments: Comment[] = [];
   statuses: { sha: string; state: string; description: string }[] = [];
   calls: { method: string; path: string; body?: object }[] = [];
-  jobs = [
+  jobs: Job[] = [
     ...structuredClone(prerequisiteJobs),
     { name: 'Mutation report (data-schemas)', conclusion: 'success', status: 'completed', id: 90 },
+    structuredClone(reportJob),
   ];
-  artifacts = [{ id: 91, name: `change-mutation-data-schemas-${head}`, expired: false }];
+  artifacts = [{ id: 91, name: 'quality-report', expired: false }];
   async request<T>(method: string, path: string, body?: object): Promise<T> {
     this.calls.push({ method, path, body });
     let result: object;
@@ -190,7 +221,7 @@ test('commands validate choices and lists as data, with all scopes and static of
   }
 });
 
-test('read access, triage, bots and closed PRs cannot start work or clear the gate', async () => {
+test('read access, triage, untrusted bots and closed PRs cannot start work or clear the gate', async () => {
   for (const permission of ['read', 'triage', 'none']) {
     const api = new GitHub();
     api.permission = permission;
@@ -213,6 +244,103 @@ async function accept(api: GitHub, ctx: Context, pr: number, comment: Comment) {
   return result;
 }
 
+test('trusted bots start exact-head requests without collaborator permissions and publish completion', async () => {
+  const api = new GitHub();
+  api.permission = 'none';
+  const accepted = await accept(api, context, 1, { ...command(), user: lia });
+  assert.equal(accepted?.request.actor, lia.login);
+  assert.equal(accepted?.request.head, head);
+  assert.equal(
+    api.calls.some(({ path }) => path.endsWith('/permission')),
+    false,
+  );
+  assert.equal(readRequest(api.comments[0])?.actor, lia.login);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+  await publishRun(api, context, run());
+  assert.equal(readRequest(api.comments[0])?.conclusion, 'success');
+  assert.equal(api.statuses.at(-1)?.state, 'success');
+  api.head = next;
+  await refreshPull(api, context, 1);
+  assert.match(api.comments[0].body, /Outdated:/);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+});
+
+test('only exact trusted bot identities can submit commands or disturb an active request', async () => {
+  for (const user of [
+    { ...lia, id: undefined },
+    { ...lia, id: lia.id + 1 },
+    { ...lia, login: 'untrusted[bot]' },
+    { ...lia, login: 'lia-by-librechat-copy[bot]' },
+    { ...lia, type: 'Organization' },
+    bot('').user,
+  ]) {
+    for (const body of ['/quality check-all', '/quality ignore', '/quality both static=on']) {
+      const api = new GitHub();
+      running(api);
+      const original = api.comments[0].body;
+      assert.equal(
+        await acceptRequest(api, { ...context, run: 56 }, 1, { ...command(11, body), user }),
+        undefined,
+      );
+      assert.equal(api.calls.length, 0);
+      assert.equal(api.comments.length, 1);
+      assert.equal(api.comments[0].body, original);
+      assert.equal(api.runs.get(55)?.status, 'in_progress');
+      assert.equal(api.statuses.length, 0);
+    }
+  }
+});
+
+test('trusted command bots cannot forge publisher records', () => {
+  const body = renderRequest({ ...record, actor: lia.login }, context, head);
+  assert.equal(readRequest({ ...command(), body, user: lia }), undefined);
+  assert.equal(readRequest(bot(body))?.actor, lia.login);
+  for (const actor of ['lia-by-librechat[bot]extra', 'lia-by-librechat[other]', 'bad\nactor']) {
+    assert.equal(readRequest(bot(renderRequest({ ...record, actor }, context, head))), undefined);
+  }
+});
+
+test('trusted bots respect closed PRs and command validation before cancelling work', async () => {
+  const api = new GitHub();
+  running(api);
+  api.state = 'closed';
+  assert.equal(
+    await acceptRequest(api, { ...context, run: 56 }, 1, { ...command(11), user: lia }),
+    undefined,
+  );
+  assert.equal(api.comments.length, 1);
+  assert.equal(api.statuses.length, 0);
+  api.state = 'open';
+  assert.equal(
+    await acceptRequest(api, { ...context, run: 56 }, 1, {
+      ...command(11, '/quality mutation scopes=server'),
+      user: lia,
+    }),
+    undefined,
+  );
+  assert.equal(cancellations(api).length, 0);
+  assert.equal(api.runs.get(55)?.status, 'in_progress');
+  assert.equal(api.statuses.length, 0);
+  assert.ok(api.calls.every(({ path }) => !path.endsWith('/reactions')));
+});
+
+test('trusted bots can explicitly ignore only after stopping the active quality run', async () => {
+  const api = new GitHub();
+  api.permission = 'none';
+  running(api);
+  const accepted = await acceptRequest(api, { ...context, run: 56 }, 1, {
+    ...command(11, '/quality ignore'),
+    user: lia,
+  });
+  assert.equal(accepted?.request.actor, lia.login);
+  assert.equal(cancellations(api).length, 1);
+  const stoppedAt = api.calls.findIndex(({ path }) => path.endsWith('/force-cancel'));
+  const clearedAt = api.calls.findIndex(({ path }) => path.startsWith('statuses/'));
+  assert.ok(stoppedAt < clearedAt);
+  assert.equal(readRequest(api.comments[1])?.check, 'ignore');
+  assert.equal(api.statuses.at(-1)?.state, 'success');
+});
+
 test('one exact-head request comment moves through progress and completion with artifact links', async () => {
   const api = new GitHub();
   const accepted = await accept(api, context, 1, command());
@@ -226,17 +354,85 @@ test('one exact-head request comment moves through progress and completion with 
     },
   );
   assert.equal(api.statuses.at(-1)?.state, 'pending');
-  assert.match(api.comments[0].body, /Static: \*\*off\*\*/);
+  assert.match(api.comments[0].body, /Static mutants: \*\*off\*\*/);
+  // The verdict leads, then the status; the request facts follow as one list item each.
+  assert.match(
+    api.comments[0].body,
+    /### Quality report\n\n\*\*Gate: pending\.\*\* .*\n\nStatus: .*\n\n- Commit: /u,
+  );
   assert.match(api.comments[0].body, /actions\/runs\/55/);
   await publishRun(api, context, run('in_progress', null));
   assert.match(api.comments[0].body, /\*\*running\*\*/);
   await publishRun(api, context, run());
   assert.equal(api.comments.length, 1);
   assert.match(api.comments[0].body, /completed \(success\)/);
-  assert.match(api.comments[0].body, /artifacts\/91/);
+  assert.match(api.comments[0].body, /\*\*Gate: open\.\*\*/);
+  assert.match(
+    api.comments[0].body,
+    /\[All data\]\(https:\/\/github\.com\/owner\/repo\/actions\/runs\/55\/artifacts\/91\)/,
+  );
+  assert.match(
+    api.comments[0].body,
+    /\[Run page\]\(https:\/\/github\.com\/owner\/repo\/actions\/runs\/55\)/,
+  );
   assert.equal(api.statuses.at(-1)?.state, 'success');
   await publishRun(api, context, run('in_progress', null));
   assert.match(api.comments[0].body, /completed \(success\)/);
+});
+
+test('check rows are sorted by kind, scope and shard; only the final report is linked', async () => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  const job = (name: string, id: number) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    id,
+  });
+  api.jobs = [
+    ...structuredClone(prerequisiteJobs),
+    job('Mutation report (data-schemas)', 80),
+    job('Mutation testing 3/4 (data-schemas)', 81),
+    job('Change risk (server)', 82),
+    job('Mutation testing 1/4 (data-schemas)', 83),
+    job('Change risk (data-schemas)', 84),
+    job('Mutation testing 4/4 (data-schemas)', 85),
+    job('Change risk (api)', 86),
+    job('Mutation testing 2/4 (data-schemas)', 87),
+    structuredClone(reportJob),
+  ];
+  api.artifacts = [
+    `quality-internal-mutation-data-schemas-${head}-shard-2`,
+    `quality-internal-risk-server-${head}`,
+    `quality-internal-mutation-data-schemas-${head}`,
+    'quality-internal-findings',
+    'quality-report',
+  ].map((name, index) => ({ id: 200 + index, name, expired: false }));
+  await publishRun(api, context, run());
+  const body = api.comments[0].body;
+  const rows = [...body.matchAll(/^\| \[([^\]]+)\]/gmu)].map(([, name]) => name);
+  assert.deepEqual(rows, [
+    'Change risk (data-schemas)',
+    'Change risk (api)',
+    'Change risk (server)',
+    'Mutation testing 1/4 (data-schemas)',
+    'Mutation testing 2/4 (data-schemas)',
+    'Mutation testing 3/4 (data-schemas)',
+    'Mutation testing 4/4 (data-schemas)',
+    'Mutation report (data-schemas)',
+  ]);
+  assert.match(body, /<details><summary>Jobs \(8\)<\/summary>/u);
+  assert.match(body, /\[All data\]\([^)]*\/artifacts\/204\)/u);
+  assert.doesNotMatch(body, /artifacts\/20[0-3]\b|quality-internal/u);
+});
+
+test('the request footer names what closes the gate and what stays advisory', () => {
+  const body = renderRequest(record, context, head);
+  assert.ok(body.endsWith(GATE_FOOTER));
+  assert.match(GATE_FOOTER, /every report job succeed/u);
+  assert.match(GATE_FOOTER, /incomplete mutation report/u);
+  assert.match(GATE_FOOTER, /change-risk file marked incomplete or unavailable.*does not close/su);
+  assert.doesNotMatch(GATE_FOOTER, /incomplete reports keep the gate closed/u);
 });
 
 test('failures and cancellations keep the gate closed, while explicit ignore clears it', async () => {
@@ -248,6 +444,7 @@ test('failures and cancellations keep the gate closed, while explicit ignore cle
     await accept(api, { ...context, run: 56 }, 1, command(11, '/quality ignore'));
     assert.equal(api.statuses.at(-1)?.state, 'success');
     assert.match(api.comments[1].body, /explicitly ignored/);
+    assert.doesNotMatch(api.comments[1].body, /Scopes:|Mutation testing|Status:/u);
     // A late result from the older request cannot undo the explicit ignore.
     await publishRun(api, context, run('completed', conclusion));
     assert.equal(api.statuses.at(-1)?.state, 'success');
@@ -324,13 +521,14 @@ test('pagination finds old requests and excludes unrelated or expired artifacts'
   const api = new GitHub();
   api.comments = Array.from({ length: 101 }, (_, i) => command(200 + i, 'ordinary comment'));
   await accept(api, context, 1, command());
-  api.artifacts.push(
+  api.artifacts.unshift(
     { id: 92, name: 'untrusted [link](https://example.com)', expired: false },
-    { id: 93, name: `change-risk-api-${head}`, expired: true },
+    { id: 93, name: 'quality-report', expired: true },
   );
   await publishRun(api, context, run());
   assert.equal(api.comments.length, 102);
-  assert.doesNotMatch(api.comments.at(-1)!.body, /untrusted|artifacts\/93/);
+  assert.doesNotMatch(api.comments.at(-1)!.body, /untrusted|artifacts\/9[23]/);
+  assert.match(api.comments.at(-1)!.body, /artifacts\/91/);
   assert.equal(api.statuses.at(-1)?.state, 'success');
 });
 
@@ -673,4 +871,210 @@ test('reaction failure does not stop an authorized quality request', async (t) =
   assert.equal(accepted?.request.head, head);
   assert.equal(api.statuses.at(-1)?.state, 'pending');
   assert.equal(warning.mock.callCount(), 1);
+});
+
+const survivor = (
+  index: number,
+  original = 'a > b',
+  file = 'packages/data-schemas/src/x.js',
+): Finding => ({
+  key: createHash('sha256').update(`${file}:${index}:${original}`).digest('hex'),
+  file,
+  line: index + 1,
+  column: 1,
+  endLine: index + 1,
+  endColumn: 5,
+  mutator: 'EqualityOperator',
+  original,
+  replacement: 'a >= b',
+  source: `  if (${original}) {`,
+  mutated: '  if (a >= b) {',
+  status: 'Survived',
+  rank: 41,
+  tags: ['behavior'],
+  reason: 'Survived',
+});
+
+const findingsFor = (
+  findings: Finding[],
+  overrides: Partial<QualityFindings> = {},
+): QualityFindings => ({
+  schema: SCHEMA,
+  repository: context.repository,
+  pr: 1,
+  base,
+  head,
+  risk: [unavailableRisk('server')],
+  mutation: [
+    {
+      ...unavailableMutation(),
+      status: 'complete',
+      planDigest: 'abc123',
+      counts: { ...unavailableMutation().counts, killed: 3, survived: findings.length },
+      scores: { killedByAssertion: 50, stryker: 50 },
+      findings,
+    },
+  ],
+  ...overrides,
+});
+
+function findingsDir(t: { after(fn: () => void): void }, data?: unknown): string {
+  const directory = mkdtempSync(join(tmpdir(), 'quality-comment-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  if (data !== undefined) writeFileSync(join(directory, 'findings.json'), JSON.stringify(data));
+  return directory;
+}
+
+test('a completed run renders the validated findings with untrusted text escaped', async (t) => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  const hostile = survivor(
+    0,
+    '`x` @maintainers </summary><img src=x>',
+    'packages/data-schemas/src/</summary>@team.js',
+  );
+  const dir = findingsDir(t, findingsFor([hostile, survivor(5)]));
+  await publishRun(api, context, run(), { findingsDir: dir, hints: 10 });
+  const body = api.comments[0].body;
+  assert.match(body, /^### Quality report\n\n\*\*Gate: open\.\*\*/mu);
+  assert.match(body, /#### Change risk[\s\S]*\| server \| report unavailable \|/u);
+  assert.match(body, /#### Mutation testing/u);
+  assert.match(body, /\| data-schemas \| 3 \| 2 \|/u);
+  assert.match(body, /<code>packages\/data-schemas\/src\/&lt;\/summary&gt;@team\.js<\/code>/u);
+  assert.match(
+    body,
+    /\n```diff\n-  if \(`x` @maintainers <\/summary><img src=x>\) \{\n\+  if \(a >= b\) \{\n```\n/u,
+  );
+  assert.doesNotMatch(body, /(^|[^`])@(maintainers|team)\b(?![^`]*`)/mu);
+  // Report sections come before the folded job table and the links.
+  assert.ok(body.indexOf('#### Mutation testing') < body.indexOf('<details><summary>Jobs'));
+  assert.ok(body.indexOf('<details><summary>Jobs') < body.indexOf('[All data]'));
+});
+
+test('findings are read only after the trusted report job uploaded them', async (t) => {
+  const api = new GitHub();
+  api.jobs = api.jobs.map((job) =>
+    job.name === 'Quality report'
+      ? { ...job, steps: job.steps!.map((step) => ({ ...step, conclusion: 'failure' })) }
+      : job,
+  );
+  await accept(api, context, 1, command());
+  await publishRun(api, context, run(), {
+    findingsDir: findingsDir(t, findingsFor([survivor(0)])),
+  });
+  const body = api.comments[0].body;
+  assert.match(body, /did not upload its findings/u);
+  assert.doesNotMatch(body, /#### Mutation testing|\[All data\]/u);
+  // A same-named job without the trusted step cannot stand in for it either.
+  const spoof = new GitHub();
+  spoof.jobs = spoof.jobs.map((job) =>
+    job.name === 'Quality report' ? { ...job, steps: [] } : job,
+  );
+  await accept(spoof, context, 1, command());
+  await publishRun(spoof, context, run(), {
+    findingsDir: findingsDir(t, findingsFor([survivor(0)])),
+  });
+  assert.match(spoof.comments[0].body, /did not upload its findings/u);
+});
+
+test('findings for another request, malformed files and a moved head are not rendered', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  for (const [data, note] of [
+    [findingsFor([survivor(0)], { head: next }), /Report data was rejected: .*head/u],
+    [findingsFor([survivor(0)], { pr: 2 }), /Report data was rejected/u],
+    [{ ...findingsFor([survivor(0)]), extra: true }, /Report data was rejected/u],
+    [undefined, /No report data was downloaded/u],
+  ] as const) {
+    const api = new GitHub();
+    await accept(api, context, 1, command());
+    await publishRun(api, context, run(), { findingsDir: findingsDir(t, data) });
+    assert.match(api.comments[0].body, note);
+    assert.doesNotMatch(api.comments[0].body, /#### Mutation testing/u);
+  }
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  api.head = next;
+  await publishRun(api, context, run(), {
+    findingsDir: findingsDir(t, findingsFor([survivor(0)])),
+  });
+  assert.match(api.comments[0].body, /PR head moved after this run/u);
+  assert.doesNotMatch(api.comments[0].body, /#### Mutation testing/u);
+  assert.ok(warn.mock.callCount() >= 3);
+});
+
+test('a large report is cut by rank to fit one comment', async (t) => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  const many = Array.from({ length: 600 }, (_, index) =>
+    survivor(index, `${'x'.repeat(300)}${index}`),
+  );
+  await publishRun(api, context, run(), { findingsDir: findingsDir(t, findingsFor(many)) });
+  const body = api.comments[0].body;
+  assert.ok(body.length <= COMMENT_LIMIT, `${body.length}`);
+  assert.match(body, /_\d+ more survivors in report\.md\._/u);
+  assert.match(body, /\[Line 1\]\(/u);
+  assert.match(body, /\[All data\]/u);
+});
+
+test('a closed gate names its blockers in the verdict', async () => {
+  const api = new GitHub();
+  api.jobs = api.jobs.map((job) =>
+    job.name === 'Mutation report (data-schemas)' ? { ...job, conclusion: 'failure' } : job,
+  );
+  await accept(api, context, 1, command());
+  await publishRun(api, context, run('completed', 'failure'));
+  assert.match(
+    api.comments[0].body,
+    /\*\*Gate: closed\.\*\* Blocked by: Mutation report \(data-schemas\) \(failure\), the workflow \(failure\)\./u,
+  );
+});
+
+test('outdated marking also applies to comments with the earlier request heading', async () => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  api.comments[0].body = api.comments[0].body.replace(
+    '### Quality report\n',
+    '### Quality request\n',
+  );
+  api.head = next;
+  await refreshPull(api, context, 1);
+  assert.match(api.comments[0].body, /### Quality request\n\n\*\*Outdated: /u);
+});
+
+test('a delayed progress event keeps the completed report; a new attempt replaces it', async (t) => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  const dir = findingsDir(t, findingsFor([survivor(0)]));
+  await publishRun(api, context, run(), { findingsDir: dir });
+  const report = api.comments[0].body;
+  assert.match(report, /#### Mutation testing/u);
+  // Even after the head moved, the late event neither cancels the finished run nor rewrites it.
+  api.head = next;
+  const calls = api.calls.length;
+  await publishRun(api, context, run('in_progress', null));
+  assert.equal(api.comments[0].body, report);
+  assert.ok(api.calls.slice(calls).every(({ method }) => method === 'GET'));
+  api.head = head;
+  await publishRun(api, context, { ...run('in_progress', null), run_attempt: 2 });
+  assert.match(api.comments[0].body, /\*\*running\*\*/u);
+  assert.match(api.comments[0].body, /attempt 2/u);
+  assert.doesNotMatch(api.comments[0].body, /#### Mutation testing/u);
+});
+
+test('a newer request gets its own report and leaves the earlier comment alone', async (t) => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  await publishRun(api, context, run(), {
+    findingsDir: findingsDir(t, findingsFor([survivor(0)])),
+  });
+  const first = api.comments[0].body;
+  api.runs.set(56, { ...run(), id: 56, display_title: 'Quality PR #1 request 11' });
+  await accept(api, { ...context, run: 56 }, 1, command(11, '/quality check-all'));
+  const second = { ...run(), id: 56, display_title: 'Quality PR #1 request 11' };
+  await publishRun(api, { ...context, run: 56 }, second, {
+    findingsDir: findingsDir(t, findingsFor([survivor(1)])),
+  });
+  assert.equal(api.comments[0].body, first);
+  assert.match(api.comments[1].body, /\[Line 2\]\(/u);
+  assert.match(api.comments[1].body, /#### Mutation testing/u);
 });

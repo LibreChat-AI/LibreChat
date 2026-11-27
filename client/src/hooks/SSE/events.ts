@@ -1,15 +1,51 @@
 import { useMemo, useState, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
-import { getStreamStartFailureText } from '@librechat/chat';
-import { useUsageHandler, useEventHandlers, showStopButtonByIndex } from '@librechat/chat/react';
+import { ErrorTypes, QueryKeys } from 'librechat-data-provider';
+import { classifyErrorText, getStreamStartFailureText } from '@librechat/chat';
+import {
+  useUsageHandler,
+  toResumableUsage,
+  useEventHandlers,
+  showStopButtonByIndex,
+} from '@librechat/chat/react';
 import type { ResumableRun, ResumableEvents, ResumableUsage } from '@librechat/chat';
+import type { EventSubmission, TSubmission } from 'librechat-data-provider';
 import type { EventHandlerParams } from '@librechat/chat/react';
-import type { EventSubmission } from 'librechat-data-provider';
+import type { QueryClient } from '@tanstack/react-query';
 import type { TResData, TFinalResData } from '~/common';
-import { countTrailingOutputChars, markStreamStartFailedMetadata } from '~/utils';
+import { markStreamStartFailedMetadata } from '~/utils';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import useLocalize from '~/hooks/useLocalize';
+
+/** The codes a send fails with when its agent is refused or no longer exists. */
+const agentRefusals = new Set<string>([ErrorTypes.AGENT_ACCESS, ErrorTypes.AGENT_NOT_FOUND]);
+
+/**
+ * A send refused for its agent, or sent to an agent that no longer exists, proves the agent details
+ * the composer holds stale. Refetching them lets the composer say why and hold the next send,
+ * instead of offering it again. `text` is the failed turn's error text, read as its card reads it:
+ * a refusal before the stream starts and a run that fails once started name the code alike.
+ */
+const refetchRefusedAgents = (
+  queryClient: QueryClient,
+  { conversation, addedConvo }: Pick<TSubmission, 'conversation' | 'addedConvo'>,
+  text: unknown,
+) => {
+  if (typeof text !== 'string') {
+    return;
+  }
+  const read = classifyErrorText(text);
+  const code = read.kind === 'payload' ? read.code : undefined;
+  if (code == null || !agentRefusals.has(code)) {
+    return;
+  }
+  for (const id of [conversation?.agent_id, addedConvo?.agent_id]) {
+    if (id) {
+      void queryClient.invalidateQueries([QueryKeys.agent, id]);
+    }
+  }
+};
 
 const getStreamStartFailureData = (errorData?: unknown, termsRefusalText?: string): TResData =>
   ({
@@ -93,17 +129,8 @@ export default function useResumableEvents({
     [rawStepHandler, run],
   );
 
-  const {
-    bindResponse,
-    contextHandler,
-    usageHandler,
-    tapStream,
-    tapContent,
-    finalizeUsage,
-    backfillUsage,
-    resetLive,
-    seedLive,
-  } = useUsageHandler();
+  const usageHandlers = useUsageHandler();
+  const { resetLive } = usageHandlers;
 
   const events = useMemo<ResumableEvents>(
     () => ({
@@ -115,6 +142,7 @@ export default function useResumableEvents({
         } else if (reopenTermsOnRefusal(queryClient, errorData)) {
           text = localize('com_error_terms_not_accepted');
         }
+        refetchRefusedAgents(queryClient, failedSubmission, getStreamStartFailureText(errorData));
         errorHandler({
           data: getStreamStartFailureData(errorData, text),
           submission: failedSubmission as EventSubmission,
@@ -132,11 +160,13 @@ export default function useResumableEvents({
       clearStepMaps,
       flushPendingDeltas,
       resetLive,
-      showError: (text, errorSubmission) =>
+      showError: (text, errorSubmission) => {
+        refetchRefusedAgents(queryClient, errorSubmission, text);
         errorHandler({
           data: { text } as unknown as Parameters<typeof errorHandler>[0]['data'],
           submission: errorSubmission as EventSubmission,
-        }),
+        });
+      },
     }),
     [
       localize,
@@ -158,29 +188,7 @@ export default function useResumableEvents({
     ],
   );
 
-  const usage = useMemo<ResumableUsage>(
-    () => ({
-      bindResponse,
-      contextHandler,
-      usageHandler,
-      tapStream,
-      tapContent,
-      finalizeUsage,
-      backfillUsage,
-      seedLiveFromContent: (content, usageSubmission) =>
-        seedLive(countTrailingOutputChars(content), usageSubmission),
-    }),
-    [
-      bindResponse,
-      contextHandler,
-      usageHandler,
-      tapStream,
-      tapContent,
-      finalizeUsage,
-      backfillUsage,
-      seedLive,
-    ],
-  );
+  const usage = useMemo<ResumableUsage>(() => toResumableUsage(usageHandlers), [usageHandlers]);
 
   return { events, usage };
 }

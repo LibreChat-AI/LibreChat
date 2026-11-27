@@ -208,7 +208,7 @@ beforeAll(async () => {
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: methods.writeConfigDocument,
-    unsetConfigField: methods.unsetConfigField,
+    unsetConfigFieldTracked: methods.unsetConfigFieldTracked,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -227,7 +227,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('a group profile hides a librechat.yaml MCP server', () => {

@@ -1,13 +1,14 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
+  Constants,
   ErrorTypes,
   SystemRoles,
   ContentTypes,
   ViolationTypes,
   EModelEndpoint,
 } from 'librechat-data-provider';
-import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
+import type { Agent, AgentDisplay, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { MessageContext } from '~/Providers/MessageContext';
@@ -50,19 +51,13 @@ jest.mock('~/hooks', () => ({
   useHasAccess: ({ permission }: { permission: string }) => mockAccess[permission] === true,
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  /** Mirrors the real hook's contract — a grid style plus a ref — without pulling `useMediaQuery`
-   *  and its `matchMedia` dependency into a spec that asserts copy, not motion. */
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
+let mockPresetTargets: AgentDisplay[] = [];
+jest.mock('~/data-provider/Agents/queries', () => ({
+  useModelSpecHandoffsQuery: () => ({ data: mockPresetTargets }),
 }));
+afterEach(() => {
+  mockPresetTargets = [];
+});
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsData })),
@@ -174,6 +169,15 @@ describe('LibreChat attachment limits', () => {
     expect(screen.getByText(detail)).toBeVisible();
   });
 
+  it('does not blame the provider for a file over the size limit for its model', () => {
+    const detail =
+      'The attached file "big.csv" is over the 4.5 MB limit for a file sent to this model. Remove it or attach a smaller file, then try again.';
+    renderError(detail, providerMessage);
+    expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeVisible();
+  });
+
   it.each(['attachment count', 'total attachment size', 'extracted document text'])(
     'does not blame the provider for the local %s limit',
     (label) => {
@@ -278,6 +282,35 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expect(screen.getByText(catalog[key])).toBeInTheDocument();
     expect(screen.getByText(info)).toBeInTheDocument();
     expectReadable();
+  });
+
+  it.each([
+    [ErrorTypes.MODEL_RATE_LIMIT, 'com_error_model_rate_limit'],
+    [ErrorTypes.MODEL_NOT_FOUND, 'com_error_model_not_found'],
+  ])('keeps a long, multi-line gateway explanation of %s in view', (type, key) => {
+    const info = [
+      'You reached the budget assigned to your team for this month; it resets on the first.',
+      'To keep working now, request a higher budget at https://service.example.com/ai/budget and include your user id, the model you were using and the reason you need more.',
+    ].join('\n');
+    renderError({ type, info });
+
+    expect(info.length).toBeGreaterThan(240);
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(
+      screen.getByText((_, element) => element?.textContent === info && element.tagName === 'DIV'),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: catalog.com_error_details_provider }),
+    ).not.toBeInTheDocument();
+    expectReadable();
+  });
+
+  it('does not promise that waiting clears a rate or spending limit', () => {
+    renderError({ type: ErrorTypes.MODEL_RATE_LIMIT });
+
+    const headline = screen.getByText(catalog.com_error_model_rate_limit);
+    expect(headline.textContent).toMatch(/rate or spending limit/);
+    expect(headline.textContent).not.toMatch(/wait a moment/i);
   });
 
   it('keeps provider text for a LangChain code without localized copy, minus the URL', () => {
@@ -998,6 +1031,22 @@ describe('Error — manual compaction', () => {
   });
 });
 
+describe('Error: output budget exhausted', () => {
+  it.each([
+    ['the code alone', JSON.stringify({ type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED })],
+    [
+      'the failed-run text the server persists',
+      `An error occurred while processing the request: ${JSON.stringify({
+        type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED,
+      })}`,
+    ],
+  ])('renders the reasoning-budget notice from %s', (_label, text) => {
+    renderError(text, { endpoint: EModelEndpoint.google, model: 'gemini-3-pro' } as TMessage);
+
+    expect(screen.getByText(catalog.com_error_output_budget_exhausted)).toBeInTheDocument();
+  });
+});
+
 describe('Error — identity of the row an error part belongs to', () => {
   const failedTurn = { endpoint: EModelEndpoint.anthropic, model: 'claude-sonnet-4-5' } as TMessage;
 
@@ -1323,5 +1372,24 @@ describe('Error — agent handoffs within a row', () => {
 
     expect(screen.getByText(catalog.com_error_no_user_key_generic)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('Google');
+  });
+});
+
+describe('preset handoff error identity', () => {
+  const id = Constants.MODEL_SPEC_AGENT_PREFIX + 'abc123';
+  const source = { endpoint: EModelEndpoint.agents, model: id } as TMessage;
+  test('uses the actual provider and model rather than the graph hash', () => {
+    mockPresetTargets = [
+      { id, name: 'Preset Specialist', provider: 'openAI', model: 'gpt-4o', avatar: null },
+    ];
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).toContain('gpt-4o');
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
+  });
+  test('does not expose a retired preset hash as an endpoint or model', () => {
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
   });
 });

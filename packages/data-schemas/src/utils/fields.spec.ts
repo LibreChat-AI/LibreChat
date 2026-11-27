@@ -15,7 +15,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 async function rejectionOf(write: () => Promise<unknown>): Promise<unknown> {

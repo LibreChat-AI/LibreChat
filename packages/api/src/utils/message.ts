@@ -1,5 +1,6 @@
 import { Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { TFile, TMessage } from 'librechat-data-provider';
+import { withoutTraceRefs } from '../langfuse/trace';
 
 /** Shared wire bounds, not deployment settings. */
 export const MAX_MESSAGE_ID_LENGTH: number = Constants.MAX_MESSAGE_ID_LENGTH;
@@ -158,6 +159,11 @@ export function sanitizeMessageForTransmit<T extends Partial<TMessage>>(
   }
 
   const sanitized = { ...message };
+
+  if (sanitized.metadata && 'thoughtSignatures' in sanitized.metadata) {
+    const { thoughtSignatures: _signatures, ...metadata } = sanitized.metadata;
+    sanitized.metadata = metadata;
+  }
 
   // Remove message-level fields
   for (const field of MESSAGE_STRIP_FIELDS) {
@@ -363,4 +369,27 @@ export function getThreadData(
 
   result.fileIds = Array.from(fileIdSet);
   return result;
+}
+
+/** The records only the server writes about a stored message. */
+type ServerRecords =
+  | 'trigger'
+  | 'langfuseSampled'
+  | 'langfuseRunId'
+  | 'langfuseDestinationIds'
+  | 'langfuseCentralTraceExportEnabled';
+
+/**
+ * A message a client posted or an import carried, without the records only the server
+ * writes about a row: its trace sampling, and what started its turn. Saved as it came, such
+ * a row would claim a trace no run produced or a trigger that never fired.
+ */
+export function withoutServerRecords<T extends object>(
+  message: T,
+): Omit<T, ServerRecords> & { langfuseSampled: false } {
+  const { trigger: _trigger, ...rest } = message as T & { trigger?: unknown };
+  return withoutTraceRefs(rest as Parameters<typeof withoutTraceRefs>[0]) as Omit<
+    T,
+    ServerRecords
+  > & { langfuseSampled: false };
 }

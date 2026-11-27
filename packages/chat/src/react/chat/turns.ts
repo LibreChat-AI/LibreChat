@@ -47,7 +47,7 @@ export function useTurns(
     getMessages,
     setMessages,
     isSubmitting,
-    latestMessage,
+    getLatestMessage,
     setSubmission,
     setConversation,
     conversation: immutableConversation,
@@ -208,6 +208,7 @@ export function useTurns(
       return false;
     }
 
+    const latestMessage = getLatestMessage();
     if (isContinued && !latestMessage) {
       console.error('cannot continue AI message without latestMessage!');
       return false;

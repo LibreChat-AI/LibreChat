@@ -286,7 +286,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongod.stop();
+  await mongod?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 describe('completion wake-ups and queued user turns at run end', () => {

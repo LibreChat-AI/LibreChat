@@ -11,8 +11,8 @@ import FilePreviewDialog, {
   getDisplayType,
 } from '~/components/Chat/Messages/Content/FilePreviewDialog';
 import { useGetFiles, useFilePreviewBlob } from '~/data-provider';
+import { useLocalize, useOnline, useAuthContext } from '~/hooks';
 import { toAbsoluteFilePath, triggerDownload } from '~/utils';
-import { useLocalize, useAuthContext } from '~/hooks';
 
 export type FileView = 'all' | 'images' | 'documents';
 
@@ -148,6 +148,7 @@ function EmptyState({
   text?: string;
 }) {
   const localize = useLocalize();
+  const online = useOnline();
   if (loading) {
     return (
       <div role="status" className="text-text-secondary flex items-center justify-center py-16">
@@ -160,7 +161,7 @@ function EmptyState({
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
         <p role="alert" className="text-text-secondary text-sm">
-          {localize('com_ui_error_connection')}
+          {localize(online ? 'com_ui_error_connection' : 'com_ui_error_offline')}
         </p>
         {/* The files query does not refetch on mount, focus or reconnect, so
             reopening the dialog would not recover without this. */}

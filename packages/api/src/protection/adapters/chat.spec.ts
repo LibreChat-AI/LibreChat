@@ -416,6 +416,109 @@ describe('extractChatContent', () => {
     );
   });
 
+  it("extracts the added conversation's own provider-bound settings", () => {
+    expect(
+      extractChatContent({
+        addedConvo: {
+          instructions: 'secondary instructions',
+          system: 'secondary system text',
+          context: 'secondary context',
+          greeting: 'secondary greeting',
+          examples: [{ input: { content: 'secondary input' }, output: 'secondary output' }],
+          stop: ['secondary stop'],
+          metadata: { label: 'secondary metadata' },
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        id: 'chat.added-conversation.instructions',
+        path: '/addedConvo/instructions',
+        source: 'agent_instruction',
+        field: 'instructions',
+        text: 'secondary instructions',
+      }),
+      expect.objectContaining({
+        id: 'chat.added-conversation.system',
+        path: '/addedConvo/system',
+        source: 'prompt',
+        field: 'system',
+        text: 'secondary system text',
+      }),
+      expect.objectContaining({
+        id: 'chat.added-conversation.context',
+        path: '/addedConvo/context',
+        source: 'prompt',
+        field: 'context',
+        text: 'secondary context',
+      }),
+      expect.objectContaining({
+        id: 'chat.added-conversation.greeting',
+        path: '/addedConvo/greeting',
+        source: 'prompt',
+        field: 'greeting',
+        text: 'secondary greeting',
+      }),
+      expect.objectContaining({
+        id: 'chat.added-conversation.example.0.input',
+        path: '/addedConvo/examples/0/input',
+        source: 'prompt',
+        field: 'example_input',
+        text: 'secondary input',
+      }),
+      expect.objectContaining({
+        id: 'chat.added-conversation.example.0.output',
+        path: '/addedConvo/examples/0/output',
+        source: 'prompt',
+        field: 'example_output',
+        text: 'secondary output',
+      }),
+      expect.objectContaining({
+        source: 'model_parameter',
+        field: 'stop',
+        text: 'secondary stop',
+        path: '/addedConvo/stop/0',
+      }),
+      expect.objectContaining({
+        source: 'model_parameter',
+        field: 'metadata',
+        text: 'label',
+        path: '/addedConvo/metadata/label',
+      }),
+      expect.objectContaining({
+        source: 'model_parameter',
+        field: 'metadata',
+        text: 'secondary metadata',
+        path: '/addedConvo/metadata/label',
+      }),
+    ]);
+  });
+
+  it("blocks a filtered value in the added conversation's stop sequences", () => {
+    const finding = inspectContent(extractChatContent({ addedConvo: { stop: ['ORG-DEADBEEF'] } }), {
+      filters: {
+        modelParameters: {
+          pii: {
+            customPatterns: [{ id: 'org-token', label: 'organization token', regex: 'ORG-[A-Z]+' }],
+          },
+        },
+      },
+    });
+
+    expect(finding).toMatchObject({
+      source: 'model_parameter',
+      field: 'stop',
+      ruleId: 'org-token',
+    });
+  });
+
+  it("bounds the added conversation's examples by the shared array budget", () => {
+    const examples = Array.from({ length: CONTENT_TRAVERSAL_MAX_NODES + 1 }, () => null);
+
+    expect(() => extractChatContent({ addedConvo: { examples } })).toThrow(
+      ContentTraversalLimitError,
+    );
+  });
+
   it('inspects cyclic edited arguments without dropping other fields', () => {
     const editedArguments: { protectedValue: string; self?: object } = {
       protectedValue: 'ORG-CYCLIC',

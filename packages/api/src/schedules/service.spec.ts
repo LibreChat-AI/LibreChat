@@ -8,7 +8,7 @@ import {
   recordScheduledMCPToolAuthFailure,
   ScheduledMCPReceiptFencedError,
 } from './service';
-import { ScheduledMCPPolicyError } from './authorization/policy';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { isShutdownInProgress } from '../app/shutdown';
@@ -776,6 +776,87 @@ describe('deleteScheduleForOwner', () => {
     await expect(service.deleteScheduleForOwner('s1', 'user-1')).resolves.toBe('draining');
   });
 
+  /**
+   * The fallback sweep backs off while it finds nothing, so a delete that leaves its row behind
+   * has to pull the next sweep in, or the hidden prompt would wait out the whole back-off.
+   */
+  it('pulls a backed-off fallback sweep in when the delete leaves its row behind', async () => {
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      const { service, methods } = makeDeleteHarness({
+        scheduleId: 's1',
+        scheduledFor: new Date('2026-01-01T00:00:00.000Z'),
+        conversationId: 'c1',
+        status: 'requires_action',
+      });
+      mockJobStore = {
+        getJob: jest.fn(async () => ({
+          status: 'requires_action',
+          createdAt: 1,
+          scheduleId: 's1',
+          scheduledFor: '2026-01-01T00:00:00.000Z',
+        })),
+      } as unknown as typeof mockJobStore;
+      const manager = jest.requireMock('../stream/GenerationJobManager').GenerationJobManager;
+      manager.abortJob = jest.fn(async () => ({ success: true }));
+      methods.eraseScheduleIfDrained = jest.fn(async () => false);
+      methods.getScheduleById.mockResolvedValue(null);
+      const deleting = jest.fn(async () => []);
+      Object.assign(methods, {
+        getDeletingSchedules: deleting,
+        markEraseAttempted: jest.fn(async () => undefined),
+        getRunsForReconciliation: jest.fn(async () => []),
+        getUnbookkeptRuns: jest.fn(async () => []),
+        markRunsReconciled: jest.fn(async () => undefined),
+      });
+
+      service.initializeScheduleErasureSweep();
+      // Two empty sweeps leave the next one twenty minutes out.
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      await jest.advanceTimersByTimeAsync(10 * 60_000);
+      expect(deleting).toHaveBeenCalledTimes(2);
+
+      await expect(service.deleteScheduleForOwner('s1', 'user-1')).resolves.toBe('draining');
+      await jest.advanceTimersByTimeAsync(5 * 60_000 - 1);
+      expect(deleting).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(deleting).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('starts the fallback sweep with the deployment-wide idle ceiling', async () => {
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      const service = makeService(jest.fn<Promise<ActiveRun[]>, [string]>().mockResolvedValue([]));
+      const deleting = jest.fn(async () => []);
+      Object.assign(service.engineDeps.methods, {
+        getDeletingSchedules: deleting,
+        markEraseAttempted: jest.fn(async () => undefined),
+        getRunsForReconciliation: jest.fn(async () => []),
+        getUnbookkeptRuns: jest.fn(async () => []),
+        markRunsReconciled: jest.fn(async () => undefined),
+      });
+
+      service.initializeScheduleErasureSweep({ idleCeilingMs: 8 * 60_000 });
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      expect(deleting).toHaveBeenCalledTimes(1);
+
+      /** The first idle wait would be ten minutes; the ceiling holds it to eight. */
+      await jest.advanceTimersByTimeAsync(8 * 60_000 - 1);
+      expect(deleting).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(deleting).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
   afterEach(() => {
     mockJobStore = null;
     jest.restoreAllMocks();
@@ -1079,7 +1160,7 @@ describe('scheduled OBO tool failure settlement', () => {
 
   it('records the public-safe policy denial for the exact scheduled generation', async () => {
     const { service, methods } = setup();
-    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Graph', 'child');
+    const error = new RunGrantPolicyError('tool_policy_denied', 'Graph', 'child');
     const input = { error, streamId: 'c1', jobCreatedAt: 42, userId: 'owner', serverName: 'Graph' };
     await expect(
       recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
@@ -1105,7 +1186,7 @@ describe('scheduled OBO tool failure settlement', () => {
     'settles a handled %s tool denial as an error with the durable diagnosis',
     async (reason) => {
       const { service, methods } = setup();
-      const error = new ScheduledMCPPolicyError(reason, 'Graph', 'child');
+      const error = new RunGrantPolicyError(reason, 'Graph', 'child');
       const input = {
         error,
         streamId: 'c1',
@@ -2695,7 +2776,7 @@ it.each(['false', 'throw'] as const)(
   'holds A3 policy failures behind durable admission when the recorder returns %s',
   async (mode) => {
     jest.useFakeTimers();
-    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child');
+    const error = new RunGrantPolicyError('tool_policy_denied', 'Files', 'child');
     const input = {
       error,
       streamId: 'policy-admission',
@@ -2757,11 +2838,11 @@ it('does not coalesce different A3 diagnoses for the same exact generation', asy
     },
   };
   const first = recordScheduledMCPToolAuthFailure(
-    { ...input, error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child') },
+    { ...input, error: new RunGrantPolicyError('tool_policy_denied', 'Files', 'child') },
     () => record,
   );
   const second = recordScheduledMCPToolAuthFailure(
-    { ...input, error: new ScheduledMCPPolicyError('binding_mismatch', 'Files', 'child') },
+    { ...input, error: new RunGrantPolicyError('binding_mismatch', 'Files', 'child') },
     () => record,
   );
   try {
@@ -2785,7 +2866,7 @@ it('fences a foreign or replaced A3 receipt instead of retrying an impossible ad
   await expect(
     recordScheduledMCPToolAuthFailure(
       {
-        error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child'),
+        error: new RunGrantPolicyError('tool_policy_denied', 'Files', 'child'),
         streamId: 'retired-policy',
         jobCreatedAt: 42,
         userId: 'owner',
@@ -2812,7 +2893,7 @@ it('interrupts an A3 admission wait at shutdown without a model-visible policy r
   const record = jest.fn(async () => false);
   const pending = recordScheduledMCPToolAuthFailure(
     {
-      error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child'),
+      error: new RunGrantPolicyError('tool_policy_denied', 'Files', 'child'),
       streamId: 'policy-shutdown',
       jobCreatedAt: 42,
       userId: 'owner',
@@ -2850,7 +2931,7 @@ describe('scheduled reset policy synchronization', () => {
   });
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
   beforeEach(async () => {
     await mongoose.connection.dropDatabase();

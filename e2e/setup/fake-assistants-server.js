@@ -2,7 +2,8 @@
  * Stateful OpenAI Assistants API fixture for credential-free mock e2e tests.
  *
  * This deliberately implements only the provider operations LibreChat uses for
- * Assistant CRUD and a text-only streamed run. It is a provider-boundary fake:
+ * Assistant CRUD, a text-only streamed run, and stopping that run (cancel, then
+ * read the run and its steps back). It is a provider-boundary fake:
  * LibreChat's real routes, OpenAI SDK client, persistence, content preflights,
  * and SSE handling all remain in the request path.
  */
@@ -13,10 +14,16 @@ const { keepIdleConnections } = require('./keepalive');
 const PORT = Number(process.env.E2E_ASSISTANTS_PORT) || 8890;
 const DEFAULT_REPLY = process.env.E2E_ASSISTANTS_REPLY || 'E2E mock assistant reply: pong';
 const MAX_BODY_BYTES = 1024 * 1024;
+/** How long `E2E_ASSISTANT_LATE_RUN` holds the creation of a run before refusing it. */
+const LATE_RUN_MS = 10000;
 
 const assistants = new Map();
 const threads = new Map();
 const runs = new Map();
+/** Each run's steps by run id, as the run steps list returns them. */
+const runSteps = new Map();
+/** Runs whose steps cannot be read, so stopping them fails once the run is cancelled. */
+const unreadableSteps = new Set();
 const requests = [];
 
 function now() {
@@ -232,7 +239,7 @@ function runStep({ id, runId, threadId, assistantId, messageId, status }) {
     },
     last_error: null,
     expired_at: null,
-    cancelled_at: null,
+    cancelled_at: status === 'cancelled' ? timestamp : null,
     failed_at: null,
     completed_at: status === 'completed' ? timestamp : null,
     metadata: null,
@@ -297,6 +304,7 @@ function sendAssistantStream(res, { assistant, thread }) {
   };
 
   runs.set(runId, completedRun);
+  runSteps.set(runId, [completedStep]);
   thread.messages.push(message);
 
   res.writeHead(200, {
@@ -319,13 +327,38 @@ function sendAssistantStream(res, { assistant, thread }) {
   res.end();
 }
 
+/** The tool call an `E2E_ASSISTANT_PARTS` run makes between its two messages. */
+const PARTS_TOOL_CALL = {
+  id: 'call_e2e_parts',
+  type: 'code_interpreter',
+  code_interpreter: { input: 'print(2)', outputs: [{ type: 'logs', logs: '2' }] },
+};
+/** How many deltas an `E2E_ASSISTANT_DROP` run streams before its connection is cut. */
+const DROP_AFTER_CHUNKS = 8;
+
+function toolCallsStep({ id, runId, threadId, assistantId, status, toolCalls }) {
+  return {
+    ...runStep({ id, runId, threadId, assistantId, messageId: null, status }),
+    type: 'tool_calls',
+    step_details: { type: 'tool_calls', tool_calls: toolCalls },
+  };
+}
+
 /**
  * `E2E_ASSISTANT_SLOW` streams one delta every 250ms for about thirty seconds, so a test can stop
- * the run mid-stream. The run stays `in_progress` until it finishes or is cancelled.
+ * the run mid-stream. The run stays `in_progress` until it finishes or is cancelled. With
+ * `E2E_ASSISTANT_STEPS_FAIL` in the prompt as well, reading the run's steps fails, which is the
+ * last provider call of a stop: the run is cancelled, and the stop itself still fails.
+ * `E2E_ASSISTANT_PARTS` makes the run write a whole message (`apart-one`) and call a tool before
+ * the message it streams, so a stop reads back a run of several messages. `E2E_ASSISTANT_DROP`
+ * cuts the connection after a few deltas, which the app answers by reading the run back itself.
  */
-function sendSlowAssistantStream(res, { assistant, thread }) {
+function sendSlowAssistantStream(
+  res,
+  { assistant, thread, stepsFail = false, parts = false, drop = false },
+) {
   const runId = createId('run');
-  const stepId = createId('step');
+  const ids = { runId, threadId: thread.id, assistantId: assistant.id };
   const message = createMessage({
     threadId: thread.id,
     role: 'assistant',
@@ -334,8 +367,14 @@ function sendSlowAssistantStream(res, { assistant, thread }) {
     runId,
   });
   const run = runObject({ id: runId, threadId: thread.id, assistant, status: 'in_progress' });
+  const step = { ...ids, id: createId('step'), messageId: message.id };
+  const createdStep = runStep({ ...step, status: 'in_progress' });
+  /** The run's steps before the one streaming, as the run steps list returns them. */
+  const earlierSteps = [];
   runs.set(runId, run);
-  thread.messages.push(message);
+  if (stepsFail) {
+    unreadableSteps.add(runId);
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -346,17 +385,44 @@ function sendSlowAssistantStream(res, { assistant, thread }) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
   sendEvent('thread.run.created', run);
-  sendEvent(
-    'thread.run.step.created',
-    runStep({
-      id: stepId,
-      runId,
+  if (parts) {
+    const first = createMessage({
       threadId: thread.id,
+      role: 'assistant',
+      content: 'apart-one ',
       assistantId: assistant.id,
-      messageId: message.id,
+      runId,
+    });
+    const firstStep = { ...ids, id: createId('step'), messageId: first.id };
+    const toolStep = { ...ids, id: createId('step') };
+    thread.messages.push(first);
+    earlierSteps.push(
+      runStep({ ...firstStep, status: 'completed' }),
+      toolCallsStep({ ...toolStep, status: 'completed', toolCalls: [PARTS_TOOL_CALL] }),
+    );
+    sendEvent('thread.run.step.created', runStep({ ...firstStep, status: 'in_progress' }));
+    sendEvent('thread.message.created', {
+      ...first,
+      content: [],
       status: 'in_progress',
-    }),
-  );
+      completed_at: null,
+    });
+    sendEvent('thread.message.delta', {
+      id: first.id,
+      object: 'thread.message.delta',
+      delta: { content: [{ index: 0, ...first.content[0] }] },
+    });
+    sendEvent('thread.message.completed', first);
+    sendEvent('thread.run.step.completed', earlierSteps[0]);
+    sendEvent(
+      'thread.run.step.created',
+      toolCallsStep({ ...toolStep, status: 'in_progress', toolCalls: [] }),
+    );
+    sendEvent('thread.run.step.completed', earlierSteps[1]);
+  }
+  runSteps.set(runId, [...earlierSteps, createdStep]);
+  thread.messages.push(message);
+  sendEvent('thread.run.step.created', createdStep);
   sendEvent('thread.message.created', { ...message, status: 'in_progress', completed_at: null });
   let index = 0;
   const finish = (status) => {
@@ -364,6 +430,7 @@ function sendSlowAssistantStream(res, { assistant, thread }) {
     slowRuns.delete(runId);
     const settled = { ...run, status, cancelled_at: status === 'cancelled' ? now() : null };
     runs.set(runId, settled);
+    runSteps.set(runId, [...earlierSteps, runStep({ ...step, status })]);
     sendEvent(status === 'cancelled' ? 'thread.run.cancelled' : 'thread.run.completed', settled);
     res.write('data: [DONE]\n\n');
     res.end();
@@ -377,6 +444,13 @@ function sendSlowAssistantStream(res, { assistant, thread }) {
       object: 'thread.message.delta',
       delta: { content: [{ index: 0, type: 'text', text: { value, annotations: [] } }] },
     });
+    if (drop && index >= DROP_AFTER_CHUNKS) {
+      /** The run stays in progress at the provider; only the connection streaming it is gone. */
+      clearInterval(timer);
+      slowRuns.delete(runId);
+      res.destroy();
+      return;
+    }
     if (index >= 120) {
       finish('completed');
     }
@@ -421,6 +495,8 @@ const server = http.createServer(async (req, res) => {
     assistants.clear();
     threads.clear();
     runs.clear();
+    runSteps.clear();
+    unreadableSteps.clear();
     requests.length = 0;
     sendJson(res, 200, { ok: true });
     return;
@@ -577,12 +653,26 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const prompt = latestUserText(thread);
+      /** The app names a run to the browser (its `sync` frame) only once the run exists, so a
+       *  stop sent while this holds reaches the app before the browser knows the conversation.
+       *  The run is then refused rather than started, so it writes nothing after the test. */
+      if (prompt.includes('E2E_ASSISTANT_LATE_RUN')) {
+        await new Promise((resolve) => setTimeout(resolve, LATE_RUN_MS));
+        sendError(res, 400, 'E2E late run abandoned');
+        return;
+      }
       if (prompt.includes('E2E_ASSISTANT_ERROR')) {
         sendError(res, 400, 'E2E assistant run failed');
         return;
       }
       if (prompt.includes('E2E_ASSISTANT_SLOW')) {
-        sendSlowAssistantStream(res, { assistant, thread });
+        sendSlowAssistantStream(res, {
+          assistant,
+          thread,
+          stepsFail: prompt.includes('E2E_ASSISTANT_STEPS_FAIL'),
+          parts: prompt.includes('E2E_ASSISTANT_PARTS'),
+          drop: prompt.includes('E2E_ASSISTANT_DROP'),
+        });
         return;
       }
       sendAssistantStream(res, { assistant, thread });
@@ -608,6 +698,27 @@ const server = http.createServer(async (req, res) => {
         runs.set(runId, cancelled);
       }
       sendJson(res, 200, runs.get(runId) ?? cancelled);
+      return;
+    }
+
+    const runStepsPath = pathMatch(url.pathname, /^\/v1\/threads\/([^/]+)\/runs\/([^/]+)\/steps$/);
+    if (runStepsPath && req.method === 'GET') {
+      const [threadId, runId] = runStepsPath;
+      const run = runs.get(runId);
+      if (!run || run.thread_id !== threadId) {
+        sendError(res, 404, `No run found with id '${runId}'`);
+        return;
+      }
+      /** A 4xx, which the OpenAI SDK does not retry, so the stop fails at once. */
+      if (unreadableSteps.has(runId)) {
+        sendError(res, 400, 'E2E run steps unavailable');
+        return;
+      }
+      const order = url.searchParams.get('order') ?? 'desc';
+      const data = [...(runSteps.get(runId) ?? [])].sort((a, b) =>
+        order === 'asc' ? a.created_at - b.created_at : b.created_at - a.created_at,
+      );
+      sendJson(res, 200, listResponse(data));
       return;
     }
 

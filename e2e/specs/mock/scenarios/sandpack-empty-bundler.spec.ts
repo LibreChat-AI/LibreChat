@@ -43,7 +43,7 @@ const cases = [
     name:
       'an HTML artifact preview loads the default static bundler when the URL is empty ' +
       '@scenario:empty-static-bundler-url-uses-default-bundler',
-    trigger: 'page.html HTML Opens as a rendered preview Click to open',
+    trigger: 'Open artifact: page.html. Opens as a rendered preview',
     text: [
       ':::artifact{identifier="e2e-empty-static" type="text/html" title="page.html"}',
       '<main><h1>Static preview</h1></main>',
@@ -55,7 +55,7 @@ const cases = [
     name:
       'a React artifact preview loads the default bundler when the URL is empty ' +
       '@scenario:empty-runtime-bundler-url-uses-default-bundler',
-    trigger: 'App.tsx React Opens as a rendered preview Click to open',
+    trigger: 'Open artifact: App.tsx. Opens as a rendered preview',
     text: [
       ':::artifact{identifier="e2e-empty-runtime" type="application/vnd.react" title="App.tsx"}',
       '```tsx',

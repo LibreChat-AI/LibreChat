@@ -16,7 +16,7 @@ services:
       start_period: 10s
       retries: 12
   mongodb-init:
-    image: mongo:8.0.20
+    image: docker.io/library/mongo:8.0.20
     restart: 'no'
     depends_on:
       mongodb:

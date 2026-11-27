@@ -7,6 +7,7 @@ import {
   canUseAppConnection,
   canBackfillSharedServerInstructions,
   getMissingRuntimeBodyPlaceholderFields,
+  getMCPAgentConnectionKey,
   hasRuntimeUrlPlaceholders,
   isUserSourced,
   requiresEphemeralUserConnection,
@@ -31,7 +32,11 @@ import {
   requiresScheduledMCPBearerConnection,
   isScheduledMCPBearer,
 } from '~/schedules/bearer';
-import { MCPAuthenticationRejectedError, createScheduledMCPTransportError } from '~/mcp/errors';
+import {
+  MCPAuthenticationRejectedError,
+  createScheduledMCPTransportError,
+  isAuthorizationRequired,
+} from '~/mcp/errors';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
@@ -513,7 +518,12 @@ export abstract class UserConnectionManager {
         ? getMCPRequestSignal(requestScopedConnections)
         : opts.signal;
       opts.signal?.throwIfAborted();
-      const requestConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const baseConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const requestConnectionKey = getMCPAgentConnectionKey(
+        baseConnectionKey,
+        config,
+        opts.requestBody,
+      );
       const existing = requestScopedConnections.connections.get(requestConnectionKey) as
         | MCPConnection
         | undefined;
@@ -574,7 +584,7 @@ export abstract class UserConnectionManager {
         logPrefix: `[MCP][User: ${userId}][${serverName}]`,
       });
       const creationGuard: ConnectionCreationGuard = { cancelledBy: null };
-      this.registerConnectionCreation(requestConnectionKey, creationGuard);
+      this.registerConnectionCreation(baseConnectionKey, creationGuard);
       const connectionPromise = this.createUserConnectionWithLifecycleRestarts(
         {
           ...opts,
@@ -608,7 +618,7 @@ export abstract class UserConnectionManager {
           return connection;
         })
         .finally(() => {
-          this.unregisterConnectionCreation(requestConnectionKey, creationGuard);
+          this.unregisterConnectionCreation(baseConnectionKey, creationGuard);
           if (requestScopedConnections.pending.get(requestConnectionKey) === connectionPromise)
             requestScopedConnections.pending.delete(requestConnectionKey);
         });
@@ -1179,7 +1189,9 @@ export abstract class UserConnectionManager {
       signal?.throwIfAborted();
       return connection;
     } catch (error) {
-      logger.error(`[MCP][User: ${userId}] Failed to establish connection`);
+      logger[isAuthorizationRequired(error) ? 'warn' : 'error'](
+        `[MCP][User: ${userId}] Failed to establish connection`,
+      );
       // Ensure partial connection state is cleaned up if initialization fails
       connection?.removeAllListeners?.('toolsChanged');
       await connection?.dispose().catch(() => {

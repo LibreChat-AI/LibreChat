@@ -102,7 +102,7 @@ function createDeps(overrides: Partial<AdminConfigDeps> = {}): AdminConfigDeps {
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: methods.writeConfigDocument,
-    unsetConfigField: methods.unsetConfigField,
+    unsetConfigFieldTracked: methods.unsetConfigFieldTracked,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -227,7 +227,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, LIFECYCLE_TIMEOUT_MS);
 
 describe('hiding librechat.yaml custom endpoints by key', () => {

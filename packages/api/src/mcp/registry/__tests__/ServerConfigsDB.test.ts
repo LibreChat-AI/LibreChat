@@ -101,7 +101,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, 60000);
 
 beforeEach(async () => {
@@ -1001,7 +1001,7 @@ describe('ServerConfigsDB', () => {
       ).not.toContain('another-users-secret');
     });
 
-    it('does not reuse saved keys when the same server name is recreated at a new URL', async () => {
+    it('does not reuse the name or saved keys when a deleted server is replaced at a new URL', async () => {
       const created = await serverConfigsDB.add('temp-name', config, userId);
       const oldField = Object.keys(created.config.customUserVars!)[0];
       const savedVars = await saveUserKey(created.serverName, oldField);
@@ -1015,7 +1015,7 @@ describe('ServerConfigsDB', () => {
         },
         userId,
       );
-      expect(recreated.serverName).toBe(created.serverName);
+      expect(recreated.serverName).not.toBe(created.serverName);
       expect(getMissingCustomUserVars(recreated.config, savedVars)).toHaveLength(1);
       expect(
         JSON.stringify(processMCPEnv({ options: recreated.config, customUserVars: savedVars })),

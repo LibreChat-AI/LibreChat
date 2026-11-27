@@ -1,6 +1,8 @@
+import path from 'node:path';
 import { CODE_ENV_KINDS } from 'librechat-data-provider';
 import type { CodeEnvKind } from 'librechat-data-provider';
 import type FormData from 'form-data';
+import type { CodeObjectInfo } from './receipt';
 
 /**
  * Resource identity required by codeapi's sessionKey resolver. The
@@ -89,4 +91,65 @@ export function buildCodeEnvDownloadQuery(identity: CodeEnvIdentity): string {
     params.set('version', String(identity.version));
   }
   return `?${params.toString()}`;
+}
+
+function readCodeObjectInfo(entry: object): CodeObjectInfo {
+  return {
+    ...('etag' in entry && typeof entry.etag === 'string' ? { etag: entry.etag } : {}),
+    ...('size' in entry && typeof entry.size === 'number' ? { size: entry.size } : {}),
+    ...('lastModified' in entry && typeof entry.lastModified === 'string'
+      ? { lastModified: entry.lastModified }
+      : {}),
+  };
+}
+
+export function getCodeEnvSessionFileIds(
+  files: readonly unknown[],
+  sessionId: string,
+): Set<string> {
+  return new Set(getCodeEnvSessionObjects(files, sessionId).keys());
+}
+
+/** Summary keys follow Code API's canonicalObjectKey/legacyObjectId storage contract. */
+export function getCodeEnvSessionObjects(
+  files: readonly unknown[],
+  sessionId: string,
+): Map<string, CodeObjectInfo> {
+  const ids = new Map<string, CodeObjectInfo>();
+  const prefix = `${sessionId}/`;
+  const canonicalDirectory = '.codeapi-objects/';
+  for (const file of files) {
+    if (file == null || typeof file !== 'object') {
+      continue;
+    }
+    if ('fileId' in file && typeof file.fileId === 'string' && file.fileId !== '') {
+      ids.set(file.fileId, readCodeObjectInfo(file));
+      continue;
+    }
+    if (!('name' in file) || typeof file.name !== 'string' || !file.name.startsWith(prefix)) {
+      continue;
+    }
+    const name = file.name.slice(prefix.length);
+    if (name.startsWith(canonicalDirectory)) {
+      const encoded = name.slice(canonicalDirectory.length);
+      if (!/^[A-Za-z0-9_-]+$/.test(encoded)) {
+        continue;
+      }
+      const id = Buffer.from(encoded, 'base64url').toString('utf8');
+      if (id && Buffer.from(id, 'utf8').toString('base64url') === encoded) {
+        ids.set(id, readCodeObjectInfo(file));
+      }
+      continue;
+    }
+    if (!name || name === '.' || name === '..' || /[/\\\p{Cc}]/u.test(name)) {
+      continue;
+    }
+    // Legacy storage appends the filename's final extension, including for dotted IDs.
+    const extension = path.posix.extname(name);
+    const id = extension === '' ? name : name.slice(0, -extension.length);
+    if (id) {
+      ids.set(id, readCodeObjectInfo(file));
+    }
+  }
+  return ids;
 }

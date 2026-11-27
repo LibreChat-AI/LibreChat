@@ -1,13 +1,14 @@
-import React, { memo, useMemo, useState, useCallback } from 'react';
+import React, { memo, useRef, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { useElementSize } from '@librechat/chat/react';
 import { ComposerChip as Chip } from '@librechat/chat/components';
 import { Mic, Plus, Check, Square, ChevronDown } from 'lucide-react';
 import { IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
+import { useElementSize, useElementSizeSelect } from '@librechat/chat/react';
 import type { TConversation, EModelEndpoint, EndpointFileConfig } from 'librechat-data-provider';
 import type { PaletteEntry, PaletteMode } from '~/hooks/Input/usePaletteEntries';
 import type { Dictation } from '~/hooks/Input/useDictation';
 import type { ExtendedFile, FileSetter } from '~/common';
+import { SERVERS_KEY, ServersChip, ServersCatalog, useServersEntry } from './Servers';
 import usePaletteEntries from '~/hooks/Input/usePaletteEntries';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import useToolFavorites from '~/hooks/Input/useToolFavorites';
@@ -16,7 +17,7 @@ import { useBadgeRowContext } from '~/Providers';
 import TokenUsage from '../TokenUsage';
 import { useLocalize } from '~/hooks';
 import Thinking from './Thinking';
-import Palette from './Palette';
+import Palette from '../Palette';
 import { cn } from '~/utils';
 
 /** Stable identity so the memo below is not defeated when tools are hidden. */
@@ -271,22 +272,38 @@ function Bar({
   /* Catalog skills are excluded: a picked skill is staged context for the next
      turn, so it belongs in the tray above the textarea with files and quotes.
      Built-in tool pins remain visible while off. */
-  const barEntries = useMemo(() => projectBarEntries(entries), [entries]);
+  const [serversOpen, setServersOpen] = useState(false);
+  const serversTriggerRef = useRef<HTMLButtonElement>(null);
+  const openServers = useCallback(() => setServersOpen(true), []);
+  const closeServers = useCallback(() => setServersOpen(false), []);
+  const serversEntry = useServersEntry(entries, openServers);
+  /* Closed with the chip, so a chip that comes back does not reopen the list. */
+  if (serversEntry == null && serversOpen) {
+    setServersOpen(false);
+  }
+  const barEntries = useMemo(() => {
+    const projected = projectBarEntries(entries);
+    return serversEntry != null ? [serversEntry, ...projected] : projected;
+  }, [entries, serversEntry]);
   /* Catalog order puts long skill and MCP names mid-row, stranding the rest of
      that row; packing widest-first fills the rows instead. */
   const { ordered: packedEntries, rootRef, widths } = useChipPacking(barEntries);
 
-  const { ref: rowRef, width: rowWidth } = useElementSize<HTMLDivElement>();
   const { ref: plusRef, width: plusWidth } = useElementSize<HTMLSpanElement>();
   const { ref: controlsRef, width: controlsWidth } = useElementSize<HTMLDivElement>();
 
   /* A row of their own once they need one, and it runs the full width of the
      composer (the `+` corner included), since the buttons are on the row below
-     it rather than in the flow. */
-  const inlineChips = useMemo(
-    () =>
-      chipsFitInline(packedEntries, widths, rowWidth - plusWidth - controlsWidth - CHIP_GAP * 2),
-    [packedEntries, widths, rowWidth, plusWidth, controlsWidth],
+     it rather than in the flow. Only whether they fit is read from the row's
+     width: the composer changes width on every frame while a panel beside the
+     chat opens or closes, and the bar must not render for each of them. */
+  const chipsFitRow = useCallback(
+    ({ width }: { width: number }) =>
+      chipsFitInline(packedEntries, widths, width - plusWidth - controlsWidth - CHIP_GAP * 2),
+    [packedEntries, widths, plusWidth, controlsWidth],
+  );
+  const { ref: rowRef, value: inlineChips } = useElementSizeSelect<HTMLDivElement, boolean>(
+    chipsFitRow,
   );
   const dictating = dictation.active || dictation.transcribing;
 
@@ -318,6 +335,9 @@ function Bar({
   const barClass = 'flex flex-col gap-1.5 px-2 pb-2';
 
   const renderChip = (entry: PaletteEntry) => {
+    if (entry.key === SERVERS_KEY) {
+      return <ServersChip key={entry.key} entry={entry} triggerRef={serversTriggerRef} />;
+    }
     const pinnedInactive = entry.pinned && !entry.active;
     const menuModes = chipMenuModes(entry.modes);
     const modeMenu = menuModes.length > 0 ? <ChipModes modes={menuModes} /> : null;
@@ -526,6 +546,14 @@ function Bar({
           )}
         </div>
       </div>
+      {serversEntry != null && (
+        <ServersCatalog
+          open={serversOpen}
+          onClose={closeServers}
+          entries={entries}
+          returnFocusRef={serversTriggerRef}
+        />
+      )}
       {mcpConfigProps && (
         <MCPConfigDialog
           {...mcpConfigProps}

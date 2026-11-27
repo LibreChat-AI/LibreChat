@@ -1,5 +1,6 @@
 import { canToolResourceConsume, EToolResources, FileSources } from 'librechat-data-provider';
 import type { RunFileProvenance, TFile } from 'librechat-data-provider';
+import { isDestinationUnchosen } from '~/files/consumers';
 
 export interface RunFileScope {
   userId: string;
@@ -48,7 +49,7 @@ export function describeRunFiles(files: readonly TFile[], runId: string): RunFil
     const paths: RunFileEntry['paths'] = [];
     if (file.llmDeliveryPath === 'provider') paths.push('provider');
     if (file.llmDeliveryPath === 'text' || file.source === FileSources.text) paths.push('text');
-    const chosen = file.metadata?.destinationChosen !== false;
+    const chosen = !isDestinationUnchosen(file);
     if (file.source !== FileSources.text) {
       if (
         canToolResourceConsume(EToolResources.execute_code, file.type) &&

@@ -1,9 +1,11 @@
 import React, { useCallback, useMemo } from 'react';
 import { Switch } from '@librechat/client';
 import { Network, Users } from 'lucide-react';
+import { isSubagentGraphsEnabled } from 'librechat-data-provider';
 import type { ControllerRenderProps } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import { StaticAgentRow, AddAgentSelect, ListMeta, useSelectableAgents } from './AgentList';
+import { setSubagentsEnabled } from '../Tools/items/orchestration';
 import OrchestrationPattern from './OrchestrationPattern';
 import { useLocalize } from '~/hooks';
 import { ToggleSetting } from './ui';
@@ -13,6 +15,7 @@ interface AgentSubagentsProps {
   currentAgentId: string;
   maxSubagents: number;
   fileSharingEnabled?: boolean;
+  capabilities?: readonly string[];
 }
 
 const AgentSubagents: React.FC<AgentSubagentsProps> = ({
@@ -20,6 +23,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
   currentAgentId,
   maxSubagents,
   fileSharingEnabled = false,
+  capabilities,
 }) => {
   const localize = useLocalize();
 
@@ -28,7 +32,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
   const enabled = value.enabled === true;
   const allowSelf = value.allowSelf !== false;
   const agentIds = useMemo(() => value.agent_ids ?? [], [value.agent_ids]);
-  const graphCount = value.graphs?.length ?? 0;
+  const graphCount = isSubagentGraphsEnabled(value, capabilities) ? (value.graphs?.length ?? 0) : 0;
 
   const { options, getAgent } = useSelectableAgents({ currentAgentId, exclude: agentIds });
 
@@ -41,14 +45,9 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
        * undefined would leave the server copy enabled. An explicit
        * `enabled: false` flows through as a real update.
        */
-      field.onChange({
-        ...value,
-        enabled: next,
-        allowSelf: value.allowSelf ?? true,
-        agent_ids: value.agent_ids ?? [],
-      });
+      field.onChange(setSubagentsEnabled(value, next, capabilities));
     },
-    [field, value],
+    [field, value, capabilities],
   );
 
   const setAllowSelf = useCallback(

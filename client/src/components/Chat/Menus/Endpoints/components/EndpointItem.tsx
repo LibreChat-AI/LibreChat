@@ -57,7 +57,9 @@ const SettingsButton = ({
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       className={cn(
-        'group/button flex items-center gap-1.5 rounded-md px-1.5',
+        'group/button -my-0.5 flex min-h-6 items-center justify-center gap-1.5 rounded-md px-1.5',
+        /* Both targets (24px, 32px on touch) spill into the row's padding instead of growing it. */
+        'any-pointer-coarse:-my-1.5 any-pointer-coarse:min-h-8 any-pointer-coarse:min-w-8',
         'text-text-secondary transition-colors duration-150',
         'hover:bg-surface-tertiary hover:text-text-primary',
         'focus-visible:bg-surface-tertiary focus-visible:text-text-primary',

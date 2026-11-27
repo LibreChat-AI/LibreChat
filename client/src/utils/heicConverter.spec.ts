@@ -10,7 +10,7 @@ describe('heicConverter', () => {
 
   it('does not load heic-to for non-HEIC files', async () => {
     jest.doMock(
-      'heic-to',
+      'heic-to/csp',
       () => {
         throw new Error('heic-to should not be loaded');
       },
@@ -28,7 +28,7 @@ describe('heicConverter', () => {
       'Failed to fetch dynamically imported module: /assets/heic-to-old.js',
     );
     jest.doMock(
-      'heic-to',
+      'heic-to/csp',
       () => {
         throw failure;
       },
@@ -46,7 +46,7 @@ describe('heicConverter', () => {
 
   it('does not recover for a decoder error after its chunk loaded', async () => {
     jest.doMock(
-      'heic-to',
+      'heic-to/csp',
       () => ({
         isHeic: async () => true,
         heicTo: async () => {
@@ -68,7 +68,7 @@ describe('heicConverter', () => {
   it('detects and converts HEIC files after lazily loading heic-to', async () => {
     const isHeic = jest.fn(async () => true);
     const heicTo = jest.fn(async () => new Blob(['jpeg'], { type: 'image/jpeg' }));
-    jest.doMock('heic-to', () => ({ heicTo, isHeic }), { virtual: true });
+    jest.doMock('heic-to/csp', () => ({ heicTo, isHeic }), { virtual: true });
 
     const { processFileForUpload } = await import('./heicConverter');
     const file = new File(['heic data'], 'photo.heic', {

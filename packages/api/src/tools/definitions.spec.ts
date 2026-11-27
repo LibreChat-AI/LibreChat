@@ -1,4 +1,10 @@
-import { Providers, WebSearchToolDefinition, GitHubCompareToolDefinition } from '@librechat/agents';
+import { ChatBedrockConverse } from '@langchain/aws';
+import {
+  Providers,
+  createSchemaOnlyTools,
+  WebSearchToolDefinition,
+  GitHubCompareToolDefinition,
+} from '@librechat/agents';
 import type {
   LoadToolDefinitionsParams,
   LoadToolDefinitionsResult,
@@ -1057,7 +1063,47 @@ describe('definitions.ts', () => {
         expect((toolDef as { serverName?: string }).serverName).toBe('Connector__Company');
       });
 
-      it('should convert empty MCP tool descriptions to undefined', async () => {
+      it.each(['sys__all__sys_mcp_gateway', 'web_search_mcp_gateway'])(
+        'sends valid Bedrock tool descriptions for %s',
+        async (selection) => {
+          const toolName = 'web_search_mcp_gateway';
+          for (const description of [undefined, '', 'Search the web']) {
+            mockGetOrFetchMCPServerTools.mockResolvedValue({
+              [toolName]: {
+                function: {
+                  name: toolName,
+                  description,
+                  parameters: { type: 'object', properties: {} },
+                },
+              },
+            });
+            const result = await loadToolDefinitions(
+              { userId: 'user', agentId: 'agent', tools: [selection], provider: Providers.BEDROCK },
+              {
+                getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+                isBuiltInTool: mockIsBuiltInTool,
+              },
+            );
+            const model = new ChatBedrockConverse({
+              model: 'global.openai.gpt-6.1-sol',
+              region: 'us-east-1',
+              credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+            });
+            const params = model.invocationParams({
+              tools: createSchemaOnlyTools(result.toolDefinitions),
+            });
+            expect(params.toolConfig?.tools?.[0]).toEqual({
+              toolSpec: {
+                name: toolName,
+                description: description || `${toolName} tool`,
+                inputSchema: { json: { type: 'object', properties: {} } },
+              },
+            });
+          }
+        },
+      );
+
+      it('should supply fallback descriptions for empty MCP tool descriptions', async () => {
         const mockServerTools = {
           no_desc_tool_mcp_asana: {
             function: {
@@ -1092,14 +1138,14 @@ describe('definitions.ts', () => {
 
         const noDef = result.toolDefinitions.find((d) => d.name === 'no_desc_tool_mcp_asana');
         expect(noDef).toBeDefined();
-        expect(noDef?.description).toBeUndefined();
+        expect(noDef?.description).toBe('no_desc_tool_mcp_asana tool');
 
         const hasDef = result.toolDefinitions.find((d) => d.name === 'has_desc_tool_mcp_asana');
         expect(hasDef).toBeDefined();
         expect(hasDef?.description).toBe('List tasks');
       });
 
-      it('should convert empty description to undefined for directly named MCP tool', async () => {
+      it('should supply a fallback description for a directly named MCP tool', async () => {
         const toolName = 'no_desc_tool_mcp_asana';
         mockGetOrFetchMCPServerTools.mockResolvedValue({
           [toolName]: {
@@ -1126,7 +1172,7 @@ describe('definitions.ts', () => {
 
         const def = result.toolDefinitions.find((d) => d.name === toolName);
         expect(def).toBeDefined();
-        expect(def?.description).toBeUndefined();
+        expect(def?.description).toBe(`${toolName} tool`);
       });
     });
 

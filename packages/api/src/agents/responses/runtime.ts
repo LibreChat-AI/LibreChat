@@ -39,6 +39,7 @@ import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { getRunDiscoveredTools, getRunMCPToolAliases } from '../run';
 import { markNativeCodeToolApprovalRequests } from '../hitl/byom';
 import { assertCodeExecutionApprovalBinding } from '../execution';
+import { storedToolContinuationReference } from './continuation';
 import { getBackgroundResponseWorkerAdmission } from './worker';
 import { getChatProjectContextKey } from '~/projects/context';
 import { buildPendingBackgroundResponse } from './background';
@@ -90,6 +91,8 @@ function responseBody(value: unknown): value is TerminalResponse {
 export interface ResponseExecutionRuntime {
   completion?: ResponseTerminalCompletion;
   responseId: string;
+  /** A background worker run, whose events go to a stream the owner can follow. */
+  background: boolean;
   inputChain: <T>(chain: { messages: T[]; parentMessageId: string }) => {
     messages: T[];
     parentMessageId: string;
@@ -130,8 +133,6 @@ export interface ResponseExecutionRuntime {
   toolContext: (execution: { createdAt: number }) => {
     streamId: string | null;
     jobCreatedAt?: number;
-    /** A foreground run answers an API client and has no stream its owner can follow. */
-    unattended?: boolean;
   };
   connection?: AgentExecutionConnection;
   hooks: Pick<
@@ -818,7 +819,8 @@ export function createResponseExecutionRuntime(
     toolContext: (execution) =>
       admission
         ? { streamId: admission.record.responseId, jobCreatedAt: execution.createdAt }
-        : { streamId: null, unattended: true },
+        : { streamId: null },
+    background: admission != null,
     responseId:
       admission?.record.responseId ?? (continuation.generateResponseId ?? generateResponseId)(),
     connection: admission
@@ -838,10 +840,17 @@ export function createResponseExecutionRuntime(
     hooks,
     async resolveContinuation(envelope: ResponsesRunEnvelope) {
       if (!admission)
-        return resolveResponseContinuation(
-          envelope.payload.previous_response_id,
-          envelope.principal.userId,
-          continuation,
+        return (
+          storedToolContinuationReference(
+            req,
+            envelope.principal,
+            envelope.payload.previous_response_id,
+          ) ??
+          resolveResponseContinuation(
+            envelope.payload.previous_response_id,
+            envelope.principal.userId,
+            continuation,
+          )
         );
       const record = admission.record;
       if (

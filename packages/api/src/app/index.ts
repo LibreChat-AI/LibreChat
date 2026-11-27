@@ -1,4 +1,5 @@
 export * from './service';
+export * from './strict';
 export * from './allowlist';
 export * from './rebinding';
 export * from './overrides';
@@ -12,6 +13,7 @@ export * from './permissions';
 export * from './cdn';
 export * from './checks';
 export * from './resolve';
+export { createBannerHandler } from './banner';
 export * from './shutdown';
 export * from './server';
 export * from './readiness';

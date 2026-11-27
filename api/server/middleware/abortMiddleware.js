@@ -150,16 +150,13 @@ async function abortMessage(req, res) {
   res.send(JSON.stringify(finalEvent));
 }
 
+/** A failed stop reaches the app's error handler, which answers it, so the client can settle. */
 const handleAbort = function () {
   return async function (req, res) {
-    try {
-      if (isEnabled(process.env.LIMIT_CONCURRENT_MESSAGES)) {
-        await clearPendingReq({ userId: req.user.id });
-      }
-      return await abortMessage(req, res);
-    } catch (err) {
-      logger.error('[abortMessage] handleAbort error', err);
+    if (isEnabled(process.env.LIMIT_CONCURRENT_MESSAGES)) {
+      await clearPendingReq({ userId: req.user.id });
     }
+    return await abortMessage(req, res);
   };
 };
 

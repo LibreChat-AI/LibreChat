@@ -184,6 +184,144 @@ function taskHandler(
 }
 
 describe('RedisSubagentTaskControlTransport', () => {
+  it('bounds a missing initial SUBSCRIBE acknowledgement and closes only its subscriber', async () => {
+    jest.useFakeTimers();
+    const bus = new FakeRedisBus();
+    const publisher = bus.createClient();
+    const subscriber = bus.createClient();
+    jest.spyOn(subscriber, 'subscribe').mockImplementation(() => new Promise(() => undefined));
+    const transport = new RedisSubagentTaskControlTransport(
+      asRedis(publisher),
+      asRedis(subscriber),
+    );
+    try {
+      const binding = transport.bind(taskHandler()).then(
+        () => 'bound',
+        (error: unknown) => error,
+      );
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(await binding).toBeInstanceOf(SubagentTaskOwnerUnavailableError);
+      expect(subscriber.disconnected).toBe(true);
+      expect(subscriber.listeners.size).toBe(0);
+      expect(publisher.disconnected).toBe(false);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      await transport.destroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('ignores a message callback queued before destruction', async () => {
+    const bus = new FakeRedisBus();
+    const subscriber = bus.createClient();
+    const transport = new RedisSubagentTaskControlTransport(
+      asRedis(bus.createClient()),
+      asRedis(subscriber),
+    );
+    const control = jest.fn(() => ({ status: 'not_found' as const }));
+    await transport.bind(taskHandler({ control }));
+    const listener = [...subscriber.listeners][0];
+    const channel = [...subscriber.channels][0];
+    await transport.destroy();
+
+    listener(
+      channel,
+      JSON.stringify({
+        version: 1,
+        kind: 'request',
+        operation: 'control',
+        requestId: 'late-request',
+        requesterId: 'requester',
+        scopeId: 'scope-1',
+        taskId: 'task-1',
+        invocationId: 'invocation-1',
+        expiresAt: Date.now() + 1000,
+        command: { action: 'queue', message: 'late control' },
+      }),
+    );
+    await Promise.resolve();
+
+    expect(control).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a control reply that settles after destruction', async () => {
+    const bus = new FakeRedisBus();
+    const publisher = bus.createClient();
+    const subscriber = bus.createClient();
+    const transport = new RedisSubagentTaskControlTransport(
+      asRedis(publisher),
+      asRedis(subscriber),
+    );
+    let finish!: (value: SubagentTaskControlResult) => void;
+    const control = jest.fn(
+      () =>
+        new Promise<SubagentTaskControlResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await transport.bind(taskHandler({ control }));
+    const channel = [...subscriber.channels][0];
+    bus.publish(
+      channel,
+      JSON.stringify({
+        version: 1,
+        kind: 'request',
+        operation: 'control',
+        requestId: 'pending-request',
+        requesterId: 'requester',
+        scopeId: 'scope-1',
+        taskId: 'task-1',
+        invocationId: 'invocation-1',
+        expiresAt: Date.now() + 1000,
+        command: { action: 'queue', message: 'pending control' },
+      }),
+    );
+    await Promise.resolve();
+    expect(control).toHaveBeenCalledTimes(1);
+    await transport.destroy();
+    const publish = jest.spyOn(publisher, 'publish');
+
+    finish({ status: 'not_found' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('does not issue queued owner refreshes after destruction', async () => {
+    jest.useFakeTimers();
+    const bus = new FakeRedisBus();
+    const publisher = bus.createClient();
+    const transport = new RedisSubagentTaskControlTransport(
+      asRedis(publisher),
+      asRedis(bus.createClient()),
+      { registrationHeartbeatMs: 1 },
+    );
+    const tasks = Array.from({ length: 36 }, (_, index) => snapshot({ taskId: `task-${index}` }));
+    const releases: Array<() => void> = [];
+    try {
+      await transport.bind(taskHandler({ list: () => tasks }));
+      for (const task of tasks) await transport.registerTask('scope-1', task.taskId, 60_000);
+      bus.registrationHook = () =>
+        new Promise<void>((resolve) => {
+          releases.push(resolve);
+        });
+      const evalCommand = jest.spyOn(publisher, 'eval');
+      await jest.advanceTimersByTimeAsync(1);
+      expect(releases).toHaveLength(32);
+
+      await transport.destroy();
+      for (const release of releases) release();
+      await jest.advanceTimersByTimeAsync(1);
+
+      expect(evalCommand).toHaveBeenCalledTimes(32);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      await transport.destroy();
+      jest.useRealTimers();
+    }
+  });
+
   it('waits for the fail-fast publisher before reporting itself bound', async () => {
     const bus = new FakeRedisBus();
     const publisher = new EventEmitter() as EventEmitter & { status: string };

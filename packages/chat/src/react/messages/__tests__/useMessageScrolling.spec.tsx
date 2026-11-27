@@ -58,8 +58,10 @@ class MockResizeObserver {
     MockResizeObserver.instances.push(this);
   }
 
-  trigger() {
-    this.callback([], this as unknown as ResizeObserver);
+  /** With a `width`, the observation reports the content at that width, as the browser's does. */
+  trigger(width?: number) {
+    const entries = width == null ? [] : [{ contentRect: { width } } as ResizeObserverEntry];
+    this.callback(entries, this as unknown as ResizeObserver);
   }
 }
 
@@ -127,12 +129,17 @@ function createContextValue(overrides: Partial<ScrollingInputs> = {}): Scrolling
 /** Stands in for the message list, which feeds the hook from the chat context. */
 const ScrollingInputsContext = createContext<ScrollingInputs>(createContextValue());
 
+/** The hook's report of content added above the reader, as the mounting thread makes it. */
+let insertAbove: (height: number) => void = () => undefined;
+
 function ScrollingHarness({ messagesTree }: { messagesTree?: TMessage[] | null }) {
   const inputs = useContext(ScrollingInputsContext);
-  const { contentRef, scrollableRef, messagesEndRef, debouncedHandleScroll } = useMessageScrolling({
-    ...inputs,
-    messagesTree,
-  });
+  const { contentRef, scrollableRef, messagesEndRef, debouncedHandleScroll, handleInsertAbove } =
+    useMessageScrolling({
+      ...inputs,
+      messagesTree,
+    });
+  insertAbove = handleInsertAbove;
 
   return (
     <div ref={scrollableRef} onScroll={debouncedHandleScroll} data-testid="scrollable">
@@ -310,6 +317,38 @@ describe('useMessageScrolling resize reconciliation', () => {
     expect(scrollable.scrollTop).toBe(300);
   });
 
+  /**
+   * A long thread goes on mounting rows above the reader after it opens. Each step moves the
+   * scroll position down by what it added, to hold them in place, and a reader who has just
+   * begun to scroll up has moved less than that: read as a move towards the end, it handed
+   * them back to the stream they were leaving.
+   */
+  it('does not take rows mounting above a reader for the reader heading to the end', () => {
+    renderScrolling();
+
+    const scrollable = screen.getByTestId('scrollable');
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(scrollable, 'clientHeight', { value: 200, configurable: true });
+    scrollable.scrollTop = 800;
+    act(() => {
+      mockScrollCallback?.();
+    });
+
+    /** A step adds 500px above while the reader's wheel has taken them 60px up. */
+    fireEvent.wheel(scrollable, { deltaY: -60 });
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1500, configurable: true });
+    scrollable.scrollTop = 800 + 500 - 60;
+    act(() => insertAbove(500));
+    fireEvent.scroll(scrollable);
+
+    /** The reply grows: a reader still riding it would be taken to its new end. */
+    act(() => {
+      MockResizeObserver.last()?.trigger();
+      MockResizeObserver.last()?.trigger();
+    });
+    expect(scrollable.scrollTop).toBe(1240);
+  });
+
   it('does not follow the next resize after user interaction inside message content', () => {
     renderScrolling();
 
@@ -352,6 +391,126 @@ describe('useMessageScrolling resize reconciliation', () => {
     });
 
     expect(scrollable.scrollTop).toBe(800);
+  });
+
+  /**
+   * A panel opening beside the thread narrows it, every row wraps onto more lines, and the end
+   * moves down past a reader who was on it. Nothing they did moved it, and no run is under way
+   * to ride, so only the width changing says the end should be followed.
+   */
+  it('keeps a reader at the end of an idle thread there when its width changes', () => {
+    renderScrolling({ contextOverrides: { isSubmitting: false } });
+
+    const scrollable = screen.getByTestId('scrollable');
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(scrollable, 'clientHeight', { value: 200, configurable: true });
+    scrollable.scrollTop = 800;
+
+    act(() => {
+      MockResizeObserver.last()?.trigger(900);
+    });
+    expect(scrollable.scrollTop).toBe(800);
+
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1100, configurable: true });
+    act(() => {
+      MockResizeObserver.last()?.trigger(580);
+    });
+    expect(scrollable.scrollTop).toBe(900);
+
+    /** And through every frame of a panel that slides, each one a little narrower. */
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1160, configurable: true });
+    act(() => {
+      MockResizeObserver.last()?.trigger(560);
+    });
+    expect(scrollable.scrollTop).toBe(960);
+  });
+
+  /**
+   * The browser sends a scroll event for a re-wrap, and it arrives before the resize observer
+   * does. By then the end is already hundreds of pixels away, so a reading of "near the end"
+   * taken there says the reader left, when the thread left them.
+   */
+  it('still counts a reader as on the end when the re-wrap is announced by a scroll first', () => {
+    renderScrolling({ contextOverrides: { isSubmitting: false } });
+
+    const scrollable = screen.getByTestId('scrollable');
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(scrollable, 'clientHeight', { value: 200, configurable: true });
+    scrollable.scrollTop = 800;
+    act(() => {
+      MockResizeObserver.last()?.trigger(900);
+    });
+
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1300, configurable: true });
+    fireEvent.scroll(scrollable);
+    act(() => {
+      MockResizeObserver.last()?.trigger(580);
+    });
+
+    expect(scrollable.scrollTop).toBe(1100);
+  });
+
+  it('leaves a reader who scrolled up where they are when the width changes', () => {
+    renderScrolling({ contextOverrides: { isSubmitting: false } });
+
+    const scrollable = screen.getByTestId('scrollable');
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(scrollable, 'clientHeight', { value: 200, configurable: true });
+    scrollable.scrollTop = 800;
+    fireEvent.scroll(scrollable);
+    scrollable.scrollTop = 100;
+    fireEvent.scroll(scrollable);
+
+    act(() => {
+      MockResizeObserver.last()?.trigger(900);
+    });
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1100, configurable: true });
+    act(() => {
+      MockResizeObserver.last()?.trigger(580);
+    });
+
+    expect(scrollable.scrollTop).toBe(100);
+  });
+
+  it('does not take an idle reader to a new end the thread grew to at the same width', () => {
+    renderScrolling({ contextOverrides: { isSubmitting: false } });
+
+    const scrollable = screen.getByTestId('scrollable');
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(scrollable, 'clientHeight', { value: 200, configurable: true });
+    scrollable.scrollTop = 800;
+
+    act(() => {
+      MockResizeObserver.last()?.trigger(900);
+    });
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1400, configurable: true });
+    act(() => {
+      MockResizeObserver.last()?.trigger(900);
+    });
+
+    expect(scrollable.scrollTop).toBe(800);
+  });
+
+  /** Opening a child's thread from its card is a press inside the content that narrows the
+   *  thread: the press is not the reader leaving the end. */
+  it('keeps the end for a reader whose press inside the thread is what opened the panel', () => {
+    renderScrolling({ contextOverrides: { isSubmitting: false } });
+
+    const scrollable = screen.getByTestId('scrollable');
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(scrollable, 'clientHeight', { value: 200, configurable: true });
+    scrollable.scrollTop = 800;
+    act(() => {
+      MockResizeObserver.last()?.trigger(900);
+    });
+
+    fireEvent.pointerDown(screen.getByTestId('content'));
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1100, configurable: true });
+    act(() => {
+      MockResizeObserver.last()?.trigger(580);
+    });
+
+    expect(scrollable.scrollTop).toBe(900);
   });
 
   it('clamps the scroll position back to content after a resize shrink', () => {

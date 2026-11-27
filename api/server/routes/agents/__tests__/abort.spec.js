@@ -67,20 +67,31 @@ jest.mock('~/server/services/Schedules', () => ({
     mockAcknowledgeScheduledStopPersistence(...args),
 }));
 
-jest.mock('~/server/middleware', () => ({
-  uaParser: (req, res, next) => next(),
-  checkBan: (req, res, next) => next(),
-  requireJwtAuth: (req, res, next) => {
-    req.user = { id: 'test-user-123' };
-    next();
-  },
-  moderateText: (req, res, next) => next(),
-  agentEventUserLimiter: (req, res, next) => next(),
-  messageIpLimiter: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => next(),
-  messageUserLimiter: (req, res, next) => next(),
-  requireTermsAcceptance: (req, res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    uaParser: (req, res, next) => next(),
+    checkBan: (req, res, next) => next(),
+    requireJwtAuth: (req, res, next) => {
+      req.user = { id: 'test-user-123' };
+      next();
+    },
+    moderateText: (req, res, next) => next(),
+    agentEventUserLimiter: (req, res, next) => next(),
+    messageIpLimiter: (req, res, next) => next(),
+    configMiddleware: (req, res, next) => next(),
+    messageUserLimiter: (req, res, next) => next(),
+    requireTermsAcceptance: (req, res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 
 // Mock the chat module - needs to be a router
 jest.mock('~/server/routes/agents/chat', () => require('express').Router());
@@ -179,6 +190,41 @@ describe('Agent Abort Endpoint', () => {
           jobStreamId,
           expect.objectContaining({ transformAbortContent: expect.any(Function) }),
         );
+      });
+
+      it('should refuse to abort a background child job, which its task store owns', async () => {
+        const jobStreamId = 'child-thread-123';
+
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: {
+            userId: 'test-user-123',
+            subagentTaskId: 'task-1',
+            subagentParentConversationId: 'parent-1',
+          },
+        });
+
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .send({ conversationId: jobStreamId });
+
+        expect(response.status).toBe(409);
+        expect(response.body).toMatchObject({ code: 'CHILD_THREAD_READ_ONLY' });
+        expect(mockGenerationJobManager.abortJob).not.toHaveBeenCalled();
+        expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(mockSaveConvo).not.toHaveBeenCalled();
+      });
+
+      it("should answer 403, not 409, for another user's background child job", async () => {
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'other-user-456', subagentTaskId: 'task-1' },
+        });
+
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .send({ conversationId: 'child-thread-123' });
+
+        expect(response.status).toBe(403);
+        expect(mockGenerationJobManager.abortJob).not.toHaveBeenCalled();
       });
 
       it('should fail closed when job has no userId metadata', async () => {
