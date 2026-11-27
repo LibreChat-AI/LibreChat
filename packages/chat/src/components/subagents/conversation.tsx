@@ -422,9 +422,15 @@ function RecoveredChildMessage({
         recovery.ready ||
         !isLiveSubagentStatus(props.turn.activity.status)),
   });
+  const [reread, setReread] = useState<'idle' | 'loading' | 'settled'>('idle');
+  const snapshot = props.turn.contentRecoveryAvailable === false ? undefined : recovered.data;
+  /** Recovered content stands in for the turn's activity once it has anything to show. */
+  const replaced = useMemo(
+    () => snapshot?.content.some((part) => part != null && !isEmptyContentPart(part)) === true,
+    [snapshot],
+  );
   const turn = useMemo(() => {
-    const snapshot = recovered.data;
-    if (snapshot == null || props.turn.contentRecoveryAvailable === false) {
+    if (snapshot == null) {
       return {
         ...props.turn,
         activity: {
@@ -433,26 +439,38 @@ function RecoveredChildMessage({
         },
       };
     }
-    const preserveActivity = !snapshot.content.some(
-      (part) => part != null && !isEmptyContentPart(part),
-    );
     return {
       ...props.turn,
       activity: {
         ...props.turn.activity,
         messageId: snapshot.messageId,
         content: standardContent(
-          preserveActivity ? getActivityContent(props.turn.activity) : snapshot.content,
+          replaced ? snapshot.content : getActivityContent(props.turn.activity),
           'hidden',
         ),
         status: snapshot.status,
-        activityTruncated: preserveActivity
-          ? props.turn.activity.activityTruncated
-          : snapshot.throughSequence < snapshot.targetThroughSequence ||
-            (!isLiveSubagentStatus(snapshot.status) && snapshot.recovery === 'partial'),
+        activityTruncated: replaced
+          ? snapshot.throughSequence < snapshot.targetThroughSequence ||
+            (!isLiveSubagentStatus(snapshot.status) && snapshot.recovery === 'partial')
+          : props.turn.activity.activityTruncated,
       },
     };
-  }, [recovered.data, props.turn]);
+  }, [props.turn, replaced, snapshot]);
+  /** Recovered parts come from the task's content, so only reading it again can fill a short
+   *  capture: the thread view's exact read would leave them on screen unchanged. */
+  let onLoadDetails = props.onLoadDetails;
+  let detailState = props.detailState;
+  if (replaced) {
+    const settle = () => setReread('settled');
+    onLoadDetails = () => {
+      setReread('loading');
+      void recovered.refetch().then(settle, settle);
+    };
+    detailState = reread === 'settled' ? 'unavailable' : reread;
+    if (reread === 'settled' && recovered.isError && !recovered.isUnavailable) {
+      detailState = 'error';
+    }
+  }
   const notice =
     props.turn.contentRecoveryAvailable !== false &&
     recovered.isError &&
@@ -478,6 +496,8 @@ function RecoveredChildMessage({
         }
         toolContentQuery={useToolContent}
         notice={notice}
+        detailState={detailState}
+        onLoadDetails={onLoadDetails}
       />
     </TaskContentScopeContext.Provider>
   );

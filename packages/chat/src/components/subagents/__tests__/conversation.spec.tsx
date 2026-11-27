@@ -4,7 +4,7 @@
 import React, { useContext, useState } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import { Provider as JotaiProvider, createStore } from 'jotai';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, within, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type {
   FullToolCall,
   PartMetadata,
@@ -1116,3 +1116,213 @@ it.each(['completed', 'failed', 'cancelled', 'interrupted'] as const)(
     expect(content).toHaveLength(3);
   },
 );
+
+describe('recovered turn details', () => {
+  const recovery = {
+    parentConversationId: 'parent',
+    threadId: 'child',
+    selectedTaskId: 'task-1',
+    ready: true,
+  };
+  const capture = (overrides: Record<string, unknown> = {}) => ({
+    messageId: 'task-1:assistant',
+    status: 'completed',
+    recovery: 'partial',
+    content: [{ type: ContentTypes.TEXT, text: 'Captured work.' }],
+    throughSequence: 1,
+    targetThroughSequence: 1,
+    ...overrides,
+  });
+  const shortened: ChildConversationTurn = {
+    ...turns[0],
+    activity: { ...turns[0].activity, activityTruncated: true },
+  };
+  const renderTurn = (
+    turn: ChildConversationTurn,
+    props: Partial<React.ComponentProps<typeof SubagentConversation>> = {},
+  ) =>
+    render(
+      <ChatSurfaceHarness>
+        <SubagentConversation
+          author={author}
+          parentAuthor={parentAuthor}
+          recovery={recovery}
+          turns={[turn]}
+          {...props}
+        />
+      </ChatSurfaceHarness>,
+    );
+
+  afterEach(() => mockRecoveredQuery.mockReset());
+
+  it.each([
+    { label: 'a partial terminal capture', watermark: {} },
+    {
+      label: 'a snapshot short of its target',
+      watermark: { recovery: 'complete', throughSequence: 0 },
+    },
+  ])('reads $label again for a turn the thread view did not shorten', async ({ watermark }) => {
+    let finish: () => void = () => undefined;
+    const refetch = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    mockRecoveredQuery.mockReturnValue({
+      data: capture(watermark),
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    });
+    const loadDetails = jest.fn();
+    renderTurn(turns[0], { onLoadTurnDetails: loadDetails });
+
+    expect(screen.getByText('Captured work.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('com_ui_subagent_activity_details_unavailable'),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(loadDetails).not.toHaveBeenCalled();
+    expect(screen.getByText('com_ui_loading')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
+
+    await act(async () => finish());
+    expect(screen.getByText('com_ui_subagent_activity_details_unavailable')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_loading')).not.toBeInTheDocument();
+  });
+
+  it('shows what the reread recovered and drops the notice once the capture is complete', async () => {
+    let data = capture();
+    const refetch = jest.fn(async () => {
+      data = capture({
+        recovery: 'complete',
+        content: [
+          { type: ContentTypes.TEXT, text: 'Captured work.' },
+          { type: ContentTypes.TEXT, text: 'Late work.' },
+        ],
+        throughSequence: 2,
+        targetThroughSequence: 2,
+      });
+    });
+    mockRecoveredQuery.mockImplementation(() => ({
+      data,
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    }));
+    renderTurn(turns[0], { onLoadTurnDetails: jest.fn() });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    expect(await screen.findByText('Late work.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('com_ui_subagent_activity_details_unavailable'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_loading')).not.toBeInTheDocument();
+  });
+
+  it('offers to read again when the reread fails', async () => {
+    let failed = false;
+    const refetch = jest.fn(() =>
+      Promise.resolve().then(() => {
+        failed = true;
+      }),
+    );
+    mockRecoveredQuery.mockImplementation(() => ({
+      data: capture(),
+      isError: failed,
+      isUnavailable: false,
+      refetch,
+    }));
+    renderTurn(turns[0]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    /** The load error above the turn offers its own retry; the details notice keeps one too. */
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'com_ui_retry' })).toHaveLength(2),
+    );
+    fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_retry' })[1]);
+    expect(refetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('com_ui_loading')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'com_ui_retry' })).toHaveLength(2),
+    );
+  });
+
+  it('calls a capture the task no longer serves unavailable after the reread', async () => {
+    let gone = false;
+    const refetch = jest.fn(async () => {
+      gone = true;
+    });
+    mockRecoveredQuery.mockImplementation(() => ({
+      data: capture(),
+      isError: gone,
+      isUnavailable: gone,
+      refetch,
+    }));
+    renderTurn(turns[0]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    expect(
+      await screen.findByText('com_ui_subagent_activity_details_unavailable'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+  });
+
+  it('rereads a partial capture even where the thread view shortened the turn and has no more', async () => {
+    const refetch = jest.fn(() => Promise.resolve());
+    mockRecoveredQuery.mockReturnValue({
+      data: capture(),
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    });
+    const loadDetails = jest.fn();
+    renderTurn(shortened, {
+      onLoadTurnDetails: loadDetails,
+      detailStateByTask: new Map([['task-1', 'unavailable' as const]]),
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(loadDetails).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText('com_ui_subagent_activity_details_unavailable'),
+    ).toBeInTheDocument();
+  });
+
+  it('loads the thread view details while recovered content has nothing to show', () => {
+    const refetch = jest.fn(() => Promise.resolve());
+    mockRecoveredQuery.mockReturnValue({
+      data: capture({ content: [], throughSequence: -1, targetThroughSequence: -1 }),
+      isError: false,
+      isUnavailable: false,
+      refetch,
+    });
+    const loadDetails = jest.fn();
+    renderTurn(shortened, { onLoadTurnDetails: loadDetails });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    expect(loadDetails).toHaveBeenCalledWith('task-1');
+    expect(refetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps a complete capture free of any details notice on a shortened turn', () => {
+    mockRecoveredQuery.mockReturnValue({
+      data: capture({ recovery: 'complete' }),
+      isError: false,
+      isUnavailable: false,
+      refetch: jest.fn(() => Promise.resolve()),
+    });
+    renderTurn(shortened, { onLoadTurnDetails: jest.fn() });
+
+    expect(screen.getByText('Captured work.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('com_ui_subagent_activity_details_unavailable'),
+    ).not.toBeInTheDocument();
+  });
+});
