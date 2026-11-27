@@ -1,10 +1,11 @@
 import { createElement } from 'react';
-import { dataService } from 'librechat-data-provider';
+import { dataService, QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { TPromptGroup, TResolvedPromptResponse } from 'librechat-data-provider';
+import type { TPrompt, TPromptGroup, TResolvedPromptResponse } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import usePromptContent, { usePromptContentResolver } from '../usePromptContent';
+import { PromptContentBlockedError, PromptRevisionNotFoundError } from '~/utils';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -13,6 +14,7 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       resolvePromptGroup: jest.fn(),
+      getPrompts: jest.fn(),
     },
   };
 });
@@ -20,6 +22,19 @@ jest.mock('librechat-data-provider', () => {
 const resolvePromptGroup = dataService.resolvePromptGroup as jest.MockedFunction<
   typeof dataService.resolvePromptGroup
 >;
+const getPrompts = dataService.getPrompts as jest.MockedFunction<typeof dataService.getPrompts>;
+
+function makePrompt(_id: string, prompt: string): TPrompt {
+  return {
+    _id,
+    groupId: 'group-1',
+    author: 'author-1',
+    prompt,
+    type: 'text',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
 
 function makeGroup(overrides: Partial<TPromptGroup> = {}): TPromptGroup {
   return {
@@ -89,7 +104,7 @@ describe('usePromptContent', () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    expect(resolvePromptGroup).toHaveBeenCalledWith('group-1');
+    expect(resolvePromptGroup).toHaveBeenCalledWith('group-1', undefined);
     expect(result.current.text).toBe('Live Langfuse text');
     expect(result.current.resolved).toEqual(resolved);
     // React Query reports "no error" as `null`, not `undefined`, once a query has run.
@@ -143,6 +158,172 @@ describe('usePromptContent', () => {
 
     expect(result.current.isLoading).toBe(false);
     expect(resolvePromptGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe('usePromptContent with a selection', () => {
+  it('keeps the Production behavior for an explicit Production selection', () => {
+    const queryClient = createQueryClient();
+
+    const { result } = renderHook(
+      () => usePromptContent(makeGroup(), { selection: { type: 'production' } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    expect(result.current.text).toBe('Native production text');
+    expect(getPrompts).not.toHaveBeenCalled();
+    expect(resolvePromptGroup).not.toHaveBeenCalled();
+  });
+
+  it('reads a native exact revision from the group prompt list', async () => {
+    const queryClient = createQueryClient();
+    getPrompts.mockResolvedValue([
+      makePrompt('prompt-2', 'Version two text'),
+      makePrompt('prompt-1', 'Version one text'),
+    ]);
+
+    const { result } = renderHook(
+      () => usePromptContent(makeGroup(), { selection: { type: 'exact', promptId: 'prompt-1' } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    expect(result.current.isLoading).toBe(true);
+    await waitFor(() => expect(result.current.text).toBe('Version one text'));
+
+    expect(getPrompts).toHaveBeenCalledWith({ groupId: 'group-1' });
+    expect(result.current.error).toBeNull();
+    expect(resolvePromptGroup).not.toHaveBeenCalled();
+  });
+
+  it('reports a native exact revision missing from the list as not found', async () => {
+    const queryClient = createQueryClient();
+    getPrompts.mockResolvedValue([makePrompt('prompt-2', 'Version two text')]);
+
+    const { result } = renderHook(
+      () => usePromptContent(makeGroup(), { selection: { type: 'exact', promptId: 'prompt-1' } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).toBeInstanceOf(PromptRevisionNotFoundError);
+    expect(result.current.text).toBe('');
+  });
+
+  it('reloads a cached list that lacks the revision before reporting not found', async () => {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(
+      [QueryKeys.prompts, 'group-1'],
+      [makePrompt('prompt-2', 'Version two text')],
+    );
+    getPrompts.mockResolvedValue([
+      makePrompt('prompt-3', 'Version three text'),
+      makePrompt('prompt-2', 'Version two text'),
+    ]);
+
+    const { result } = renderHook(
+      () => usePromptContent(makeGroup(), { selection: { type: 'exact', promptId: 'prompt-3' } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.error).toBeNull();
+    await waitFor(() => expect(result.current.text).toBe('Version three text'));
+    expect(getPrompts).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides cached text of a revision until the reload confirms it', async () => {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(
+      [QueryKeys.prompts, 'group-1'],
+      [makePrompt('prompt-1', 'Cached text')],
+    );
+    getPrompts.mockResolvedValue([{ ...makePrompt('prompt-1', ''), contentFilterBlocked: true }]);
+
+    const { result } = renderHook(
+      () => usePromptContent(makeGroup(), { selection: { type: 'exact', promptId: 'prompt-1' } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.text).toBe('');
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(PromptContentBlockedError));
+    expect(result.current.text).toBe('');
+  });
+
+  it('reports a blocked native exact revision as blocked', async () => {
+    const queryClient = createQueryClient();
+    getPrompts.mockResolvedValue([{ ...makePrompt('prompt-1', ''), contentFilterBlocked: true }]);
+
+    const { result } = renderHook(
+      () => usePromptContent(makeGroup(), { selection: { type: 'exact', promptId: 'prompt-1' } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).toBeInstanceOf(PromptContentBlockedError);
+    expect(result.current.text).toBe('');
+  });
+
+  it('reports a blocked native Production as blocked', () => {
+    const queryClient = createQueryClient();
+    const group = makeGroup({ productionPrompt: { prompt: '', contentFilterBlocked: true } });
+
+    const { result } = renderHook(() => usePromptContent(group), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    expect(result.current.error).toBeInstanceOf(PromptContentBlockedError);
+    expect(result.current.text).toBe('');
+  });
+
+  it('reports a prompt list that is not a list as a load failure', async () => {
+    const queryClient = createQueryClient();
+    getPrompts.mockResolvedValue({ message: 'Error getting prompts' } as unknown as TPrompt[]);
+
+    const { result } = renderHook(
+      () => usePromptContent(makeGroup(), { selection: { type: 'exact', promptId: 'prompt-1' } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).toBeInstanceOf(Error);
+    expect(result.current.error).not.toBeInstanceOf(PromptRevisionNotFoundError);
+  });
+
+  it('resolves a Langfuse exact selection by its version', async () => {
+    const queryClient = createQueryClient();
+    resolvePromptGroup.mockResolvedValue(
+      langfuseResolved({ prompt: 'Version 4 text', version: 4 }),
+    );
+    const group = makeGroup({ source: 'langfuse', productionPrompt: null });
+
+    const { result } = renderHook(
+      () => usePromptContent(group, { selection: { type: 'exact', version: 4 } }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() => expect(result.current.text).toBe('Version 4 text'));
+
+    expect(resolvePromptGroup).toHaveBeenCalledWith('group-1', 4);
+    expect(getPrompts).not.toHaveBeenCalled();
+  });
+
+  it('makes no request while disabled', () => {
+    const queryClient = createQueryClient();
+
+    renderHook(
+      () =>
+        usePromptContent(makeGroup(), {
+          enabled: false,
+          selection: { type: 'exact', promptId: 'prompt-1' },
+        }),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    expect(getPrompts).not.toHaveBeenCalled();
   });
 });
 

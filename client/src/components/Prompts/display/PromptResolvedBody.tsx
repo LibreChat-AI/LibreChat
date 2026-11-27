@@ -9,6 +9,8 @@ interface PromptResolvedBodyProps {
   error: unknown;
   /** Re-issues the resolve request. Omitted hides the retry button. */
   onRetry?: () => void;
+  /** Replaces the Langfuse loading copy, for a native revision read. */
+  loadingLabel?: string;
 }
 
 /**
@@ -16,14 +18,20 @@ interface PromptResolvedBodyProps {
  * `PromptForm`'s `ExternalPromptGroupView`, so a pending or failed Langfuse
  * resolve reads identically in both surfaces.
  */
-const PromptResolvedBody = ({ mainText, isLoading, error, onRetry }: PromptResolvedBodyProps) => {
+const PromptResolvedBody = ({
+  mainText,
+  isLoading,
+  error,
+  onRetry,
+  loadingLabel,
+}: PromptResolvedBodyProps) => {
   const localize = useLocalize();
 
   if (isLoading) {
     return (
       <div className="text-text-secondary flex h-full flex-col items-center justify-center gap-2 text-sm">
         <Spinner className="size-5" aria-hidden="true" />
-        <span>{localize('com_ui_prompt_resolving')}</span>
+        <span>{loadingLabel ?? localize('com_ui_prompt_resolving')}</span>
       </div>
     );
   }

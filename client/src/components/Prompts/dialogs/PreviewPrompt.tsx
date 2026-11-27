@@ -1,5 +1,10 @@
 import { OGDialogContent, OGDialog, OGDialogTitle } from '@librechat/client';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type {
+  TPromptGroup,
+  PromptSelection,
+  TResolvedPromptResponse,
+} from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import PromptDetails from '../display/PromptDetails';
 import { useLocalize } from '~/hooks';
 
@@ -9,6 +14,11 @@ const PreviewPrompt = ({
   open,
   onOpenChange,
   onCloseAutoFocus,
+  selection,
+  showActions,
+  substituteVariables,
+  getVersionLabel,
+  footer,
 }: {
   group: TPromptGroup;
   /** The chat composer's index, forwarded to `PromptDetails` so its Use
@@ -18,6 +28,13 @@ const PreviewPrompt = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCloseAutoFocus?: () => void;
+  /** The revision to show. Defaults to Production. */
+  selection?: PromptSelection;
+  showActions?: boolean;
+  substituteVariables?: boolean;
+  getVersionLabel?: (resolved: TResolvedPromptResponse | undefined) => string;
+  /** Rendered below the prompt details, for example a link to the prompt. */
+  footer?: ReactNode;
 }) => {
   const localize = useLocalize();
   return (
@@ -30,8 +47,13 @@ const PreviewPrompt = ({
         <PromptDetails
           group={group}
           chatIndex={chatIndex}
+          selection={selection}
+          showActions={showActions}
+          substituteVariables={substituteVariables}
+          getVersionLabel={getVersionLabel}
           onUsePrompt={() => onOpenChange(false)}
         />
+        {footer}
       </OGDialogContent>
     </OGDialog>
   );

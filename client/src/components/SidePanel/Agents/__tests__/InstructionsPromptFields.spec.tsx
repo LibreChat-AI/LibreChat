@@ -40,6 +40,25 @@ jest.mock('~/Providers/AgentPanelContext', () => ({
   }),
 }));
 
+// The dialog itself is covered by `InstructionsPromptPreview.spec.tsx`; this stub shows what it received.
+jest.mock('~/components/Prompts/dialogs/PreviewPrompt', () => ({
+  __esModule: true,
+  default: ({
+    open,
+    group,
+    selection,
+  }: {
+    open: boolean;
+    group: { _id?: string };
+    selection?: unknown;
+  }) =>
+    open ? (
+      <div role="dialog" data-testid="prompt-preview">
+        {`${group._id}:${JSON.stringify(selection)}`}
+      </div>
+    ) : null,
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, vars?: Record<string, unknown>) =>
     vars ? `${key}:${JSON.stringify(vars)}` : key,
@@ -1135,6 +1154,115 @@ describe('InstructionsPromptFields', () => {
 
       expect(screen.getByRole('group', { name: versionLabel })).toBeInTheDocument();
       expect(screen.getByRole('combobox', { name: versionLabel })).toBeInTheDocument();
+    });
+  });
+  describe('preview button', () => {
+    const previewLabel = 'com_agents_instructions_prompt_preview';
+    const previewButton = () => screen.getByRole('button', { name: previewLabel });
+    /** Clicks the button and returns the reason it gives, or how it failed to stay disabled. */
+    const disabledReason = () => {
+      const button = previewButton();
+      fireEvent.click(button);
+      if (screen.queryByTestId('prompt-preview') != null) {
+        return 'opened';
+      }
+      if (button.getAttribute('aria-disabled') !== 'true') {
+        return 'not aria-disabled';
+      }
+      const reasonId = button.getAttribute('aria-describedby') ?? '';
+      return document.getElementById(reasonId)?.textContent ?? 'no reason';
+    };
+    const nativeLink = (selection: unknown = { type: 'production' }) => ({
+      source: 'native',
+      groupId: 'group1',
+      selection,
+    });
+
+    it('renders disabled with a reason before a prompt is selected', () => {
+      mockGroupsQuery.data = [group()];
+      render(<Harness />);
+
+      expect(disabledReason()).toBe('com_agents_instructions_prompt_preview_no_group');
+    });
+
+    it('renders disabled for a restricted stub', () => {
+      mockGroupsQuery.data = [group()];
+      render(<Harness defaultInstructionsPrompt={{ source: 'native', restricted: true }} />);
+
+      expect(disabledReason()).toBe('com_agents_instructions_prompt_preview_restricted');
+    });
+
+    it('renders disabled for a saved Langfuse link while Langfuse linking is off', () => {
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      expect(disabledReason()).toBe('com_agents_instructions_prompt_preview_langfuse_disabled');
+    });
+
+    it('renders disabled when the linked group is missing from the listing', () => {
+      mockGroupsQuery.data = [group({ _id: 'group_other' })];
+      mockRevisionsQuery.data = nativeRevisions([{ promptId: 'p1', version: 1 }]);
+      render(<Harness defaultInstructionsPrompt={nativeLink()} />);
+
+      expect(disabledReason()).toBe('com_agents_instructions_prompt_preview_not_found');
+    });
+
+    it('renders disabled while the versions load', () => {
+      mockGroupsQuery.data = [group()];
+      mockRevisionsQuery.isLoading = true;
+      render(<Harness defaultInstructionsPrompt={nativeLink()} />);
+
+      expect(disabledReason()).toBe('com_agents_instructions_prompt_preview_loading');
+    });
+
+    it('renders disabled when the versions fail to load', () => {
+      mockGroupsQuery.data = [group()];
+      mockRevisionsQuery.isError = true;
+      mockRevisionsQuery.error = new Error('network down');
+      render(<Harness defaultInstructionsPrompt={nativeLink()} />);
+
+      expect(disabledReason()).toBe('com_agents_instructions_prompt_preview_load_error');
+    });
+
+    it('renders disabled when the pinned version was deleted', () => {
+      mockGroupsQuery.data = [group()];
+      mockRevisionsQuery.data = nativeRevisions([{ promptId: 'p1', version: 1 }]);
+      render(
+        <Harness defaultInstructionsPrompt={nativeLink({ type: 'exact', promptId: 'p_gone' })} />,
+      );
+
+      expect(disabledReason()).toBe('com_agents_instructions_prompt_preview_version_missing');
+    });
+
+    it('opens the preview with the live, unsaved selection', async () => {
+      mockGroupsQuery.data = [group()];
+      mockRevisionsQuery.data = nativeRevisions([
+        { promptId: 'p2', version: 2, isProduction: true },
+        { promptId: 'p1', version: 1 },
+      ]);
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(<Harness defaultInstructionsPrompt={nativeLink()} onMethods={(m) => (methods = m)} />);
+
+      await act(async () => {
+        methods!.setValue(
+          'instructionsPrompt',
+          nativeLink({ type: 'exact', promptId: 'p1' }) as AgentForm['instructionsPrompt'],
+        );
+      });
+      expect(previewButton()).not.toHaveAttribute('aria-disabled');
+      fireEvent.click(previewButton());
+
+      expect(screen.getByTestId('prompt-preview')).toHaveTextContent(
+        'group1:{"type":"exact","promptId":"p1"}',
+      );
     });
   });
 });

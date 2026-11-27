@@ -1,7 +1,16 @@
 import { useMemo } from 'react';
 import { SquareSlash } from 'lucide-react';
 import { replaceSpecialVars } from 'librechat-data-provider';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type {
+  TPromptGroup,
+  PromptSelection,
+  TResolvedPromptResponse,
+} from 'librechat-data-provider';
+import {
+  isExternalPromptGroup,
+  PromptRevisionNotFoundError,
+  PromptContentBlockedError,
+} from '~/utils';
 import { useLocalize, useAuthContext, usePromptContent } from '~/hooks';
 import LangfusePromptMeta from './LangfusePromptMeta';
 import PromptDetailHeader from './PromptDetailHeader';
@@ -18,6 +27,14 @@ interface PromptDetailsProps {
    *  change; undefined where there is no associated chat (`PromptForm`'s
    *  `showActions={false}` read-only view). */
   chatIndex?: number;
+  /** The revision to show. Defaults to Production. */
+  selection?: PromptSelection;
+  /** False shows the raw template, with `{{current_user}}` and the other
+   *  special variables as written. */
+  substituteVariables?: boolean;
+  /** Labels the shown revision next to the group name. Receives the live
+   *  Langfuse read, so a label can name the version that Production resolved to. */
+  getVersionLabel?: (resolved: TResolvedPromptResponse | undefined) => string;
 }
 
 const PromptDetails = ({
@@ -25,14 +42,24 @@ const PromptDetails = ({
   showActions = true,
   onUsePrompt,
   chatIndex,
+  selection,
+  substituteVariables = true,
+  getVersionLabel,
 }: PromptDetailsProps) => {
   const localize = useLocalize();
   const { user } = useAuthContext();
 
-  const { text, resolved, isLoading, error, refetch } = usePromptContent(group);
+  const { text, resolved, isLoading, error, refetch } = usePromptContent(group, { selection });
   const hasError = Boolean(error);
+  // Retrying cannot bring back a deleted revision or unblock a blocked one.
+  const canRetry = !(
+    error instanceof PromptRevisionNotFoundError || error instanceof PromptContentBlockedError
+  );
 
-  const mainText = useMemo(() => replaceSpecialVars({ text, user }), [text, user]);
+  const mainText = useMemo(
+    () => (substituteVariables ? replaceSpecialVars({ text, user }) : text),
+    [substituteVariables, text, user],
+  );
 
   if (!group) {
     return null;
@@ -44,14 +71,15 @@ const PromptDetails = ({
       aria-label={localize('com_ui_prompt_details', { name: group.name })}
     >
       <h1 className="sr-only">{group.name}</h1>
-      <PromptDetailHeader group={group} />
+      <PromptDetailHeader group={group} versionLabel={getVersionLabel?.(resolved)} />
 
       <div className="min-h-0 flex-1">
         <PromptResolvedBody
           mainText={mainText}
           isLoading={isLoading}
           error={error}
-          onRetry={refetch}
+          onRetry={canRetry ? refetch : undefined}
+          loadingLabel={isExternalPromptGroup(group) ? undefined : localize('com_ui_loading')}
         />
       </div>
 

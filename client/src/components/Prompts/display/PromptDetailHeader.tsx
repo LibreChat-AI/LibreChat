@@ -8,9 +8,11 @@ import { isExternalPromptGroup } from '~/utils';
 
 interface PromptDetailHeaderProps {
   group: TPromptGroup;
+  /** Names the shown revision, for example "Production (Version 3)". */
+  versionLabel?: string;
 }
 
-const PromptDetailHeader = ({ group }: PromptDetailHeaderProps) => {
+const PromptDetailHeader = ({ group, versionLabel }: PromptDetailHeaderProps) => {
   const localize = useLocalize();
   const { user } = useAuthContext();
   const formattedDate = group.createdAt ? format(new Date(group.createdAt), 'MMM d, yyyy') : null;
@@ -32,6 +34,12 @@ const PromptDetailHeader = ({ group }: PromptDetailHeaderProps) => {
           <h2 className="text-text-primary truncate text-xl font-bold" title={group.name}>
             {group.name}
           </h2>
+          {versionLabel != null && versionLabel !== '' && (
+            <span className="text-text-secondary shrink-0 text-sm">
+              <span aria-hidden="true">· </span>
+              {versionLabel}
+            </span>
+          )}
           {isGlobalGroup && (
             <TooltipAnchor
               description={localize('com_ui_sr_global_prompt')}

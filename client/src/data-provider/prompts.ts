@@ -371,14 +371,16 @@ export const useRecordPromptUsage = (): UseMutationResult<
  * Resolves a prompt group's content: `/api/prompts/groups/:groupId/resolve`.
  * No cache and no retry, since a Langfuse group's content can change between
  * requests and a stale read should not linger or be retried silently.
+ * `version` reads one exact Langfuse version; omitted resolves Production.
  */
 export const useResolvePromptGroup = (
   id: string,
-  config?: { enabled?: boolean },
+  config?: { enabled?: boolean; version?: number },
 ): QueryObserverResult<t.TResolvedPromptResponse> => {
+  const version = config?.version;
   return useQuery<t.TResolvedPromptResponse>(
-    [QueryKeys.promptGroupContent, id],
-    () => dataService.resolvePromptGroup(id),
+    [QueryKeys.promptGroupContent, id, version],
+    () => dataService.resolvePromptGroup(id, version),
     {
       enabled: config?.enabled,
       retry: false,

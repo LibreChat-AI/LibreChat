@@ -83,6 +83,23 @@ function isContentFilterBlock(error: unknown): boolean {
   return error.response?.data?.error === 'content_filter_block';
 }
 
+/** A native group's prompt list loaded without the selected revision, for example
+ *  after the revision was deleted. Retrying cannot bring it back. */
+export class PromptRevisionNotFoundError extends Error {
+  constructor() {
+    super('Prompt revision not found');
+    this.name = 'PromptRevisionNotFoundError';
+  }
+}
+
+/** The current content policy blocked the prompt text. Retrying cannot unblock it. */
+export class PromptContentBlockedError extends Error {
+  constructor() {
+    super('Prompt content blocked');
+    this.name = 'PromptContentBlockedError';
+  }
+}
+
 /**
  * Maps a failed `GET /api/prompts/groups/:groupId/resolve` call to one short localized
  * line. Checked in order: a content-filter block (`{ error: 'content_filter_block', ... }`,
@@ -95,7 +112,10 @@ function isContentFilterBlock(error: unknown): boolean {
  * back to the dialog mapper's generic fallback key for an unmapped or missing code.
  */
 export function getPromptResolveErrorMessage(error: unknown, localize: LocalizeFunction): string {
-  if (isContentFilterBlock(error)) {
+  if (error instanceof PromptRevisionNotFoundError) {
+    return localize('com_ui_prompt_revision_not_found');
+  }
+  if (error instanceof PromptContentBlockedError || isContentFilterBlock(error)) {
     return localize('com_ui_prompt_resolve_error_blocked');
   }
   if (getResponseStatus(error) === 403) {
