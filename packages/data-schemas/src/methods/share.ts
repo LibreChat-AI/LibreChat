@@ -66,41 +66,59 @@ const isClaimCollision = (error: unknown): boolean => {
   return failure?.code === 11000 && (failure.keyPattern == null || 'claim' in failure.keyPattern);
 };
 
+type ShareOrder = { _id: Types.ObjectId; createdAt: Date };
+
 /**
  * `createSharedLink` checks for an existing share and inserts in separate round trips, so two
  * concurrent creates can both clear the check. Each create inserts its link holding a claim on
- * its key, which the claim index admits once, so a second create for the key fails its insert
- * while the first decides. The holder then re-reads and retracts when another active link holds
- * the key: one published since its check or, for a whole-chat key, a message link of the chat.
- * Retracting for any rival can never keep two links, and with one holder per key it cannot leave
- * none. Ordering by client-stamped `createdAt` and `_id` instead could keep two, since an
- * earlier-stamped insert can land after a later create's re-read.
+ * its key, which the claim index admits once, so a second create for the key fails its insert.
+ * The link keeps the claim for as long as it holds the key. The create then re-reads and
+ * retracts when another active link holds the key: any claimed one, published or still deciding
+ * (for a whole-chat key, a message link of the chat), and an unclaimed one stamped earlier.
+ * Unclaimed links predate the claim, made before the upgrade or by an instance still on the old
+ * code, and that code keeps the earlier of two links by `createdAt`, then `_id`; ordering them
+ * the same way keeps old and new instances from both retracting during a rolling deploy.
+ * Ordering claimed links that way could keep two, since an earlier-stamped insert can land
+ * after a later create's re-read.
  */
 async function hasActiveRival(
   SharedLink: Model<t.ISharedLink>,
-  id: Types.ObjectId,
+  created: ShareOrder,
   key: ShareKey,
 ): Promise<boolean> {
-  const rival = await SharedLink.exists({ ...keyFilter(key), _id: { $ne: id } });
+  const rival = await SharedLink.exists({
+    ...keyFilter(key),
+    _id: { $ne: created._id },
+    $and: [
+      {
+        $or: [
+          { claim: { $exists: true } },
+          { createdAt: null },
+          { createdAt: { $lt: created.createdAt } },
+          { createdAt: created.createdAt, _id: { $lt: created._id } },
+        ],
+      },
+    ],
+  });
   return rival != null;
 }
 
 /**
  * Inserts a create's link holding its key's claim. A claim on a link that still holds the key,
  * as an active link or one whose create is deciding, refuses the insert as "already exists". A
- * claim left on a link that no longer holds it (its create died or could not release it, and the
- * link then expired or moved to another message) is cleared and the insert tried once more.
+ * claim on a link that no longer holds the key, because it expired or moved to another message,
+ * is cleared and the insert tried once more.
  */
 async function insertClaimed(
   SharedLink: Model<t.ISharedLink>,
   link: AnyKeys<t.ISharedLink>,
   key: ShareKey,
-): Promise<Types.ObjectId> {
+): Promise<ShareOrder> {
   const claim = claimOf(key);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const created = await SharedLink.create({ ...link, claim });
-      return created._id;
+      return { _id: created._id, createdAt: created.createdAt ?? new Date() };
     } catch (error) {
       if (!isClaimCollision(error)) {
         throw error;
@@ -1626,7 +1644,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const key = { conversationId, user, targetMessageId };
       await requireClaimIndex(SharedLink);
       const shareId = nanoid();
-      const id = await insertClaimed(
+      const created = await insertClaimed(
         SharedLink,
         {
           shareId,
@@ -1643,8 +1661,8 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         key,
       );
 
-      if (await hasActiveRival(SharedLink, id, key)) {
-        await SharedLink.deleteOne({ _id: id });
+      if (await hasActiveRival(SharedLink, created, key)) {
+        await SharedLink.deleteOne({ _id: created._id });
         logger.warn('[createSharedLink] Concurrent create lost to an existing share', {
           user,
           conversationId,
@@ -1653,20 +1671,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         throw new ShareServiceError('Share already exists', 'SHARE_EXISTS');
       }
 
-      /** The link stays either way: a claim left on it only blocks while it holds the key. */
-      await SharedLink.updateOne(
-        { _id: id },
-        { $unset: { claim: 1 } },
-        { timestamps: false },
-      ).catch((error: unknown) =>
-        logger.warn('[createSharedLink] Claim release failed', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-          user,
-          conversationId,
-        }),
-      );
-
-      return { _id: id.toString(), shareId, conversationId, targetMessageId };
+      return { _id: created._id.toString(), shareId, conversationId, targetMessageId };
     } catch (error) {
       if (preflightFailed) {
         throw error;

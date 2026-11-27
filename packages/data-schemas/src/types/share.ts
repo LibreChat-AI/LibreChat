@@ -57,7 +57,7 @@ export interface ISharedLink {
   snapshotFiles?: boolean;
   /** Per-share file snapshot referenced by the share-scoped file routes. */
   fileSnapshots?: SharedFileSnapshot[];
-  /** Set only while a create decides whether the link stays; never selected by default. */
+  /** The key the link was created for, cleared once it no longer holds it; never selected. */
   claim?: string;
 }
 

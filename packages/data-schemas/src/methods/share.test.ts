@@ -413,14 +413,10 @@ describe('Share Methods', () => {
         expect(surviving.map((share) => share.shareId)).toEqual([result.shareId]);
       });
 
-      test('keep a link whose claim could not be released, and free its key once it expires', async () => {
+      test('free a key once the link holding it expired', async () => {
         const userId = new mongoose.Types.ObjectId().toString();
         const conversationId = `conv_${nanoid()}`;
         await seedConversation(userId, conversationId);
-        jest.spyOn(logger, 'warn').mockImplementation(() => logger);
-        jest
-          .spyOn(SharedLink.collection, 'updateOne')
-          .mockRejectedValueOnce(new Error('release failed'));
 
         const kept = await shareMethods.createSharedLink(userId, conversationId);
         const held = await SharedLink.findOne({ shareId: kept.shareId }).select('+claim').lean();
@@ -442,7 +438,7 @@ describe('Share Methods', () => {
         expect(active.map((share) => share.shareId)).toEqual([result.shareId]);
       });
 
-      test('free a message key whose unreleased claim stayed on a link moved to another message', async () => {
+      test('free a message key once the link holding it moved to another message', async () => {
         const userId = new mongoose.Types.ObjectId().toString();
         const conversationId = `conv_${nanoid()}`;
         const messageId = await seedConversation(userId, conversationId);
@@ -455,10 +451,6 @@ describe('Share Methods', () => {
           isCreatedByUser: true,
           parentMessageId: messageId,
         });
-        jest.spyOn(logger, 'warn').mockImplementation(() => logger);
-        jest
-          .spyOn(SharedLink.collection, 'updateOne')
-          .mockRejectedValueOnce(new Error('release failed'));
 
         const moved = await shareMethods.createSharedLink(userId, conversationId, messageId);
         await shareMethods.updateSharedLink(userId, moved.shareId, laterId);
@@ -468,14 +460,70 @@ describe('Share Methods', () => {
           .select('+claim')
           .lean();
         expect(
-          links.map(({ shareId, targetMessageId, claim }) => ({ shareId, targetMessageId, claim })),
+          links.map(({ shareId, targetMessageId, claim }) => ({
+            shareId,
+            targetMessageId,
+            claimed: claim != null,
+          })),
         ).toEqual(
           expect.arrayContaining([
-            { shareId: moved.shareId, targetMessageId: laterId, claim: undefined },
-            { shareId: result.shareId, targetMessageId: messageId, claim: undefined },
+            { shareId: moved.shareId, targetMessageId: laterId, claimed: false },
+            { shareId: result.shareId, targetMessageId: messageId, claimed: true },
           ]),
         );
         expect(links).toHaveLength(2);
+      });
+
+      test('keep a link when a later-stamped link made without a claim lands during its create', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        const { reached, release } = holdNextInsert();
+
+        const current = settle(shareMethods.createSharedLink(userId, conversationId));
+        await reached;
+        const previous = await SharedLink.create({
+          shareId: `share_${nanoid()}`,
+          conversationId,
+          user: userId,
+          title: 'Created by the previous version',
+        });
+        release();
+
+        const result = await current;
+        expect(result.status).toBe('fulfilled');
+        const winner = result.status === 'fulfilled' ? result.value : undefined;
+        const kept = await SharedLink.findOne({ shareId: winner?.shareId }).lean();
+        expect(kept?.createdAt?.getTime()).toBeLessThanOrEqual(previous.createdAt?.getTime() ?? 0);
+        const links = await SharedLink.find({ conversationId, user: userId }).lean();
+        expect(links.map((share) => share.shareId).sort()).toEqual(
+          [winner?.shareId, previous.shareId].sort(),
+        );
+      });
+
+      test('refuse a create when an earlier-stamped link made without a claim lands during it', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        const { reached, release } = holdNextInsert();
+
+        const current = settle(shareMethods.createSharedLink(userId, conversationId));
+        await reached;
+        const previous = await SharedLink.create({
+          shareId: `share_${nanoid()}`,
+          conversationId,
+          user: userId,
+          title: 'Created by the previous version',
+          createdAt: new Date(Date.now() - 60_000),
+        });
+        release();
+
+        expect(await current).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'SHARE_EXISTS' },
+        });
+        const links = await SharedLink.find({ conversationId, user: userId }).lean();
+        expect(links.map((share) => share.shareId)).toEqual([previous.shareId]);
       });
 
       test('build the claim index for a collection that lacks it', async () => {

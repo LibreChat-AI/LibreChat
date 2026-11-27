@@ -26,9 +26,13 @@ const RACES = [
   `${OVERLAP} keep one share when an earlier-stamped insert lands after a later create finished`,
   `${OVERLAP} refuse a create whose insert lands while another create for the key decides`,
 ];
-const LEFT_CLAIMS = [
-  `${OVERLAP} keep a link whose claim could not be released, and free its key once it expires`,
-  `${OVERLAP} free a message key whose unreleased claim stayed on a link moved to another message`,
+const FREED = [
+  `${OVERLAP} free a key once the link holding it expired`,
+  `${OVERLAP} free a message key once the link holding it moved to another message`,
+];
+const PREVIOUS = [
+  `${OVERLAP} keep a link when a later-stamped link made without a claim lands during its create`,
+  `${OVERLAP} refuse a create when an earlier-stamped link made without a claim lands during it`,
 ];
 const FAILED = `${OVERLAP} leave the next create free after one fails before its insert lands`;
 const TARGETED = `${OVERLAP} refuse a whole-conversation share when a message share lands during its insert`;
@@ -45,7 +49,7 @@ const SEQUENTIAL = [
 ];
 
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const PATTERN = [...RACES, ...LEFT_CLAIMS, FAILED, TARGETED, ...INDEX, ...SEQUENTIAL]
+const PATTERN = [...RACES, ...FREED, ...PREVIOUS, FAILED, TARGETED, ...INDEX, ...SEQUENTIAL]
   .map((title) => `^${escape(title)}$`)
   .join('|');
 
@@ -102,8 +106,14 @@ test.describe('creating one shared link from requests that overlap', () => {
     }
   });
 
-  test('a link left holding its key keeps working and stops blocking new links once it expires or moves to another message @scenario:left-claim-frees-its-key', () => {
-    for (const title of LEFT_CLAIMS) {
+  test('a link that expired or moved to another message stops blocking new links for the key it was created for @scenario:left-claim-frees-its-key', () => {
+    for (const title of FREED) {
+      expectPassed(title);
+    }
+  });
+
+  test('links made before the claim, or by an instance still on the previous version, keep the order that version gives them, so a rolling deploy cannot leave a chat without its link @scenario:previous-version-links-keep-their-order', () => {
+    for (const title of PREVIOUS) {
       expectPassed(title);
     }
   });

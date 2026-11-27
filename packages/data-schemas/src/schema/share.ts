@@ -83,7 +83,7 @@ const shareSchema: Schema<ISharedLink> = new Schema(
       type: [fileSnapshotSchema],
       default: undefined,
     },
-    /** The key a create holds until it decides whether its link stays; see `createSharedLink`. */
+    /** The key the link was created for (conversation, target message); see `createSharedLink`. */
     claim: {
       type: String,
       select: false,
@@ -100,8 +100,9 @@ shareSchema.index({ conversationId: 1, user: 1, targetMessageId: 1, tenantId: 1 
 shareSchema.index({ user: 1, conversationId: 1 });
 shareSchema.index({ updatedAt: -1 });
 /**
- * One link mid-create per key: a second create for it fails its insert instead of racing. Only
- * links being created carry a claim. `createSharedLink` builds it too, for `MONGO_AUTO_INDEX=false`.
+ * One claimed link per key: a second create for the key fails its insert instead of racing. Links
+ * made before the claim existed carry none. `createSharedLink` builds it too, for
+ * `MONGO_AUTO_INDEX=false`.
  */
 export const CLAIM_INDEX: Record<string, 1> = { user: 1, claim: 1 };
 export const CLAIM_INDEX_OPTIONS: {
