@@ -8,15 +8,16 @@ import {
   useSelectorEffects,
   useKeyDialog,
   useEndpoints,
+  useFavorites,
   useLocalize,
 } from '~/hooks';
 import { useAgentsMapContext, useAssistantsMapContext, useLiveAnnouncer } from '~/Providers';
 import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
 import useSelectMention from '~/hooks/Input/useSelectMention';
+import { filterItems, filterSelectorAgents } from './utils';
 import { useCatalogReady } from '~/hooks/useCatalogWarmup';
 import useModelSpecs from '~/hooks/Agents/specs';
-import { filterItems } from './utils';
 
 type ModelSelectorContextType = {
   // State
@@ -73,18 +74,24 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
    * with `useAgentsMap` and `useMentions`. Asking for EDIT here spawned a second full
    * fetch under its own key, holding a duplicate copy of the whole agent list. The
    * marketplace's "my agents" framing is preserved by filtering on `isEditable`, which
-   * the list endpoint resolves from the same ACL read it already performs.
+   * the list endpoint resolves from the same ACL read it already performs. Agents the
+   * user pinned stay in the list too, so a pinned shared agent can be picked here.
    */
   const wantsEditableOnly = permissionLevel === PermissionBits.EDIT;
+  const { favorites } = useFavorites();
+  const pinnedAgentIds = useMemo(
+    () =>
+      new Set(
+        (Array.isArray(favorites) ? favorites : [])
+          .map((favorite) => favorite.agentId)
+          .filter((agentId): agentId is string => !!agentId),
+      ),
+    [favorites],
+  );
   const selectAgents = useCallback(
-    (data: t.AgentListResponse) => {
-      const list = data?.data;
-      if (!wantsEditableOnly) {
-        return list;
-      }
-      return list?.filter((agent) => agent.isEditable !== false);
-    },
-    [wantsEditableOnly],
+    (data: t.AgentListResponse) =>
+      filterSelectorAgents(data?.data, { editableOnly: wantsEditableOnly, pinnedAgentIds }),
+    [wantsEditableOnly, pinnedAgentIds],
   );
   const agentsQuery = useListAgentsQuery(
     { requiredPermission: PermissionBits.VIEW },
