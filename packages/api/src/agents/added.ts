@@ -1,7 +1,9 @@
 import { logger } from '@librechat/data-schemas';
 import {
   Constants,
+  EModelEndpoint,
   isAgentsEndpoint,
+  parseCompactConvo,
   isEphemeralAgentId,
   getEphemeralSender,
   appendAgentIdSuffix,
@@ -14,6 +16,7 @@ import {
 import type { Agent, TModelSpec, TConversation, TEphemeralAgent } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
+import type { ModelSpecParsedBody } from '~/modelSpecs';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
   resolveEphemeralTools,
@@ -22,9 +25,12 @@ import {
 } from '~/agents/toggles';
 import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
 import { orderNames } from '~/agents/promptCache';
+import { applyModelSpecPreset, resolveModelSpecForEndpoint } from '~/modelSpecs';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { getLookupConcurrency } from '~/utils/concurrency';
+import { getAgentInferencePolicy } from '~/agents/input';
 import { getCustomEndpointConfig } from '~/app/config';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { mapWithConcurrency } from '~/utils/promise';
 
 const { mcp_all, mcp_delimiter } = Constants;
@@ -97,6 +103,116 @@ interface LoadAddedAgentParams {
   primaryAgent?: Agent | null;
 }
 
+type AddedModelSpec =
+  | { ok: true; modelSpec: TModelSpec | null; enforce: boolean }
+  | { ok: false; error: 'model-spec-required' | 'invalid-model-spec' | 'model-spec-mismatch' };
+
+/**
+ * Holds the added conversation to the model spec rules `buildEndpointOption`
+ * applies to the primary request: with `modelSpecs.enforce` it needs a spec that
+ * serves its endpoint, and a spec for another endpoint is refused either way. An
+ * unknown spec without enforcement leaves the pane without one.
+ */
+function resolveAddedModelSpec(
+  conversation: Pick<TConversation, 'spec' | 'endpoint'>,
+  modelSpecs: AppConfig['modelSpecs'],
+): AddedModelSpec {
+  /** Read as `loadEphemeralAgent` reads it: a loaded config holds validated specs. */
+  const { list, enforce: enforced } = (modelSpecs ?? {}) as {
+    list?: TModelSpec[];
+    enforce?: boolean;
+  };
+  const enforce = Boolean(list?.length) && enforced === true;
+  const spec = typeof conversation.spec === 'string' ? conversation.spec : '';
+  if (!spec || !list) {
+    return enforce
+      ? { ok: false, error: 'model-spec-required' }
+      : { ok: true, modelSpec: null, enforce };
+  }
+
+  const resolution = resolveModelSpecForEndpoint({
+    modelSpecs: { list },
+    spec,
+    endpoint: conversation.endpoint,
+  });
+  if ('modelSpec' in resolution) {
+    return { ok: true, modelSpec: resolution.modelSpec, enforce };
+  }
+  if (enforce || resolution.error === 'model-spec-mismatch') {
+    return { ok: false, error: resolution.error };
+  }
+  return { ok: true, modelSpec: null, enforce };
+}
+
+/** An enforced spec's preset names the model, as `buildEndpointOption` decides the primary's. */
+function getAddedModel<Model extends string | null | undefined>(
+  model: Model,
+  { modelSpec, enforce }: { modelSpec: TModelSpec | null; enforce: boolean },
+): string | Model {
+  return (enforce && modelSpec?.preset.model) || model;
+}
+
+/** The model `loadAddedAgent` gives an ephemeral added pane, known before the turn starts. */
+export function resolveAddedModel(
+  conversation: Pick<TConversation, 'spec' | 'endpoint' | 'model'>,
+  modelSpecs: AppConfig['modelSpecs'],
+): string | null | undefined {
+  const spec = resolveAddedModelSpec(conversation, modelSpecs);
+  return spec.ok ? getAddedModel(conversation.model, spec) : conversation.model;
+}
+
+/**
+ * Parses the added conversation the way `buildEndpointOption` parses the primary
+ * request: through its endpoint's schema, then its spec's preset. Clients never
+ * receive a spec's private fields such as `promptPrefix`, so only this step can
+ * supply them.
+ */
+function parseAddedConversation({
+  conversation,
+  endpoint,
+  appConfig,
+  modelSpec,
+  enforce,
+}: {
+  conversation: TConversation;
+  endpoint: string;
+  appConfig?: AppConfig;
+  modelSpec: TModelSpec | null;
+  enforce: boolean;
+}): ModelSpecParsedBody | null {
+  /** Only a custom endpoint has no schema of its own, and the pane is sent as
+   *  stored, without the `endpointType` the client derives for the primary. */
+  const endpointType = conversation.endpointType ?? EModelEndpoint.custom;
+  const { customParams } = getAgentInferencePolicy(endpoint, appConfig);
+  const defaultParamsEndpoint = customParams?.defaultParamsEndpoint;
+  try {
+    const parsedBody: ModelSpecParsedBody =
+      parseCompactConvo({
+        endpoint: endpoint as EModelEndpoint,
+        endpointType,
+        conversation,
+        defaultParamsEndpoint,
+      }) ?? {};
+    if (!modelSpec) {
+      return parsedBody;
+    }
+    return applyModelSpecPreset({
+      modelSpec,
+      parsedBody,
+      endpoint,
+      endpointType,
+      defaultParamsEndpoint,
+      includePresetDefaults: enforce,
+    }).parsedBody;
+  } catch (error) {
+    logger.warn(
+      '[loadAddedAgent] Error parsing the added conversation',
+      getSafeErrorMetadata(error),
+    );
+    return null;
+  }
+}
+
 /**
  * Loads an agent from an added conversation (for multi-convo parallel agent execution).
  * Returns the agent config as a plain object, or null if invalid.
@@ -109,7 +225,21 @@ export async function loadAddedAgent(
     return null;
   }
 
+  const appConfig = req.config as AppConfig | undefined;
+  const specResult = resolveAddedModelSpec(conversation, appConfig?.modelSpecs);
+  if (!specResult.ok) {
+    logger.warn(`[loadAddedAgent] Added conversation refused: ${specResult.error}`);
+    return null;
+  }
+  const { modelSpec, enforce } = specResult;
+
   if (conversation.agent_id && !isEphemeralAgentId(conversation.agent_id)) {
+    /** An enforced spec decides the primary's agent, while the added agent's
+     *  access was checked under its own id, so the two have to agree. */
+    if (enforce && modelSpec?.preset.agent_id !== conversation.agent_id) {
+      logger.warn('[loadAddedAgent] Added conversation refused: model-spec-mismatch');
+      return null;
+    }
     const reqRecord = req as Record<string, unknown>;
     let agent = reqRecord.resolvedAddedAgent as Agent | null | undefined;
     if (!agent) {
@@ -126,10 +256,7 @@ export async function loadAddedAgent(
     return agent;
   }
 
-  const { model, endpoint, promptPrefix, spec, ...rest } = conversation as TConversation & {
-    promptPrefix?: string;
-    spec?: string;
-    modelLabel?: string;
+  const { model, endpoint, ...rest } = conversation as TConversation & {
     ephemeralAgent?: TEphemeralAgent;
     [key: string]: unknown;
   };
@@ -139,13 +266,33 @@ export async function loadAddedAgent(
     return null;
   }
 
-  const appConfig = req.config as AppConfig | undefined;
+  const parsedBody = parseAddedConversation({
+    conversation,
+    endpoint,
+    appConfig,
+    modelSpec,
+    enforce,
+  });
+  if (!parsedBody) {
+    return null;
+  }
+  /** Kept out of the parameters as `buildOptions` and `loadEphemeralAgent` keep
+   *  them out of the primary's: request fields, the model and the prompt. */
+  const {
+    spec: _spec,
+    iconURL: _iconURL,
+    agent_id: _agentId,
+    chatProjectId: _chatProjectId,
+    model: _model,
+    promptPrefix,
+    ...model_parameters
+  } = parsedBody;
+  const agentModel = getAddedModel(model, specResult);
+  const instructions = typeof promptPrefix === 'string' ? promptPrefix : '';
+
   const capabilityProfile = resolveMCPClientCapabilityProfile(
     resolveMCPAppsPolicy(appConfig?.mcpSettings?.apps),
   );
-  const modelSpecs = (appConfig?.modelSpecs as { list?: TModelSpec[] })?.list;
-  const modelSpec: TModelSpec | null =
-    spec != null && spec !== '' ? (modelSpecs?.find((s) => s.name === spec) ?? null) : null;
 
   /** An added pane carries no toggles of its own — one badge row is shared by
    *  both panes and submits a single `ephemeralAgent` — so the request's state
@@ -177,18 +324,18 @@ export async function loadAddedAgent(
     }
 
     const sender = getEphemeralSender({
-      modelLabel: rest.modelLabel,
+      modelLabel: model_parameters.modelLabel,
       specLabel: modelSpec?.label,
       modelDisplayLabel: endpointConfig?.modelDisplayLabel as string | undefined,
     });
-    const ephemeralId = encodeEphemeralAgentId({ endpoint, model, sender, index: 1 });
+    const ephemeralId = encodeEphemeralAgentId({ endpoint, model: agentModel, sender, index: 1 });
 
     const result: Record<string, unknown> = {
       id: ephemeralId,
-      instructions: promptPrefix || '',
+      instructions,
       provider: endpoint,
-      model_parameters: {},
-      model,
+      model_parameters,
+      model: agentModel,
       tools: [...primaryAgent.tools],
     };
     applyModelSpecSkills(result, modelSpec, ephemeralAgent?.skills);
@@ -243,24 +390,6 @@ export async function loadAddedAgent(
     tools.push(...keys);
   }
 
-  const model_parameters: Record<string, unknown> = {};
-  const paramKeys = [
-    'temperature',
-    'top_p',
-    'topP',
-    'topK',
-    'presence_penalty',
-    'frequency_penalty',
-    'maxOutputTokens',
-    'maxTokens',
-    'max_tokens',
-  ];
-  for (const key of paramKeys) {
-    if ((rest as Record<string, unknown>)[key] != null) {
-      model_parameters[key] = (rest as Record<string, unknown>)[key];
-    }
-  }
-
   let endpointConfig = (appConfig?.endpoints as Record<string, unknown> | undefined)?.[endpoint] as
     | Record<string, unknown>
     | undefined;
@@ -275,18 +404,18 @@ export async function loadAddedAgent(
   }
 
   const sender = getEphemeralSender({
-    modelLabel: rest.modelLabel,
+    modelLabel: model_parameters.modelLabel,
     specLabel: modelSpec?.label,
     modelDisplayLabel: endpointConfig?.modelDisplayLabel as string | undefined,
   });
-  const ephemeralId = encodeEphemeralAgentId({ endpoint, model, sender, index: 1 });
+  const ephemeralId = encodeEphemeralAgentId({ endpoint, model: agentModel, sender, index: 1 });
 
   const result: Record<string, unknown> = {
     id: ephemeralId,
-    instructions: promptPrefix || '',
+    instructions,
     provider: endpoint,
     model_parameters,
-    model,
+    model: agentModel,
     tools,
   };
 

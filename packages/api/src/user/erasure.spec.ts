@@ -12,6 +12,7 @@ import {
   createMethods,
   tenantStorage,
   createSkillDeletionPersistenceAdapter,
+  createSubscriptions,
   logger,
 } from '@librechat/data-schemas';
 import type { PostgresDatabase } from '@librechat/data-schemas';
@@ -64,6 +65,18 @@ const count = (name: string, filter: Record<string, unknown>) => model(name).cou
 
 async function seedUser(userId: mongoose.Types.ObjectId) {
   const user = userId.toString();
+  await tenantStorage.run({ tenantId: 'tenant-1' }, () =>
+    createSubscriptions(mongoose).create(user, {
+      connection: 'conn_1',
+      agentId: 'agent_1',
+      events: ['github.check_suite.completed'],
+      target: 'new',
+      prompt: 'Look at the failing checks.',
+      actors: 'write',
+      bots: false,
+      enabled: true,
+    }),
+  );
   const skillId = new mongoose.Types.ObjectId();
   const mcpServerId = new mongoose.Types.ObjectId();
   const legacyServerId = new mongoose.Types.ObjectId();
@@ -138,6 +151,7 @@ function createDeps() {
     ...methods,
     openCheckpointDeletion: jest.fn(async () => checkpointDeletion),
     deleteSharedLinks: deleteAllSharedLinksWithCleanup,
+    deleteSubscriptions: createSubscriptions(mongoose).purge,
     deleteStoredFiles: jest.fn(async (files) => {
       order.push('deleteStoredFiles');
       return { deletedFileIds: files.map((file) => file.file_id), failedFileIds: [] };
@@ -215,6 +229,7 @@ describe('eraseUserData', () => {
     expect(await count('AgentQueuedTurn', { user: userId })).toBe(0);
     expect(await count('AgentQueuedTurnSequence', { user: userId })).toBe(0);
     expect(await count('RefreshTokenBridge', { userId: user })).toBe(0);
+    expect(await count('AgentEventSubscription', { user: userId })).toBe(0);
 
     expect(await count('Skill', { _id: other.skillId })).toBe(1);
     expect(await count('MCPServer', { author: otherId })).toBe(2);
@@ -226,6 +241,7 @@ describe('eraseUserData', () => {
     expect(await count('AgentQueuedTurn', { user: otherId })).toBe(1);
     expect(await count('AgentQueuedTurnSequence', { user: otherId })).toBe(1);
     expect(await count('RefreshTokenBridge', { userId: otherId.toString() })).toBe(1);
+    expect(await count('AgentEventSubscription', { user: otherId })).toBe(1);
   });
 
   it('keeps new file retry anchors and provider credentials after concurrent provisioning', async () => {

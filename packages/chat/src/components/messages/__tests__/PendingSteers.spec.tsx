@@ -29,6 +29,7 @@ import { MessagesHostProvider } from '../../../react/messages/host';
 import { createSteerHost } from '../../../__fixtures__/steerHost';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { SteerHostProvider } from '../../../react/steer/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import PendingSteers from '../PendingSteers';
 
 const cancelSteer = jest.fn(async (): Promise<ChatCancelSteerResult> => ({ removed: true }));
@@ -38,10 +39,7 @@ const steerMessage = jest.fn(
 );
 const showToast = jest.fn();
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 function PublishRestore({ restore }: { restore?: RestoreToComposer }) {
   const host = useComposerRestoreHost();
@@ -153,13 +151,9 @@ describe('PendingSteers', () => {
   });
 
   it.each([
-    ['sending', { status: 'sending' as const }, 'com_ui_steer_sending'],
-    ['delivered', { status: 'pending' as const }, 'com_ui_steer_delivered'],
-    [
-      'interrupting',
-      { status: 'pending' as const, preempt: true },
-      'com_ui_steer_in_flight_preempt',
-    ],
+    ['sending', { status: 'sending' as const }, 'Sending…'],
+    ['delivered', { status: 'pending' as const }, 'Waiting to apply'],
+    ['interrupting', { status: 'pending' as const, preempt: true }, 'Interrupt requested'],
   ])('renders one %s status beneath the bubble', (receiptState, over, label) => {
     renderPending([pending(over)]);
 
@@ -167,9 +161,9 @@ describe('PendingSteers', () => {
     expect(screen.getByRole('listitem')).not.toHaveClass('opacity-60');
     expect(screen.getByTestId('steer-receipt')).toHaveAttribute('data-receipt-state', receiptState);
     expect(screen.getAllByText(label)).toHaveLength(1);
-    expect(screen.queryByText('com_ui_sending')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sending...')).not.toBeInTheDocument();
     if (receiptState !== 'sending') {
-      expect(screen.queryByText('com_ui_steer_sending')).not.toBeInTheDocument();
+      expect(screen.queryByText('Sending…')).not.toBeInTheDocument();
     }
   });
 
@@ -181,7 +175,7 @@ describe('PendingSteers', () => {
       ]);
 
       const bubble = within(screen.getByTestId('steer-part'));
-      const quotes = bubble.getByRole('list', { name: 'com_ui_referenced_quotes' });
+      const quotes = bubble.getByRole('list', { name: 'Referenced quotes' });
       const excerpts = within(quotes).getAllByRole('listitem');
       expect(excerpts).toHaveLength(2);
       expect(excerpts[0]).toHaveTextContent('first excerpt with a second line');
@@ -225,13 +219,15 @@ describe('PendingSteers', () => {
   it('renders queue as an icon-only message action', () => {
     renderPending([pending({ status: 'pending' })]);
 
-    expect(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }).textContent).toBe('');
+    expect(screen.getByRole('button', { name: 'Queue for after the response' }).textContent).toBe(
+      '',
+    );
   });
 
   it('renders cancel as an icon-only message action', () => {
     renderPending([pending({ status: 'pending' })]);
 
-    expect(screen.getByRole('button', { name: 'com_ui_cancel' }).textContent).toBe('');
+    expect(screen.getByRole('button', { name: 'Cancel' }).textContent).toBe('');
   });
 
   it('uses the message-action treatment for interrupting a pending steer', () => {
@@ -244,8 +240,8 @@ describe('PendingSteers', () => {
     renderPending([pending({ status: 'pending' })]);
 
     expect(screen.getByTestId('steer-escalate-now')).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'com_ui_convert_to_queue' })).toBeEnabled();
-    const cancel = screen.getByRole('button', { name: 'com_ui_cancel' });
+    expect(screen.getByRole('button', { name: 'Queue for after the response' })).toBeEnabled();
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
     expect(cancel).toBeEnabled();
     expect(cancel.parentElement).toHaveClass('flex-wrap', 'justify-end');
     expect(cancel.parentElement).not.toHaveClass('ps-9');
@@ -254,7 +250,7 @@ describe('PendingSteers', () => {
   it('aligns failed-steer recovery actions with the bubble and allows wrapping', () => {
     renderPending([pending({ status: 'failed' })]);
 
-    const retry = screen.getByRole('button', { name: 'com_ui_retry' });
+    const retry = screen.getByRole('button', { name: 'Retry' });
     expect(retry.parentElement).toHaveClass('flex-wrap', 'justify-end');
     expect(retry.parentElement).not.toHaveClass('ps-9');
   });
@@ -285,16 +281,16 @@ describe('PendingSteers', () => {
 
   it('offers retry and send-as-new on failure', () => {
     renderPending([pending({ status: 'failed' })]);
-    expect(screen.getByText('com_ui_steer_failed_inline')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_retry')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_send_as_new')).toBeInTheDocument();
+    expect(screen.getByText("Couldn't add to this reply")).toBeInTheDocument();
+    expect(screen.getByText('Retry')).toBeInTheDocument();
+    expect(screen.getByText('Send as new message')).toBeInTheDocument();
   });
 
   it('shows the quote count carried by a failed steer', () => {
     renderPending([pending({ status: 'failed', quotes: ['first', 'second'] })]);
 
     expect(screen.getByText('2')).toHaveAttribute('aria-hidden', 'true');
-    expect(screen.getByText('com_ui_queued_quote_count')).toHaveClass('sr-only');
+    expect(screen.getByText('2 quoted excerpts included with this message')).toHaveClass('sr-only');
   });
 
   it('locks recovery actions while a protocol-v1 delivery is uncertain', () => {
@@ -306,9 +302,13 @@ describe('PendingSteers', () => {
       }),
     ]);
 
-    expect(screen.getByText('com_ui_steer_delivery_uncertain')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_retry')).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_send_as_new')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Delivery status is unknown; this steering message may still reach the agent',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Retry')).not.toBeInTheDocument();
+    expect(screen.queryByText('Send as new message')).not.toBeInTheDocument();
   });
 
   it('offers only same-id retry for an uncertain protocol-v2 delivery', () => {
@@ -320,16 +320,20 @@ describe('PendingSteers', () => {
       }),
     ]);
 
-    expect(screen.getByText('com_ui_steer_delivery_uncertain')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_retry')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_send_as_new')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Delivery status is unknown; this steering message may still reach the agent',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Retry')).toBeInTheDocument();
+    expect(screen.queryByText('Send as new message')).not.toBeInTheDocument();
   });
 
   it('reclaims an acknowledged steer before moving it to the queue', async () => {
     const steer = pending({ status: 'pending', steerId: 's-ack' });
     const { jotaiStore } = renderPending([steer]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Queue for after the response' }));
 
     await waitFor(() =>
       expect(cancelSteer).toHaveBeenCalledWith(
@@ -346,11 +350,11 @@ describe('PendingSteers', () => {
     cancelSteer.mockResolvedValue({ removed: false });
     renderPending([pending({ status: 'pending' })]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Queue for after the response' }));
 
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith({
-        message: 'com_ui_steer_already_applied',
+        message: 'That steering message already reached the agent, so it was left in the response',
         status: 'info',
       }),
     );
@@ -358,7 +362,7 @@ describe('PendingSteers', () => {
 
   it('retries the failed steer by id', () => {
     renderPending([pending({ status: 'failed', steerId: 's-failed' })]);
-    fireEvent.click(screen.getByText('com_ui_retry'));
+    fireEvent.click(screen.getByText('Retry'));
     expect(steerMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: CONVO_ID,
@@ -370,9 +374,9 @@ describe('PendingSteers', () => {
 
   it('sends the failed steer as new by id', () => {
     const { jotaiStore } = renderPending([pending({ status: 'failed', steerId: 's-failed' })]);
-    fireEvent.click(screen.getByText('com_ui_send_as_new'));
+    fireEvent.click(screen.getByText('Send as new message'));
     expect(steerMessage).not.toHaveBeenCalled();
-    expect(screen.queryByText('com_ui_retry')).not.toBeInTheDocument();
+    expect(screen.queryByText('Retry')).not.toBeInTheDocument();
     expect(jotaiStore.get(queuedMessagesByConvoId(CONVO_ID)).map((item) => item.text)).toContain(
       'change of plan',
     );
@@ -382,7 +386,7 @@ describe('PendingSteers', () => {
     const restore = jest.fn(() => true);
     const steer = pending({ status: 'failed', steerId: 's-failed', quotes: ['excerpt'] });
     renderPending([steer], undefined, undefined, undefined, undefined, false, restore);
-    fireEvent.click(screen.getByText('com_ui_edit'));
+    fireEvent.click(screen.getByText('Edit'));
     expect(restore).toHaveBeenCalledWith(
       steer.text,
       undefined,
@@ -397,9 +401,9 @@ describe('PendingSteers', () => {
     const { jotaiStore } = renderPending([
       pending({ status: 'failed', steerId: 's-failed', quotes: ['excerpt'] }),
     ]);
-    fireEvent.click(screen.getByText('com_ui_edit'));
+    fireEvent.click(screen.getByText('Edit'));
     expect(showToast).toHaveBeenCalledWith({
-      message: 'com_ui_steer_moved_to_queue',
+      message: 'Moved to the queue: it sends when this response finishes',
       status: 'info',
     });
     expect(jotaiStore.get(queuedMessagesByConvoId(CONVO_ID))[0]?.needsExplicitSend).toBe(true);
@@ -409,7 +413,7 @@ describe('PendingSteers', () => {
      assumes the words are the client's again stays hidden, editing included. */
   it('withholds editing while delivery is uncertain', () => {
     renderPending([pending({ status: 'failed', deliveryUncertain: true })]);
-    expect(screen.queryByText('com_ui_edit')).not.toBeInTheDocument();
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument();
   });
 
   /* The escalation control is the in-thread half of the `escalateSteer`
@@ -439,9 +443,7 @@ describe('PendingSteers', () => {
       renderPending([pending({ status: 'pending', steerId: 's-ack' })]);
       fireEvent.click(screen.getByTestId('steer-escalate-now'));
 
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: 'com_ui_cancel' })).toHaveFocus(),
-      );
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
     });
 
     it.each([
@@ -634,7 +636,7 @@ describe('PendingSteers', () => {
 
     it('labels a steer that is already interrupting', () => {
       renderPending([pending({ status: 'pending', preempt: true })]);
-      expect(screen.getByText('com_ui_steer_in_flight_preempt')).toBeInTheDocument();
+      expect(screen.getByText('Interrupt requested')).toBeInTheDocument();
     });
   });
 });

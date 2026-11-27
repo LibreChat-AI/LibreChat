@@ -8,7 +8,8 @@ import {
 import type { SystemCapability } from '@librechat/data-schemas';
 import type { ScheduleUserContext } from './types';
 
-type AgentAccess = 'ok' | 'missing' | 'forbidden';
+/** A user's access to an agent: allowed, the agent is gone, or the user may not use it. */
+export type AgentAccess = 'ok' | 'missing' | 'forbidden';
 
 export interface AgentFireAccessDeps {
   /** Resolves an agent's internal `_id` by its custom id, or null when it doesn't exist. */

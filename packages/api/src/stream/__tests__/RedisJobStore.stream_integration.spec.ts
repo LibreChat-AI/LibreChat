@@ -443,7 +443,7 @@ describe('RedisJobStore Integration Tests', () => {
     async (writer) => {
       expect(ioredisClient).not.toBeNull();
       const { RedisJobStore } = await import('../implementations/RedisJobStore');
-      const { ScheduledMCPPolicyError } = await import('../../schedules/authorization/policy');
+      const { RunGrantPolicyError } = await import('~/agents/authority/policy');
       const first = new RedisJobStore(ioredisClient!);
       const second = new RedisJobStore(ioredisClient!);
       const id = 'schedule-denial';
@@ -458,9 +458,9 @@ describe('RedisJobStore Integration Tests', () => {
       await first.updateJob(id, { scheduleMCPCompletion: lineage }, job.createdAt);
       expect((await second.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
 
-      const transient = new ScheduledMCPPolicyError('dependency_unavailable', 'warehouse', 'root')
+      const transient = new RunGrantPolicyError('dependency_unavailable', 'warehouse', 'root')
         .outcomes[0];
-      const permanent = new ScheduledMCPPolicyError('binding_mismatch', 'warehouse', 'child')
+      const permanent = new RunGrantPolicyError('binding_mismatch', 'warehouse', 'child')
         .outcomes[0];
       const patch = (scheduleMCPFailure: typeof permanent) => ({
         scheduleMCPFailure,
@@ -492,7 +492,7 @@ describe('RedisJobStore Integration Tests', () => {
         expect(readScheduleMCPReceipts(retained?.scheduleOutcomeError)).toHaveLength(2);
         await second.updateJob(
           id,
-          patch(new ScheduledMCPPolicyError('tool_policy_denied', 'warehouse').outcomes[0]),
+          patch(new RunGrantPolicyError('tool_policy_denied', 'warehouse').outcomes[0]),
           job.createdAt - 1,
         );
         expect((await first.getJob(id))?.scheduleMCPFailure).toEqual(permanent);
@@ -723,6 +723,105 @@ describe('RedisJobStore Integration Tests', () => {
         enumerable: false,
       });
       expect(Object.keys(durableReplacement!)).not.toContain('replacedJob');
+      await store.destroy();
+    });
+
+    test('carries the completion time of a terminal predecessor on its replacement receipt', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const store = new RedisJobStore(ioredisClient);
+      await store.initialize();
+      const streamId = `test-replaced-completed-${Date.now()}`;
+      const jobKey = `stream:{${streamId}}:job`;
+      const providerExecutionId = 'provider-before-replacement';
+      const predecessor = await store.createJob(streamId, 'user-1', streamId, undefined, {
+        providerExecutionId,
+      });
+      await expect(
+        store.beginProviderExecution(streamId, predecessor.createdAt, providerExecutionId),
+      ).resolves.toBe(true);
+      const completedAt = Date.now() - 45_000;
+      await store.transitionStatus(streamId, {
+        from: 'running',
+        to: 'complete',
+        expectCreatedAt: predecessor.createdAt,
+        patch: { completedAt },
+      });
+
+      const replacement = await store.createJob(streamId, 'user-1', streamId);
+      expect(replacement.replacedJob).toMatchObject({
+        createdAt: predecessor.createdAt,
+        status: 'complete',
+        completedAt,
+        providerDrained: false,
+      });
+      expect(Object.keys(replacement.replacedJob!)).not.toContain('completedAt');
+      const durable = (await store.getJob(streamId)) as typeof replacement;
+      expect(durable.replacedJob).toMatchObject({ status: 'complete', completedAt });
+      expect(Object.keys(durable.replacedJob!)).not.toContain('completedAt');
+
+      // A later replacement inherits the receipt unchanged, next to one for a
+      // predecessor that never completed.
+      const successor = await store.createJob(streamId, 'user-1', streamId);
+      expect(successor.replacedJob?.completedAt).toBeUndefined();
+      const chain = ((await store.getJob(streamId)) as typeof successor).replacedJobs;
+      expect(chain).toHaveLength(2);
+      expect(chain![0]).toMatchObject({ createdAt: predecessor.createdAt, completedAt });
+      expect(chain![1]).toMatchObject({ createdAt: replacement.createdAt, status: 'running' });
+      expect(chain![1].completedAt).toBeUndefined();
+
+      // A receipt written before the field existed is still read.
+      const written = JSON.parse((await ioredisClient.hget(jobKey, '__replacedGenerations'))!);
+      await ioredisClient.hset(
+        jobKey,
+        '__replacedGenerations',
+        JSON.stringify(
+          written.map(
+            ({ completedAt: _completedAt, ...receipt }: { completedAt?: number }) => receipt,
+          ),
+        ),
+      );
+      const legacy = ((await store.getJob(streamId)) as typeof successor).replacedJobs;
+      expect(legacy![0]).toMatchObject({ createdAt: predecessor.createdAt, status: 'complete' });
+      expect(legacy![0].completedAt).toBeUndefined();
+
+      written[0].completedAt = -1;
+      await ioredisClient.hset(jobKey, '__replacedGenerations', JSON.stringify(written));
+      await expect(store.getJob(streamId)).rejects.toThrow(
+        'Invalid generation replacement receipt',
+      );
+      await store.destroy();
+    });
+
+    test('leaves an unusable completion time off the replacement receipt', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const store = new RedisJobStore(ioredisClient);
+      await store.initialize();
+      const streamId = `test-replaced-completed-unusable-${Date.now()}`;
+      const predecessor = await store.createJob(streamId, 'user-1', streamId);
+      await store.transitionStatus(streamId, {
+        from: 'running',
+        to: 'complete',
+        expectCreatedAt: predecessor.createdAt,
+        patch: { completedAt: Date.now() },
+      });
+      await ioredisClient.hset(`stream:{${streamId}}:job`, 'completedAt', 'not-a-time');
+
+      const replacement = await store.createJob(streamId, 'user-1', streamId);
+      expect(replacement.replacedJob).toMatchObject({
+        createdAt: predecessor.createdAt,
+        status: 'complete',
+      });
+      expect(replacement.replacedJob?.completedAt).toBeUndefined();
+      const durable = (await store.getJob(streamId)) as typeof replacement;
+      expect(durable.replacedJob?.completedAt).toBeUndefined();
       await store.destroy();
     });
 

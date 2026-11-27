@@ -61,6 +61,7 @@ interface FlightOwnerData {
 
 interface FlightCompleteData extends FlightOwnerData {
   encryptedResult: string;
+  usableUntil?: Date;
 }
 
 interface FlightRenewData extends FlightOwnerData {
@@ -221,13 +222,28 @@ export function createOpenIDRefreshFlightService({
     lockTtl?: number;
   }): Promise<RefreshFlightAcquireResult> {
     if (!key) return { acquired: true, key: null, ownerId, flight: null };
-    const acquired = await db.acquireOpenIDRefreshFlight({
-      key,
-      ownerId,
-      lockExpiresAt: new Date(Date.now() + lockTtl),
-      expiresAt: new Date(Date.now() + ttl),
-    });
-    return { ...acquired, key, ownerId };
+    /** A spent result is superseded once the response still delivering it lets go. */
+    const deadline = Date.now() + DEFAULT_DELIVERY_TTL_MS;
+    for (;;) {
+      const acquired = await db.acquireOpenIDRefreshFlight({
+        key,
+        ownerId,
+        lockExpiresAt: new Date(Date.now() + lockTtl),
+        expiresAt: new Date(Date.now() + ttl),
+      });
+      if (acquired.acquired || !isSpent(acquired.flight) || Date.now() > deadline) {
+        return { ...acquired, key, ownerId };
+      }
+      await delay(DEFAULT_WAIT_INTERVAL_MS);
+    }
+  }
+
+  /** A completed result no caller may reuse any more, which no logout is fencing. */
+  function isSpent(flight?: RefreshFlightRecord | null): boolean {
+    const usable = flight?.usable;
+    const until =
+      usable?.until && usable.ownerId === flight?.ownerId ? new Date(usable.until).getTime() : NaN;
+    return flight?.status === 'completed' && !flight.revocationRequestedAt && until <= Date.now();
   }
 
   async function completeOpenIDRefreshFlight({
@@ -257,9 +273,10 @@ export function createOpenIDRefreshFlightService({
     if (tokens.__deferredPublication) {
       serializedTokens.__deferredPublication = true;
     }
-    const accessTokenExpiresAt = Number(tokens.expires_at) * 1000;
-    const usableTokenTtl = Number.isFinite(accessTokenExpiresAt)
-      ? Math.max(1, accessTokenExpiresAt - Date.now() - OPENID_EXPIRY_BUFFER_SECONDS * 1000)
+    /** The moment `readCompletedFlight` stops handing these tokens to joiners. */
+    const usableUntil = Number(tokens.expires_at) * 1000 - OPENID_EXPIRY_BUFFER_SECONDS * 1000;
+    const usableTokenTtl = Number.isFinite(usableUntil)
+      ? Math.max(1, usableUntil - Date.now())
       : ttl;
     const encryptedResult = await encrypt(JSON.stringify(serializedTokens));
     onWriteStart?.();
@@ -268,6 +285,7 @@ export function createOpenIDRefreshFlightService({
       ownerId,
       encryptedResult,
       expiresAt: new Date(Date.now() + Math.min(ttl, usableTokenTtl)),
+      ...(Number.isFinite(usableUntil) ? { usableUntil: new Date(usableUntil) } : {}),
     });
   }
 

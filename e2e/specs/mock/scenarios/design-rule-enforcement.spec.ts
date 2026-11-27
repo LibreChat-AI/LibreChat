@@ -52,7 +52,9 @@ test.describe('design-system rules', () => {
         ),
       ]),
     );
-    expect(restyle.join('\n')).toContain('Use a variant: info, success, warning, error, neutral');
+    expect(restyle.join('\n')).toContain(
+      'Use a variant: info, success, warning, error, error-quiet, neutral',
+    );
     expect(restyle).toEqual(
       expect.arrayContaining([
         expect.stringContaining('"p-1" is not allowed on <Button>: <Button> owns its spacing'),

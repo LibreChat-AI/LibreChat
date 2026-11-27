@@ -16,6 +16,7 @@ import {
   bindComposerLaunch,
   upsertConvoInAllQueries,
   removeConvoFromAllQueries,
+  clearNewConversationAlias,
   invalidateConversationLists,
 } from '~/utils';
 import {
@@ -23,6 +24,7 @@ import {
   streamStatusQueryKey,
   fetchConversationMessages,
 } from '~/data-provider';
+import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import { transferFileSearchPreference } from '~/hooks/Files/search';
 import { fetchConvoSnapshot } from '~/utils/convos';
 
@@ -40,12 +42,31 @@ export function removeActiveJob(queryClient: QueryClient, jobId: string): void {
   }));
 }
 
+/**
+ * Takes a new chat's first turn out of the new chat's messages once the pane's stream on it is
+ * closed, unless the pane still shows the turn, as after a Stop. The pane is read from the latest
+ * state, because the reset that left the turn has not rendered yet when its stream closes.
+ */
+export function useReleaseNewConversation(runIndex = 0): (conversationId: string) => void {
+  const queryClient = useQueryClient();
+  const getConversation = useGetConversation(runIndex);
+  return useCallback(
+    (conversationId: string) => {
+      if (getConversation()?.conversationId !== conversationId) {
+        clearNewConversationAlias(queryClient, conversationId);
+      }
+    },
+    [getConversation, queryClient],
+  );
+}
+
 /** The app's query cache, as a resumable run reads and refreshes it. */
 export default function useResumableCache(
   getMessages: () => TMessage[] | undefined,
   runIndex = 0,
 ): ResumableCache {
   const queryClient = useQueryClient();
+  const releaseNewConversation = useReleaseNewConversation(runIndex);
 
   /** Called when generation starts. */
   const addJob = useCallback((jobId: string) => addActiveJob(queryClient, jobId), [queryClient]);
@@ -148,7 +169,8 @@ export default function useResumableCache(
       },
       queueTitleGeneration,
       addOptimisticConversation,
+      releaseNewConversation,
     }),
-    [addJob, addOptimisticConversation, queryClient, removeJob],
+    [addJob, addOptimisticConversation, queryClient, releaseNewConversation, removeJob],
   );
 }

@@ -4,9 +4,9 @@ import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
-import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
+import { act, render, screen, within, fireEvent } from '@testing-library/react';
 import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import { Provider as JotaiProvider, createStore, getDefaultStore, useAtom } from 'jotai';
 import {
@@ -59,6 +59,7 @@ function Harness({
   conversation,
   routePending = false,
   targetReady = true,
+  failure,
   onAsk = ask,
   refusesWhileSubmitting = false,
   speechSettingsInitialized = false,
@@ -67,6 +68,8 @@ function Harness({
   conversation: TConversation;
   routePending?: boolean;
   targetReady?: boolean;
+  /** Why the target could not be resolved, when it could not. */
+  failure?: 'failed' | 'denied' | 'missing';
   onAsk?: typeof ask;
   /** Mirrors the real `ask`, which reads `isSubmitting` from the render it was created in. */
   refusesWhileSubmitting?: boolean;
@@ -121,7 +124,14 @@ function Harness({
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <TargetContext.Provider
-          value={{ ready: targetReady, pending: !targetReady, failed: false, retry: () => {} }}
+          value={{
+            ready: targetReady,
+            pending: !targetReady && failure == null,
+            failed: failure != null,
+            denied: failure === 'denied',
+            missing: failure === 'missing',
+            retry: () => {},
+          }}
         >
           <ChatForm
             index={0}
@@ -146,8 +156,17 @@ function mountComposer(
     query = 'agent_id=agent_test&q=hi&submit=true',
     routePending = false,
     targetReady = true,
+    failure,
     speechSettingsInitialized = false,
     liveRun = false,
+  }: {
+    pathname?: string;
+    query?: string;
+    routePending?: boolean;
+    targetReady?: boolean;
+    failure?: 'failed' | 'denied' | 'missing';
+    speechSettingsInitialized?: boolean;
+    liveRun?: boolean;
   } = {},
 ) {
   const queryClient = new QueryClient({
@@ -232,6 +251,7 @@ function mountComposer(
       conversation={conversation}
       routePending={routePending}
       targetReady={targetReady}
+      failure={failure}
       speechSettingsInitialized={speechSettingsInitialized}
     />,
     {
@@ -248,6 +268,20 @@ function mountComposer(
 
 afterEach(() => {
   resetSubmitting(getDefaultStore());
+});
+
+describe('ChatForm target failure', () => {
+  it.each([
+    ['denied', 'You do not have access to this agent.'],
+    ['missing', 'This agent is no longer available.'],
+    ['failed', 'Unable to load this chat’s model or agent.'],
+  ] as const)('states a %s agent in the composer alert beside Retry', (failure, copy) => {
+    mountComposer(agentConversation, { targetReady: false, failure, query: '' });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(copy);
+    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
 });
 
 describe('ChatForm URL submission', () => {

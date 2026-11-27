@@ -17,11 +17,17 @@ const mockTenantStorageRun = jest.fn(async (context, fn) => {
     mockActiveTenantId = previousTenantId;
   }
 });
-jest.mock('@librechat/data-schemas', () => ({
-  logger: { error: jest.fn(), debug: jest.fn(), warn: jest.fn(), info: jest.fn() },
-  runAsSystem: (fn) => mockRunAsSystem(fn),
-  tenantStorage: { run: (context, fn) => mockTenantStorageRun(context, fn) },
-}));
+jest.mock('@librechat/data-schemas', () => {
+  const actual = jest.requireActual('@librechat/data-schemas');
+  return {
+    logger: { error: jest.fn(), debug: jest.fn(), warn: jest.fn(), info: jest.fn() },
+    runAsSystem: (fn) => mockRunAsSystem(fn),
+    tenantStorage: { run: (context, fn) => mockTenantStorageRun(context, fn) },
+    hashToken: actual.hashToken,
+    REFRESH_TOKEN_ROTATED: actual.REFRESH_TOKEN_ROTATED,
+    DEFAULT_SESSION_EXPIRY: actual.DEFAULT_SESSION_EXPIRY,
+  };
+});
 jest.mock('~/server/services/GraphTokenService', () => ({
   getGraphApiToken: jest.fn(),
 }));
@@ -48,6 +54,8 @@ jest.mock('~/models', () => ({
   updateUser: jest.fn(),
   findUser: jest.fn(),
   deleteTokens: jest.fn(),
+  generateToken: jest.fn(),
+  generateRefreshToken: jest.fn(),
 }));
 jest.mock('~/server/services/RefreshTokenBridge', () => ({
   OPENID_REFRESH_BRIDGE_GRACE_MS: 60 * 1000,
@@ -130,7 +138,7 @@ const http = require('node:http');
 const { createHash } = require('node:crypto');
 const openIdClient = require('openid-client');
 const jwt = require('jsonwebtoken');
-const { logger } = require('@librechat/data-schemas');
+const { logger, REFRESH_TOKEN_ROTATED } = require('@librechat/data-schemas');
 const {
   isEnabled,
   clearCloudFrontCookies,
@@ -168,6 +176,8 @@ const {
   deleteAllUserSessions,
   deletePasskeysByUser,
   awaitAuthUserDocEviction,
+  generateToken,
+  generateRefreshToken,
 } = require('~/models');
 const {
   createRefreshTokenBridgeFlightKey,
@@ -221,8 +231,8 @@ describe('OpenID logout refresh chain', () => {
         `session:${identityContext.openidSubject}:${refreshToken}`,
     );
     createRefreshTokenBridgeFlightKey.mockImplementation(
-      ({ oldRefreshToken, userId, openidIssuer }) =>
-        `bridge:${userId}:${openidIssuer}:${oldRefreshToken}`,
+      ({ oldRefreshToken, userId, openidIssuer, signIn }) =>
+        `${signIn ? 'sign-in' : 'bridge'}:${userId}:${openidIssuer}:${oldRefreshToken}`,
     );
     const acceptedIdentity = {
       appUserId: 'user-2',
@@ -259,6 +269,7 @@ describe('OpenID logout refresh chain', () => {
         'recorded-publication-key',
         'session:subject-1:rt-predecessor',
         'bridge:user-1:https://issuer.example.com:rt-predecessor',
+        'sign-in:user-1:https://issuer.example.com:rt-predecessor',
       ],
       ttl: 60_000,
     });
@@ -266,8 +277,10 @@ describe('OpenID logout refresh chain', () => {
       keys: [
         'session:subject-1:rt-successor-1',
         'bridge:user-1:https://issuer.example.com:rt-successor-1',
+        'sign-in:user-1:https://issuer.example.com:rt-successor-1',
         'session:subject-2:rt-successor-1',
         'bridge:user-2:https://issuer-2.example.com:rt-successor-1',
+        'sign-in:user-2:https://issuer-2.example.com:rt-successor-1',
       ],
       ttl: 60_000,
     });
@@ -275,8 +288,10 @@ describe('OpenID logout refresh chain', () => {
       keys: [
         'session:subject-1:rt-successor-2',
         'bridge:user-1:https://issuer.example.com:rt-successor-2',
+        'sign-in:user-1:https://issuer.example.com:rt-successor-2',
         'session:subject-2:rt-successor-2',
         'bridge:user-2:https://issuer-2.example.com:rt-successor-2',
+        'sign-in:user-2:https://issuer-2.example.com:rt-successor-2',
       ],
       ttl: 60_000,
     });
@@ -2683,6 +2698,8 @@ describe('refreshController – LibreChat path', () => {
     process.env.JWT_REFRESH_SECRET = refreshSecret;
     process.env.NODE_ENV = 'test';
     setAuthTokens.mockResolvedValue('local-app-token');
+    generateToken.mockResolvedValue('local-app-token');
+    generateRefreshToken.mockResolvedValue('rotated-refresh-token');
     findSession.mockResolvedValue({ _id: 'session-id', expiration: new Date(Date.now() + 60_000) });
     isTwoFactorEnrollmentRequired.mockReturnValue(false);
 
@@ -2698,6 +2715,7 @@ describe('refreshController – LibreChat path', () => {
       status: jest.fn().mockReturnThis(),
       send: jest.fn().mockReturnThis(),
       redirect: jest.fn(),
+      cookie: jest.fn(),
       clearCookie: jest.fn(),
     };
   });
@@ -2732,12 +2750,18 @@ describe('refreshController – LibreChat path', () => {
     await refreshController(req, res);
 
     const sentPayload = res.send.mock.calls[0][0];
-    expect(setAuthTokens).toHaveBeenCalledWith(
-      'local-user-id',
-      res,
+    expect(generateRefreshToken).toHaveBeenCalledWith(
       expect.objectContaining({ expiration: expect.any(Date) }),
-      req,
     );
+    expect(res.cookie).toHaveBeenCalledWith(
+      'refreshToken',
+      'rotated-refresh-token',
+      expect.objectContaining({ httpOnly: true }),
+    );
+    expect(setCloudFrontAuthCookies).toHaveBeenCalledWith(req, res, expect.any(Object), {
+      userId: 'local-user-id',
+    });
+    expect(setAuthTokens).not.toHaveBeenCalled();
     expect(sentPayload).toEqual({
       token: 'local-app-token',
       user: {
@@ -2774,9 +2798,9 @@ describe('refreshController – LibreChat path', () => {
         userId: 'local-user-id',
         refreshToken: expect.any(String),
       },
-      { lean: false },
+      { lean: false, graceMs: 60_000 },
     );
-    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(generateRefreshToken).not.toHaveBeenCalled();
     expect(deleteSession).toHaveBeenCalledWith({ sessionId: 'session-id' });
     expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
     expect(clearCloudFrontCookies).toHaveBeenCalledWith(res, {
@@ -2797,8 +2821,8 @@ describe('refreshController – LibreChat path', () => {
 
   /**
    * `findSession` resolves before anything is minted, so recovery landing in that gap is caught by
-   * neither gate: the token handed back postdates `credentialsChangedAt`, and `setAuthTokens` re-saves
-   * the very session document recovery had already deleted.
+   * neither gate: the token handed back postdates `credentialsChangedAt`, so only the check that
+   * runs after minting can withdraw it.
    */
   describe('a password reset landing after the session lookup', () => {
     const racingRead = (user) => {
@@ -2812,7 +2836,7 @@ describe('refreshController – LibreChat path', () => {
 
       await refreshController(req, res);
 
-      expect(setAuthTokens).toHaveBeenCalled();
+      expect(generateRefreshToken).toHaveBeenCalled();
       expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'local-user-id' });
       expect(res.status).toHaveBeenCalledWith(401);
       expect(res.send).toHaveBeenCalledWith('Refresh token expired or not found for this user');
@@ -2827,7 +2851,7 @@ describe('refreshController – LibreChat path', () => {
 
       await refreshController(req, res);
 
-      expect(setAuthTokens).toHaveBeenCalled();
+      expect(generateRefreshToken).toHaveBeenCalled();
       expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'local-user-id' });
       expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
       expect(res.status).toHaveBeenCalledWith(403);
@@ -2858,7 +2882,7 @@ describe('refreshController – LibreChat path', () => {
           order.push('recheck');
           return {};
         });
-      setAuthTokens.mockImplementationOnce(async () => {
+      generateToken.mockImplementationOnce(async () => {
         order.push('mint');
         return 'local-app-token';
       });
@@ -2885,7 +2909,7 @@ describe('refreshController – LibreChat path', () => {
     await refreshController(req, res);
 
     /** Promotion lands before revocation, so the cutoff is what denies the older cookie. */
-    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(generateRefreshToken).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
   });
@@ -2917,7 +2941,7 @@ describe('refreshController – LibreChat path', () => {
 
     await refreshController(req, res);
 
-    expect(setAuthTokens).toHaveBeenCalled();
+    expect(generateRefreshToken).toHaveBeenCalled();
     expect(res.send).toHaveBeenCalledWith(expect.objectContaining({ token: 'local-app-token' }));
   });
 
@@ -2932,7 +2956,7 @@ describe('refreshController – LibreChat path', () => {
 
     await refreshController(req, res);
 
-    expect(setAuthTokens).toHaveBeenCalled();
+    expect(generateRefreshToken).toHaveBeenCalled();
   });
 
   it('does not issue an enrollment token for a revoked local refresh session', async () => {
@@ -2947,7 +2971,7 @@ describe('refreshController – LibreChat path', () => {
     await refreshController(req, res);
 
     expect(generateTwoFactorSetupToken).not.toHaveBeenCalled();
-    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(generateRefreshToken).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.send).toHaveBeenCalledWith('Refresh token expired or not found for this user');
   });
@@ -2964,7 +2988,7 @@ describe('refreshController – LibreChat path', () => {
     await refreshController(req, res);
 
     expect(generateTwoFactorSetupToken).not.toHaveBeenCalled();
-    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(generateRefreshToken).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.send).toHaveBeenCalledWith('Refresh token expired or not found for this user');
   });
@@ -2984,7 +3008,7 @@ describe('refreshController – LibreChat path', () => {
 
     await refreshController(req, res);
 
-    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(generateRefreshToken).not.toHaveBeenCalled();
     expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
     expect(res.status).toHaveBeenCalledWith(401);
   });
@@ -3003,8 +3027,45 @@ describe('refreshController – LibreChat path', () => {
 
     await refreshController(req, res);
 
-    expect(setAuthTokens).toHaveBeenCalled();
+    expect(generateRefreshToken).toHaveBeenCalled();
     expect(res.clearCookie).not.toHaveBeenCalledWith('session_hint');
+  });
+
+  it('serves a refresh token another tab just rotated without rotating it again', async () => {
+    getUserById.mockResolvedValue({ _id: 'local-user-id', provider: 'local' });
+    const presented = req.headers.cookie.replace('refreshToken=', '');
+    findSession.mockResolvedValue({
+      _id: 'session-id',
+      expiration: new Date(Date.now() + 60_000),
+      previousRefreshTokens: [
+        { hash: createHash('sha256').update(presented).digest('hex'), rotatedAt: new Date() },
+      ],
+    });
+
+    await refreshController(req, res);
+
+    expect(generateRefreshToken).not.toHaveBeenCalled();
+    expect(res.cookie).not.toHaveBeenCalled();
+    expect(setCloudFrontAuthCookies).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).toHaveBeenCalledWith(expect.objectContaining({ token: 'local-app-token' }));
+  });
+
+  it('serves a refresh that lost the rotation to a concurrent one without logging an error', async () => {
+    getUserById.mockResolvedValue({ _id: 'local-user-id', provider: 'local' });
+    generateRefreshToken.mockRejectedValueOnce(
+      Object.assign(new Error('Refresh token was already rotated'), {
+        code: REFRESH_TOKEN_ROTATED,
+      }),
+    );
+
+    await refreshController(req, res);
+
+    expect(findSession).toHaveBeenCalledTimes(2);
+    expect(res.cookie).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).toHaveBeenCalledWith(expect.objectContaining({ token: 'local-app-token' }));
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('preserves CI refresh compatibility without session lookup', async () => {

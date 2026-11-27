@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { RetentionMode } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type {
   ResponseReservation,
@@ -7,6 +8,7 @@ import type {
   ResponseResumeReservation,
   ResponseTerminalReceipt,
 } from './response';
+import type { ResponseTurnWrites } from './responseTurn';
 import {
   closeResponseScopes,
   eraseResponseRecords,
@@ -15,6 +17,7 @@ import {
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createConversationMethods } from './conversation';
 import { createConversationImportMethods } from './import';
+import { materializeResponseTurn } from './responseTurn';
 import { createResponseStorage } from './response';
 import { waitForPause } from './test-helpers';
 import { createModels } from '~/models';
@@ -139,6 +142,68 @@ it('propagates conversation retention before parent persistence and never length
       ok: false,
       code: 'response_unavailable',
     });
+  }));
+
+it('releases the bookmarks of a chat its committed turn converts, and none for an aborted one', () =>
+  scoped(async () => {
+    createModels(mongoose);
+    const conversationId = 'bookmarked-before-ephemeral';
+    await mongoose.models.Conversation.create({
+      conversationId,
+      user: owner.userId,
+      title: 'Bookmarked before the mode',
+      endpoint: 'agents',
+      tags: ['probe-tag'],
+    });
+    /** Shared with another visible chat, so a second release would show as 0, not hit the clamp. */
+    await mongoose.models.ConversationTag.create({
+      user: owner.userId,
+      tag: 'probe-tag',
+      count: 2,
+      position: 0,
+    });
+    const writes: ResponseTurnWrites = {
+      intentJSON: '{}',
+      context: {
+        userId: owner.userId,
+        interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 24 },
+      },
+      conversation: { conversationId, endpoint: 'agents' },
+      initialAgentId: null,
+      messages: [],
+    };
+    const read = async () => ({
+      conversation: await mongoose.models.Conversation.findOne({ conversationId })
+        .select('isTemporary tags')
+        .lean(),
+      count: (
+        await mongoose.models.ConversationTag.findOne({ user: owner.userId, tag: 'probe-tag' })
+          .select('count')
+          .lean<{ count: number }>()
+      )?.count,
+    });
+
+    const session = await mongoose.startSession();
+    try {
+      await expect(
+        session.withTransaction(async () => {
+          await materializeResponseTurn(mongoose, session, writes);
+          throw new Error('Publication refused');
+        }),
+      ).rejects.toThrow('Publication refused');
+      expect(await read()).toMatchObject({
+        conversation: { isTemporary: false, tags: ['probe-tag'] },
+        count: 2,
+      });
+
+      await session.withTransaction(() => materializeResponseTurn(mongoose, session, writes));
+      expect(await read()).toMatchObject({
+        conversation: { isTemporary: true, tags: [] },
+        count: 1,
+      });
+    } finally {
+      await session.endSession();
+    }
   }));
 
 it('applies newly resolved expiry to replay and sibling payloads in the reservation transaction', () =>

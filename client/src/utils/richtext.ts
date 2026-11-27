@@ -8,6 +8,7 @@ import { apiBaseUrl } from 'librechat-data-provider';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { directive } from 'micromark-extension-directive';
 import { directiveFromMarkdown } from 'mdast-util-directive';
+import { remarkApproxTilde, singleDollarMath } from '@librechat/chat';
 import type {
   AlignType,
   Definition,
@@ -19,8 +20,6 @@ import type {
 } from 'mdast';
 import type { Extension as MicromarkExtension } from 'micromark-util-types';
 import { mcpUIResourcePlugin } from '~/components/MCPUIResource/plugin';
-import { remarkApproxTilde } from './tilde';
-import { singleDollarMath } from './latex';
 
 /**
  * Which message renderer this copy has to match. `Markdown` (assistant turns)
@@ -419,7 +418,7 @@ export function markdownToHtml(
     extensions.push(directive());
   }
   if (mode.latex) {
-    extensions.push(singleDollarMath);
+    extensions.push(singleDollarMath());
   }
 
   const tree = fromMarkdown(markdown, {

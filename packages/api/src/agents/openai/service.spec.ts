@@ -953,6 +953,30 @@ describe('createAgentChatCompletion - source-aware content protection', () => {
     };
   });
 
+  it.each([false, true])(
+    'rejects unsupported assistant output protection before agent lookup (stream=%s)',
+    async (stream) => {
+      const text = 'Synthetic test message';
+      deps.appConfig = {
+        config: { outputProtection: { version: 1, assistantText: { timeoutMs: 5_000 } } },
+      };
+      const req = createMockReq(undefined, {
+        model: 'agent_test',
+        messages: [{ role: 'user', content: text }],
+        stream,
+      });
+      const res = createMockRes();
+
+      await createAgentChatCompletion(req, res, deps);
+
+      expectRawFreeFilterError(res, text, ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED);
+      expect(getResponseMock(res, 'flushHeaders')).not.toHaveBeenCalled();
+      expect(getAgent).not.toHaveBeenCalled();
+      expect(initializeAgent).not.toHaveBeenCalled();
+      expect(createRun).not.toHaveBeenCalled();
+    },
+  );
+
   it('blocks submitted message content before agent lookup without echoing the value', async () => {
     const rawValue = 'PRIVATE-MESSAGE';
     const filters: FiltersConfig = {

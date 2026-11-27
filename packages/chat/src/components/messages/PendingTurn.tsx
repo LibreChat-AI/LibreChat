@@ -6,6 +6,7 @@ import type { ReactElement, RefObject } from 'react';
 import { hasRevealSuccessor, buildRevealedMessage } from '../../react/steering/useQueuedTurnReveal';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
 import { useQueuedTurnPortal } from '../composer/steering/QueuedTurnPortal';
+import { renderMarkdown as defaultRenderMarkdown } from '../renderers';
 import { revealedQueuedTurnFamily } from '../../react/steer/rows';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
@@ -41,7 +42,11 @@ export default function PendingTurn({
   const localize = useLocalize();
   const { conversation, latestMessageId } = useChatContext();
   const conversationId = conversation?.conversationId ?? '';
-  const { useUser, useUserTextPreferences, renderMarkdown } = useMessagePartsHost();
+  const {
+    useUser,
+    useUserTextPreferences,
+    renderMarkdown = defaultRenderMarkdown,
+  } = useMessagePartsHost();
   const renderMessageIcon = useMessagesHost().renderMessageIcon;
   const user = useUser();
   const { usernameDisplay, enableUserMsgMarkdown } = useUserTextPreferences();

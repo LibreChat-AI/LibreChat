@@ -1,13 +1,20 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 import { z } from 'zod';
 import type {
+  TPlugin,
+  TAttachment,
+  MemoryScope,
+  SkillsScope,
+  AgentProvider,
+  TMessageTrigger,
+} from 'src/schemas';
+import type {
   FunctionTool,
   ToolResources,
   AgentToolOptions,
   ToolApprovalGrantBinding,
 } from './tools';
 import type { TPromptGroupSource, NativePromptSelection, LangfusePromptSelection } from '../types';
-import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { DispatchedToolCall } from '../toolDispatch';
@@ -151,6 +158,12 @@ export namespace Agents {
     inputValidationError?: true;
     /** Server-stamped provenance; see `PartMetadata.executor`. */
     executor?: 'attached_workspace';
+    /**
+     * Server-stamped id of the skill a `skill` call loaded. Names are unique only per author,
+     * so this is what names the skill that ran; a call saved without it can vouch only for its
+     * output. Public share links leave it out.
+     */
+    skillId?: string;
     /** Auth URL */
     auth?: string;
     /** Expiration time */
@@ -348,6 +361,8 @@ export namespace Agents {
      *  until reload). */
     manualSkills?: string[];
     alwaysAppliedSkills?: string[];
+    /** What started the turn, when no person sent it. */
+    trigger?: TMessageTrigger;
   }
 
   /** Client-safe state for one MCP authorization prompt that remains actionable. */
@@ -1032,6 +1047,8 @@ export type AgentSubagentGraph = {
 
 export type AgentSubagentsConfig = {
   enabled?: boolean;
+  /** Enables saved graph teams independently. Omitted legacy records follow enabled. */
+  graphsEnabled?: boolean;
   /** When true (default), the agent may spawn itself in an isolated context. */
   allowSelf?: boolean;
   /** Share current-turn files with authorized descendants. Off unless explicitly enabled. */

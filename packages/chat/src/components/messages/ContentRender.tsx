@@ -109,6 +109,7 @@ const ContentRender: NamedExoticComponent<ContentRenderProps> = memo(function Co
   const host = useMessagesHost();
   const maximizeChatSpace = host.useMaximizeChatSpace();
   const hideSelectedAuthor = host.useHideSelectedAuthor();
+  const selectedSender = host.useSelectedSender(conversation ?? null);
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
   const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
@@ -154,6 +155,7 @@ const ContentRender: NamedExoticComponent<ContentRenderProps> = memo(function Co
       assistant={assistant}
       hasConfiguredSender={hasConfiguredSender}
       hideSelectedAuthor={hideSelectedAuthor}
+      selectedSender={selectedSender}
       isLast={isLast}
       isLatestMessage={isLatestMessage}
       isSubmitting={isSubmitting}

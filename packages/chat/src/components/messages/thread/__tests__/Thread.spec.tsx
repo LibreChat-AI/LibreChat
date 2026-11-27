@@ -79,6 +79,8 @@ const partsHost: MessagePartsHost = {
   useFileMap: () => undefined,
   useToast: () => () => undefined,
   useSandboxStarting: () => false,
+  usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, () => undefined],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
@@ -167,6 +169,16 @@ describe('MessagesView default thread', () => {
   it('renders the flat rows from the messages by default', () => {
     renderThread({ messages: branched(), messagesTree: [message('from-tree', ROOT)] });
     expect(rows()).toEqual(['u1', 'a1']);
+  });
+
+  it('draws a prompt with the package’s body when the host names none', () => {
+    renderThread(
+      { messages: [message('u1', ROOT, { text: 'What changed?\nAnd why?' })] },
+      createHost({ renderMessageBody: undefined }),
+    );
+    const body = row('u1').querySelector('.message-content');
+    expect(body?.textContent).toBe('What changed?\nAnd why?');
+    expect(body).toHaveClass('whitespace-pre-wrap');
   });
 
   it('renders the recursive tree when the flat thread is off', () => {

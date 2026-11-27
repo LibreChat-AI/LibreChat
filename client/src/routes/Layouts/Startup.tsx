@@ -23,14 +23,25 @@ const headerMap: Record<string, TranslationKeys> = {
 export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: boolean }) {
   const [error, setError] = useState<TranslationKeys | null>(null);
   const [headerText, setHeaderText] = useState<TranslationKeys | null>(null);
-  const [startupConfig, setStartupConfig] = useState<TStartupConfig | null>(null);
+  const [cached, setCached] = useState<TStartupConfig | null>(null);
   const {
     data,
     isFetching,
     error: startupConfigError,
   } = useGetStartupConfig({
-    enabled: isAuthenticated ? startupConfig === null : true,
+    enabled: isAuthenticated ? cached === null : true,
   });
+  /**
+   * The screens render the query's own data, so the config and `isFetching` change in the same
+   * commit: a copy taken in an effect would commit one render where the fetch has settled but the
+   * config is still the previous value. The cached copy only covers the moment authentication flips
+   * the query key while this layout is mounted, when the new key has no data of its own and the
+   * guard above keeps it from fetching.
+   */
+  if (data && data !== cached) {
+    setCached(data);
+  }
+  const startupConfig = data ?? cached;
   const localize = useLocalize();
   const navigate = useNavigate();
   const location = useLocation();
@@ -55,12 +66,6 @@ export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: b
     navigateRef.current(destination, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only by design; see comment above
   }, []);
-
-  useEffect(() => {
-    if (data) {
-      setStartupConfig(data);
-    }
-  }, [data]);
 
   useEffect(() => {
     setDocumentTitle(startupConfig?.appTitle || DEFAULT_APP_TITLE, true);

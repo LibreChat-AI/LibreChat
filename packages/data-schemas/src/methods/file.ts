@@ -24,9 +24,9 @@ import type {
   DeleteFilesResult,
 } from '~/types/file';
 import type { IChatProjectDocument } from '~/types';
+import { fileContentUpdate, writesFileContent } from './fileContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { readResponseArtifactCatalog } from './artifacts';
-import { fileContentUpdate } from './fileContent';
 import { escapeRegExp } from '~/utils/string';
 import logger from '../config/winston';
 
@@ -76,6 +76,8 @@ export type AvailableProjectFileRecord = {
   context?: string;
   user: string;
   tenantId?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
 };
 
 type AvailableProjectFileRecordSource = Pick<
@@ -93,6 +95,8 @@ type AvailableProjectFileRecordSource = Pick<
   | 'context'
   | 'user'
   | 'tenantId'
+  | 'createdAt'
+  | 'updatedAt'
 >;
 
 function normalizeAvailableProjectFileRecord(
@@ -124,6 +128,8 @@ function normalizeAvailableProjectFileRecord(
     ...(file.context !== undefined ? { context: file.context } : {}),
     user: file.user.toString(),
     ...(file.tenantId !== undefined ? { tenantId: file.tenantId } : {}),
+    ...(file.createdAt !== undefined ? { createdAt: file.createdAt } : {}),
+    ...(file.updatedAt !== undefined ? { updatedAt: file.updatedAt } : {}),
   };
 }
 
@@ -804,6 +810,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
         context: 1,
         user: 1,
         tenantId: 1,
+        createdAt: 1,
+        updatedAt: 1,
       })
       .sort({ _id: -1 })
       .limit(limit + 1)
@@ -1312,8 +1320,9 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
    * same `file_id` overwriting a newer turn's record on cross-turn
    * filename reuse.
    *
-   * Content timestamps advance only when the caller actually writes a
-   * field. Clearing the upload TTL alone is bookkeeping: image reuse
+   * Content timestamps advance only when the caller writes a content
+   * field (see `writesFileContent`). Clearing the upload TTL, or writing
+   * only bookkeeping such as `usage`, is not a content write: image reuse
    * calls this with nothing but the id on every turn, and consumers that
    * fingerprint content by `updatedAt` (Project resume compatibility)
    * would otherwise read a new version and reject an approved turn.
@@ -1329,16 +1338,14 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     extraFilter?: FilterQuery<IMongoFile>,
   ): Promise<IMongoFile | null> {
     const File = mongoose.models.File as Model<IMongoFile>;
-    const { file_id, ...update } = data;
-    const updateOperation = {
-      ...fileContentUpdate(update),
-      $unset: { expiresAt: '' },
-    };
+    const { file_id, ...fields } = data;
+    const update = fileContentUpdate(fields);
     const query: FilterQuery<IMongoFile> = extraFilter ? { file_id, ...extraFilter } : { file_id };
-    return File.findOneAndUpdate(query, updateOperation, {
-      new: true,
-      timestamps: Object.keys(update).length > 0,
-    }).lean<IMongoFile>();
+    return File.findOneAndUpdate(
+      query,
+      { ...update, $unset: { expiresAt: '' } },
+      { new: true, timestamps: writesFileContent(update) },
+    ).lean<IMongoFile>();
   }
 
   /** Background outputs commit only while their dispatch still owns the claimed filename. */

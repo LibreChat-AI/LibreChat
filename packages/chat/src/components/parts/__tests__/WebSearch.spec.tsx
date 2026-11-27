@@ -10,6 +10,7 @@ import type { ReactElement } from 'react';
 import { GeneratedToolLabelContext } from '../../../react/parts/disclosure';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import WebSearch from '../WebSearch';
 
 function render(node: ReactElement) {
@@ -18,19 +19,7 @@ function render(node: ReactElement) {
   );
 }
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
-    const translations: Record<string, string> = {
-      com_ui_web_searching: 'Searching the web',
-      com_ui_web_searched: 'Searched the web',
-      com_ui_web_search_source: `${values?.count ?? 1} source`,
-      com_ui_web_search_sources: `${values?.count ?? 0} sources`,
-      com_ui_web_search_details: 'Search details',
-    };
-    return translations[key] ?? key;
-  },
-}));
+beforeAll(initEnglish);
 
 function source(link: string, title: string): ValidSource {
   return { link, title } as ValidSource;
@@ -53,7 +42,6 @@ describe('WebSearch', () => {
         searchResults={{
           1: { turn: 1, organic: [source('https://other.example.com/1', 'Other')] },
         }}
-        renderFavicon={({ domain }) => <span data-testid="favicon">{domain}</span>}
       />,
     );
 

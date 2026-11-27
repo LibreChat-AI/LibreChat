@@ -1,9 +1,9 @@
 import { useCallback, useMemo } from 'react';
-import { useAtom, useSetAtom } from 'jotai';
+import { useAtom, useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { filesFamily, submissionByIndex } from '@librechat/chat/react';
+import { filesFamily, isSubmittingFamily, submissionByIndex } from '@librechat/chat/react';
 import {
   Constants,
   QueryKeys,
@@ -118,6 +118,12 @@ function restoreRememberedTarget(
   return { ...conversation, endpoint, assistant_id: assistantId, model };
 }
 
+/** Uploads made for an assistants endpoint live in that provider's storage, while every other
+ * endpoint shares the app's own, so attachments can follow a switch that stays on one side. */
+function sharesUploads(from?: string | null, to?: string | null): boolean {
+  return from === to || (!isAssistantsEndpoint(from) && !isAssistantsEndpoint(to));
+}
+
 /**
  * `routed` is false for a pane the page's route does not address, such as a conversation open
  * beside the chat. Such a pane holds one conversation: it takes a change to that conversation
@@ -133,6 +139,7 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
   const clearAllConversations = store.useClearConvoState();
   const defaultPreset = useRecoilValue(store.defaultPreset);
   const { setConversation } = store.useSetConversationAtom(index);
+  const jotaiStore = useStore();
   const [files, setFiles] = useAtom(filesFamily(index));
   const setSubmission = useSetAtom(submissionByIndex(index));
   const { data: endpointsConfig = {} as TEndpointsConfig } = useGetEndpointsQuery();
@@ -356,6 +363,7 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
       buildDefault = true,
       keepAddedConvos = false,
       keepComposerState = false,
+      retarget = false,
       disableParams,
     }: NewConversationOptions = {}) {
       const nextConversationId = _template.conversationId ?? '';
@@ -365,9 +373,20 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
           return;
         }
       }
+      const prevConversation = getConversation();
+      /** A selection made in the unsent chat changes what that chat is sent to, and the user stays
+       * in its composer, so the attachments stay with it, as an open conversation's do through the
+       * same switch. Once a run is in flight the chat is no longer unsent, so it starts over. */
+      const keepsComposer =
+        keepComposerState ||
+        (retarget &&
+          (!prevConversation?.conversationId ||
+            prevConversation.conversationId === Constants.NEW_CONVO) &&
+          !jotaiStore.get(isSubmittingFamily(index)) &&
+          sharesUploads(prevConversation?.endpoint, _preset?.endpoint ?? _template.endpoint));
       const keepsExistingDraft =
         modelsData != null ||
-        keepComposerState ||
+        keepsComposer ||
         (nextConversationId !== '' &&
           nextConversationId !== Constants.NEW_CONVO &&
           !nextConversationId.startsWith('_'));
@@ -402,13 +421,13 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
           ? !hasModelSelection(_template)
           : startupConfig?.modelSpecs?.prioritize === true ||
             (startupConfig?.interface?.modelSelect ?? true) !== true ||
+            (result?.default != null && !hasModelSelection(_template)) ||
             (result?.last != null &&
               Object.keys(_template).filter((key) => key !== 'chatProjectId').length === 0);
       if (!preset && startupConfig && shouldApplyModelSpec && defaultModelSpec) {
         preset = getModelSpecPreset(defaultModelSpec);
       }
 
-      const prevConversation = getConversation();
       conversation = clearInheritedAgentWorkspace(conversation, prevConversation);
       applyModelSpecEffects({
         startupConfig,
@@ -418,11 +437,7 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
         prevSpecName: prevConversation?.spec,
       });
 
-      if (
-        conversation.conversationId === Constants.NEW_CONVO &&
-        !modelsData &&
-        !keepComposerState
-      ) {
+      if (conversation.conversationId === Constants.NEW_CONVO && !modelsData && !keepsComposer) {
         const sourceDraftId =
           !prevConversation?.conversationId ||
           prevConversation.conversationId === Constants.NEW_CONVO
@@ -573,6 +588,7 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
       files,
       routed,
       setFiles,
+      jotaiStore,
       agentsMap,
       saveDrafts,
       mutateAsync,

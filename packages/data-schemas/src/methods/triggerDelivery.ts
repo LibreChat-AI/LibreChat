@@ -5,7 +5,9 @@ import type {
   AgentBackgroundToolResultReceipt,
   AgentEventActorDetachedAction,
   AgentTriggerDeliveryClaim,
+  AgentTriggerDeadLetterPage,
   AgentEventActorReceipt,
+  AgentTriggerDeadLetter,
   AgentTriggerDeliveryFailure,
   AgentTriggerHandlingState,
   AgentTriggerDeliveryRecord,
@@ -43,6 +45,10 @@ const MAX_DEAD_LETTER_LIMIT = 200;
 const DEFAULT_PURGE_RECOVERY_LIMIT = 25;
 const MAX_PURGE_RECOVERY_LIMIT = 200;
 const HISTORY_LIMIT = 64;
+/** A requeued batch found one of its receipts already removed by the dead-letter deadline. */
+const BATCH_RECEIPTS_EXPIRED = 'BATCH_RECEIPTS_EXPIRED';
+/** How long past its deadline the TTL monitor can leave a row: its sweep runs once a minute. */
+const TTL_SWEEP_MS = 60_000;
 const MAX_BATCH_SIZE = 8;
 const BACKGROUND_RECEIPT_CAPABILITIES = [
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
@@ -69,6 +75,55 @@ const UNDELIVERED_STATUSES: IAgentTriggerDelivery['status'][] = [
   'leased',
   'capability_leased',
 ];
+/**
+ * A delivery no worker will claim: dead outright, or dead inside its capability shield. These
+ * are the states a requeue accepts. A `capability_pending` row whose private lifecycle still
+ * reads `dead` is not one of them: a pre-shield replica requeued it, and it is waiting to run.
+ */
+const DEAD_SCOPE = {
+  $or: [
+    { status: { $in: ['dead', 'capability_dead'] } },
+    {
+      status: { $in: ['pending', 'leased'] },
+      requiredWorkerCapability: { $exists: true },
+      capabilityStatus: 'dead',
+    },
+  ],
+};
+/** Detached actions whose outcome a later write on the delivery still has to record. */
+const OPEN_DETACHED_ACTIONS: AgentEventActorDetachedAction['status'][] = [
+  'reserved',
+  'running',
+  'launch_indeterminate',
+];
+/**
+ * Index both reads of a dead-letter page are held to. Left to the planner, a tenant filter
+ * that matches most rows (every row, on a deployment without tenants) can win and walk the
+ * succeeded backlog; on this index a page costs the rows that have not succeeded.
+ */
+const DEAD_LETTER_INDEX = { status: 1, updatedAt: -1 } as const;
+const DEAD_LETTER_FIELDS = {
+  deliveryKey: 1,
+  user: 1,
+  attempts: 1,
+  requeueCount: 1,
+  'lastError.code': 1,
+  settledAt: 1,
+  expiresAt: 1,
+  deadLetterExpiresAt: 1,
+  createdAt: 1,
+  batchMemberIds: 1,
+  batchMembersSettledAt: 1,
+  'handling.status': 1,
+  actorActionAdmittedAt: 1,
+  'actorReceipt.resolution': 1,
+  'actorDetachedAction.status': 1,
+  'backgroundToolResultBatch.batchId': 1,
+  'backgroundToolResultBatch.proofCopiedAt': 1,
+  'envelope.event.type': 1,
+  'envelope.event.source.type': 1,
+  'envelope.target.agentId': 1,
+} as const;
 /** Capability work is inert to legacy claimers while preserving their lane
  * behavior: publishing is `staging`; queued work is `leased` without a lease
  * owner/deadline; execution adds a private lease; dead work is terminal. */
@@ -544,10 +599,30 @@ export interface AgentTriggerDeliveryMethods {
     tenantId?: string,
   ) => Promise<AgentTriggerDeliveryStatusRecord | null>;
   getAgentTriggerDeadLetters: (limit?: number) => Promise<AgentTriggerDeliveryRecord[]>;
+  /** One page of a tenant partition's dead letters, newest first; `undefined` reads the tenantless rows. */
+  listAgentTriggerDeadLetterPage: (
+    tenantId: string | undefined,
+    page: { limit: number; offset: number },
+  ) => Promise<AgentTriggerDeadLetterPage>;
+  /** A dead letter of that partition, or null when it has none with this id. */
+  getAgentTriggerDeadLetter: (
+    tenantId: string | undefined,
+    id: string,
+  ) => Promise<AgentTriggerDeadLetter | null>;
+  /**
+   * With a `scope`, only a delivery of that tenant partition is revived, and none whose
+   * source type is listed in `except`.
+   */
   requeueAgentTriggerDelivery: (
     id: string,
     availableAt: Date,
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ) => Promise<AgentTriggerDeliveryRecord | null>;
+  /**
+   * Removes a dead letter of that partition together with its batch receipts, as its
+   * expiry would. False when it is no longer dead, or a receipt or action is still open.
+   */
+  dismissAgentTriggerDeadLetter: (tenantId: string | undefined, id: string) => Promise<boolean>;
   countActiveAgentTriggerDeliveriesByUser: (
     user: string | Types.ObjectId,
     now: Date,
@@ -590,6 +665,90 @@ function normalizeFailure(error: AgentTriggerDeliveryFailure): AgentTriggerDeliv
     ...error,
     code: error.code.slice(0, MAX_ERROR_CODE_LENGTH),
     message: error.message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
+  };
+}
+
+type DeadLetterRow = Pick<
+  IAgentTriggerDelivery,
+  | '_id'
+  | 'deliveryKey'
+  | 'user'
+  | 'attempts'
+  | 'requeueCount'
+  | 'settledAt'
+  | 'expiresAt'
+  | 'deadLetterExpiresAt'
+  | 'createdAt'
+  | 'batchMemberIds'
+  | 'batchMembersSettledAt'
+  | 'actorActionAdmittedAt'
+> & {
+  lastError?: { code?: string };
+  handling?: { status?: string };
+  actorReceipt?: { resolution?: string };
+  actorDetachedAction?: { status?: AgentEventActorDetachedAction['status'] };
+  backgroundToolResultBatch?: { batchId?: string; proofCopiedAt?: Date };
+  envelope?: {
+    event?: { type?: unknown; source?: { type?: unknown } };
+    target?: { agentId?: unknown };
+  };
+};
+
+/** Rows of one tenant partition: the tenant's own, or the tenantless ones when none is named. */
+function tenantPartition(tenantId: string | undefined): FilterQuery<IAgentTriggerDelivery> {
+  if (typeof tenantId === 'string' && tenantId.trim().length > 0) {
+    return { tenantId };
+  }
+  return { $or: [{ tenantId: { $exists: false } }, { tenantId: { $in: [null, ''] } }] };
+}
+
+/** Dead roots of one tenant partition. A batch member is reached through its root. */
+function deadLetterFilter(tenantId: string | undefined): FilterQuery<IAgentTriggerDelivery> {
+  return { $and: [DEAD_SCOPE, tenantPartition(tenantId)], batchRootId: { $exists: false } };
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * `requeueable` and `dismissable` restate the filters of the writes they describe. A row only
+ * reaches this function through `DEAD_SCOPE`, which is the state a requeue accepts, so what is
+ * left to decide is whether the delivery was acted on.
+ */
+function toDeadLetter(row: DeadLetterRow): AgentTriggerDeadLetter {
+  if (row.createdAt == null) {
+    throw new Error('Persisted agent trigger delivery is missing its creation time');
+  }
+  const untouched =
+    row.actorReceipt == null && row.actorActionAdmittedAt == null && row.handling == null;
+  const settled =
+    ((row.batchMemberIds?.length ?? 0) === 0 || row.batchMembersSettledAt != null) &&
+    (row.backgroundToolResultBatch == null || row.backgroundToolResultBatch.proofCopiedAt != null);
+  const acting =
+    (row.actorActionAdmittedAt != null && row.actorReceipt == null) ||
+    (row.actorDetachedAction?.status != null &&
+      OPEN_DETACHED_ACTIONS.includes(row.actorDetachedAction.status));
+  const source = text(row.envelope?.event?.source?.type);
+  const event = text(row.envelope?.event?.type);
+  const agentId = text(row.envelope?.target?.agentId);
+  const code = text(row.lastError?.code);
+  const expiresAt = row.expiresAt ?? row.deadLetterExpiresAt;
+  return {
+    id: String(row._id),
+    deliveryKey: row.deliveryKey,
+    user: String(row.user),
+    ...(source != null && { source }),
+    ...(event != null && { event }),
+    ...(agentId != null && { agentId }),
+    attempts: row.attempts,
+    requeues: row.requeueCount ?? 0,
+    ...(code != null && { code }),
+    requeueable: untouched,
+    dismissable: settled && !acting,
+    createdAt: row.createdAt,
+    ...(row.settledAt != null && { diedAt: row.settledAt }),
+    ...(expiresAt != null && { expiresAt }),
   };
 }
 
@@ -774,6 +933,16 @@ export function createAgentTriggerDeliveryMethods(
       ...lane,
       publisherRequeueCount: publicationGeneration,
     };
+    /** Any replica can hold the lane for a requeued root, including one admitting its own
+     * delivery behind it, so its receipts are prepared here rather than by the requeue alone.
+     * A refused batch is dead again, and publication below rolls the sequence back. */
+    if (
+      staged != null &&
+      isStagingDelivery(staged) &&
+      (staged.requeueCount ?? 0) === publicationGeneration
+    ) {
+      await prepareBatchMembersForRequeue(staged);
+    }
     let batchRoot: IAgentTriggerDelivery | null = null;
     if (
       staged?._id != null &&
@@ -980,12 +1149,13 @@ export function createAgentTriggerDeliveryMethods(
 
   /** A dead batch root owns requeue before any constituent is reset. Staging
    * recovery replays this preparation, so a crash cannot leave a dead root
-   * beside members that were silently advanced to a new generation. */
-  async function prepareBatchMembersForRequeue(root: IAgentTriggerDelivery): Promise<void> {
+   * beside members that were silently advanced to a new generation. False
+   * when the batch can no longer be requeued: the root is dead again. */
+  async function prepareBatchMembersForRequeue(root: IAgentTriggerDelivery): Promise<boolean> {
     const memberIds = root.batchMemberIds ?? [];
     const requeueCount = root.requeueCount ?? 0;
     if (memberIds.length === 0 || requeueCount <= 0 || root._id == null) {
-      return;
+      return true;
     }
     const previousRequeueCount = requeueCount - 1;
     await Delivery().updateMany(
@@ -1024,9 +1194,71 @@ export function createAgentTriggerDeliveryMethods(
       batchRootId: root._id,
       batchRootRequeueCount: requeueCount,
     });
-    if (preparedCount !== memberIds.length) {
+    if (preparedCount === memberIds.length) {
+      return true;
+    }
+    /** Every replica that holds or recovers the lane can prepare the same root. One that read
+     * it as staged may find its receipts already run and settled by the publisher that won. */
+    const staged = await Delivery().exists({
+      _id: root._id,
+      requeueCount,
+      ...stagingDeliveryScope,
+    });
+    if (staged == null) {
+      return true;
+    }
+    const remaining = await Delivery().countDocuments({ _id: { $in: memberIds } });
+    if (remaining === memberIds.length) {
       throw new Error('Not every agent trigger batch receipt could be prepared for requeue');
     }
+    /** Receipts carry their root's deadline, so one that no longer exists means the batch
+     * expired while this requeue was claiming it, and the events it held are gone. The root
+     * goes back to a dead letter whose deadline is due, and settlement expires the rest. */
+    const settledAt = new Date();
+    const attempt = Math.max(root.attempts, 1);
+    const error: AgentTriggerDeliveryFailure = {
+      code: BATCH_RECEIPTS_EXPIRED,
+      message: 'Batch receipts expired before the delivery was requeued',
+      certainty: 'definite',
+      retryable: false,
+      attemptedAt: settledAt,
+    };
+    const retired = await Delivery()
+      .findOneAndUpdate(
+        { _id: root._id, status: 'staging', requeueCount },
+        {
+          $set: { status: 'dead', settledAt, lastError: error, deadLetterExpiresAt: settledAt },
+          $unset: { stagingRecoveryAt: 1 },
+          $push: {
+            history: {
+              $each: [
+                { attempt, outcome: 'dead', at: settledAt, workerId: 'batch-requeue', error },
+              ],
+              $slice: -HISTORY_LIMIT,
+            },
+          },
+        },
+        { new: true },
+      )
+      .select('_id orderingKey batchMemberIds batchMembersSettledAt requeueCount')
+      .lean<
+        Pick<
+          IAgentTriggerDelivery,
+          '_id' | 'orderingKey' | 'batchMemberIds' | 'batchMembersSettledAt' | 'requeueCount'
+        >
+      >();
+    if (retired != null) {
+      await settleBatchMembers(retired, {
+        attempt,
+        workerId: 'batch-requeue',
+        status: 'dead',
+        settledAt,
+        expiresAt: settledAt,
+        error,
+      });
+      await requestLaneCleanupAfter(retired.orderingKey, settledAt);
+    }
+    return false;
   }
 
   async function publishStagedDelivery(
@@ -1100,7 +1332,9 @@ export function createAgentTriggerDeliveryMethods(
       if ((await UserPurge().exists({ _id: current.user })) != null) {
         return current;
       }
-      await prepareBatchMembersForRequeue(current);
+      if (!(await prepareBatchMembersForRequeue(current))) {
+        continue;
+      }
 
       const lane = await LaneSequence().findById(orderingKey).lean<IAgentTriggerLaneSequence>();
       if (lane?.publisherDeliveryId != null) {
@@ -1391,41 +1625,96 @@ export function createAgentTriggerDeliveryMethods(
     return recovered;
   }
 
+  /** When a row with this deadline is gone for certain, however late the monitor runs. */
+  function afterDeadline(deadline: Date): Date {
+    return new Date(Math.max(deadline.getTime(), Date.now()) + TTL_SWEEP_MS);
+  }
+
+  /** Leaves the reclaimer a request that falls due once a dead letter's deadline has removed
+   * it. An earlier request stays: reclaiming re-reads the lane and defers again if needed. */
+  async function requestLaneCleanupAfter(orderingKey: string, deadline?: Date): Promise<void> {
+    if (deadline == null) {
+      return;
+    }
+    const cleanupRequestedAt = afterDeadline(deadline);
+    try {
+      await LaneSequence().updateOne(
+        { _id: orderingKey, cleanupRequestedAt: { $exists: false } },
+        { $set: { cleanupRequestedAt } },
+      );
+    } catch (error) {
+      // The dead letter is authoritative. A lost request only leaves the lane row behind.
+      logger.warn('[agent-triggers] failed to request lane cleanup for a dead letter', {
+        orderingKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Releases a lane whose dead letter was just removed by hand, ahead of any request its
+   * deadline left: a later one would keep the lane row until that deadline. Reclaiming
+   * re-reads the lane, so a dead letter still on it moves the request to its own deadline. */
+  async function reclaimDismissedLane(orderingKey: string): Promise<void> {
+    try {
+      await LaneSequence().updateOne(
+        { _id: orderingKey },
+        { $min: { cleanupRequestedAt: new Date() } },
+      );
+      await reclaimLaneIfInactive(orderingKey);
+    } catch (error) {
+      // The dismissal stands. A lost request only leaves the lane row behind.
+      logger.warn('[agent-triggers] failed to reclaim the lane of a dismissed dead letter', {
+        orderingKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function reclaimLaneIfInactive(orderingKey: string): Promise<boolean> {
     const lane = await LaneSequence().findById(orderingKey).lean<IAgentTriggerLaneSequence>();
     if (lane?.cleanupRequestedAt == null) {
       return false;
     }
-    const stillRetained = await Delivery().exists({
-      orderingKey,
-      $or: [
-        {
-          status: {
-            $in: [
-              'staging',
-              'capability_staging',
-              'batched',
-              'pending',
-              'capability_pending',
-              'leased',
-              'capability_leased',
-              'capability_dead',
-              'dead',
-            ],
+    const retained = await Delivery()
+      .findOne({
+        orderingKey,
+        $or: [
+          {
+            status: {
+              $in: [
+                'staging',
+                'capability_staging',
+                'batched',
+                'pending',
+                'capability_pending',
+                'leased',
+                'capability_leased',
+                'capability_dead',
+                'dead',
+              ],
+            },
           },
-        },
-        {
-          status: 'succeeded',
-          batchRootId: { $exists: false },
-          awaitTerminalHandling: true,
-          'handling.status': 'started',
-        },
-      ],
-    });
-    if (stillRetained != null) {
+          {
+            status: 'succeeded',
+            batchRootId: { $exists: false },
+            awaitTerminalHandling: true,
+            'handling.status': 'started',
+          },
+        ],
+      })
+      .select('status expiresAt deadLetterExpiresAt')
+      .lean<Pick<IAgentTriggerDelivery, 'status' | 'expiresAt' | 'deadLetterExpiresAt'>>();
+    if (retained != null) {
+      /** Any other retained row asks again when it settles. A dead letter is removed by its
+       * deadline, which nothing observes, so the request waits for that deadline instead. */
+      const deadline = DEAD_STATUSES.includes(retained.status)
+        ? (retained.expiresAt ?? retained.deadLetterExpiresAt)
+        : undefined;
       await LaneSequence().updateOne(
         { _id: orderingKey, cleanupRequestedAt: lane.cleanupRequestedAt },
-        { $unset: { cleanupRequestedAt: 1 } },
+        deadline == null
+          ? { $unset: { cleanupRequestedAt: 1 } }
+          : { $set: { cleanupRequestedAt: afterDeadline(deadline) } },
       );
       return false;
     }
@@ -1490,7 +1779,7 @@ export function createAgentTriggerDeliveryMethods(
       return reclaimed;
     }
     const lanes = await LaneSequence()
-      .find({ cleanupRequestedAt: { $exists: true } })
+      .find({ cleanupRequestedAt: { $lte: new Date() } })
       .sort({ cleanupRequestedAt: 1, _id: 1 })
       .limit(remaining)
       .select('_id')
@@ -4530,39 +4819,47 @@ export function createAgentTriggerDeliveryMethods(
         },
       },
     });
-    const shieldDead = await Delivery().updateOne(
-      { _id: input.id, ...shieldCapabilityFence(input), ...receiptFence },
-      {
-        $set: {
-          // The pre-capability runtime already treats `capability_dead` as a
-          // terminal, requeueable state, so it cannot block a lane successor.
-          status: 'capability_dead',
-          availableAt: LEGACY_CAPABILITY_SHIELD_AT,
-          capabilityStatus: 'dead',
-          settledAt: input.settledAt,
-          lastError: error,
-          ...(input.expiresAt != null && { expiresAt: input.expiresAt }),
+    const shieldDead = await Delivery()
+      .findOneAndUpdate(
+        { _id: input.id, ...shieldCapabilityFence(input), ...receiptFence },
+        {
+          $set: {
+            // The pre-capability runtime already treats `capability_dead` as a
+            // terminal, requeueable state, so it cannot block a lane successor.
+            status: 'capability_dead',
+            availableAt: LEGACY_CAPABILITY_SHIELD_AT,
+            capabilityStatus: 'dead',
+            settledAt: input.settledAt,
+            lastError: error,
+            ...(input.expiresAt != null && { expiresAt: input.expiresAt }),
+          },
+          $unset: {
+            leaseBy: 1,
+            leaseUntil: 1,
+            claimToken: 1,
+            capabilityLeaseBy: 1,
+            capabilityLeaseUntil: 1,
+            capabilityClaimToken: 1,
+            ...(input.expiresAt == null && { expiresAt: 1 }),
+          },
+          $push: deadUpdate('dead').$push,
         },
-        $unset: {
-          leaseBy: 1,
-          leaseUntil: 1,
-          claimToken: 1,
-          capabilityLeaseBy: 1,
-          capabilityLeaseUntil: 1,
-          capabilityClaimToken: 1,
-          ...(input.expiresAt == null && { expiresAt: 1 }),
-        },
-        $push: deadUpdate('dead').$push,
-      },
-    );
-    if (shieldDead.modifiedCount === 1) {
+      )
+      .select('orderingKey')
+      .lean<Pick<IAgentTriggerDelivery, 'orderingKey'>>();
+    if (shieldDead != null) {
+      await requestLaneCleanupAfter(shieldDead.orderingKey, input.expiresAt);
       return true;
     }
-    const capabilityDead = await Delivery().updateOne(
-      { _id: input.id, ...legacyCapabilityFence(input), ...receiptFence },
-      deadUpdate('capability_dead'),
-    );
-    if (capabilityDead.modifiedCount === 1) {
+    const capabilityDead = await Delivery()
+      .findOneAndUpdate(
+        { _id: input.id, ...legacyCapabilityFence(input), ...receiptFence },
+        deadUpdate('capability_dead'),
+      )
+      .select('orderingKey')
+      .lean<Pick<IAgentTriggerDelivery, 'orderingKey'>>();
+    if (capabilityDead != null) {
+      await requestLaneCleanupAfter(capabilityDead.orderingKey, input.expiresAt);
       return true;
     }
     const settleDead = (filter: Record<string, unknown>, deferExpiry: boolean) =>
@@ -4587,6 +4884,7 @@ export function createAgentTriggerDeliveryMethods(
     if (dead?._id == null) {
       return false;
     }
+    await requestLaneCleanupAfter(dead.orderingKey, input.expiresAt);
     try {
       await settleBatchMembers(dead, {
         attempt: input.attempt,
@@ -4680,9 +4978,15 @@ export function createAgentTriggerDeliveryMethods(
     const boundedLimit = Math.min(limit, MAX_DEAD_LETTER_LIMIT);
     const deliveries = await Delivery()
       .find({
+        /** The states a requeue accepts. A row a pre-shield replica requeued keeps its private
+         * lifecycle at `dead` while it waits to run as `capability_pending`. */
         $or: [
           { status: { $in: ['dead', 'capability_dead'] } },
-          { status: { $ne: 'succeeded' }, capabilityStatus: 'dead' },
+          {
+            status: { $in: ['pending', 'leased'] },
+            requiredWorkerCapability: { $exists: true },
+            capabilityStatus: 'dead',
+          },
         ],
         batchRootId: { $exists: false },
       })
@@ -4692,10 +4996,110 @@ export function createAgentTriggerDeliveryMethods(
     return deliveries.map(toRecord);
   }
 
+  async function listAgentTriggerDeadLetterPage(
+    tenantId: string | undefined,
+    page: { limit: number; offset: number },
+  ): Promise<AgentTriggerDeadLetterPage> {
+    if (!Number.isSafeInteger(page.limit) || page.limit <= 0) {
+      throw new TypeError('Agent trigger dead-letter limit must be a positive integer');
+    }
+    if (!Number.isSafeInteger(page.offset) || page.offset < 0) {
+      throw new TypeError('Agent trigger dead-letter offset must be a non-negative integer');
+    }
+    const filter = deadLetterFilter(tenantId);
+    const [rows, total] = await Promise.all([
+      Delivery()
+        .find(filter)
+        .sort({ updatedAt: -1, _id: -1 })
+        .skip(page.offset)
+        .limit(Math.min(page.limit, MAX_DEAD_LETTER_LIMIT))
+        .select(DEAD_LETTER_FIELDS)
+        .hint(DEAD_LETTER_INDEX)
+        .lean<DeadLetterRow[]>(),
+      Delivery().countDocuments(filter).hint(DEAD_LETTER_INDEX),
+    ]);
+    return { letters: rows.map(toDeadLetter), total };
+  }
+
+  async function getAgentTriggerDeadLetter(
+    tenantId: string | undefined,
+    id: string,
+  ): Promise<AgentTriggerDeadLetter | null> {
+    const row = await Delivery()
+      .findOne({ _id: id, ...deadLetterFilter(tenantId) })
+      .select(DEAD_LETTER_FIELDS)
+      .lean<DeadLetterRow>();
+    return row == null ? null : toDeadLetter(row);
+  }
+
+  async function dismissAgentTriggerDeadLetter(
+    tenantId: string | undefined,
+    id: string,
+  ): Promise<boolean> {
+    /** The root goes first, in one write that a requeue's claim cannot interleave with: a
+     * requeue that wins leaves nothing dead to remove, and one that loses finds no row. */
+    const root = await Delivery()
+      .findOneAndDelete({
+        _id: id,
+        $and: [
+          DEAD_SCOPE,
+          tenantPartition(tenantId),
+          {
+            $or: [
+              { batchMemberIds: { $exists: false } },
+              { batchMemberIds: { $size: 0 } },
+              { batchMembersSettledAt: { $exists: true } },
+            ],
+          },
+          {
+            $or: [
+              { actorActionAdmittedAt: { $exists: false } },
+              { actorReceipt: { $exists: true } },
+            ],
+          },
+          /** A result batch's owner is its followers' record until their proof is copied. */
+          {
+            $or: [
+              { backgroundToolResultBatch: { $exists: false } },
+              { 'backgroundToolResultBatch.proofCopiedAt': { $exists: true } },
+            ],
+          },
+        ],
+        batchRootId: { $exists: false },
+        'actorDetachedAction.status': { $nin: OPEN_DETACHED_ACTIONS },
+      })
+      .select('_id orderingKey batchMemberIds')
+      .lean<Pick<IAgentTriggerDelivery, '_id' | 'orderingKey' | 'batchMemberIds'>>();
+    if (root?._id == null) {
+      return false;
+    }
+    const memberIds = root.batchMemberIds ?? [];
+    if (memberIds.length > 0) {
+      await Delivery().deleteMany({
+        _id: { $in: memberIds },
+        batchRootId: root._id,
+        status: 'dead',
+      });
+    }
+    await reclaimDismissedLane(root.orderingKey);
+    return true;
+  }
+
   async function requeueAgentTriggerDelivery(
     id: string,
     availableAt: Date,
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ): Promise<AgentTriggerDeliveryRecord | null> {
+    const partition =
+      scope == null
+        ? {}
+        : {
+            $and: [tenantPartition(scope.tenantId)],
+            ...(scope.except != null &&
+              scope.except.length > 0 && {
+                'envelope.event.source.type': { $nin: [...scope.except] },
+              }),
+          };
     const candidate = await Delivery()
       .findOne({
         _id: id,
@@ -4711,6 +5115,7 @@ export function createAgentTriggerDeliveryMethods(
         actorReceipt: { $exists: false },
         actorActionAdmittedAt: { $exists: false },
         handling: { $exists: false },
+        ...partition,
       })
       .lean<IAgentTriggerDelivery>();
     if (candidate?._id == null) {
@@ -4736,6 +5141,7 @@ export function createAgentTriggerDeliveryMethods(
           actorActionAdmittedAt: { $exists: false },
           handling: { $exists: false },
           requeueCount: previousRequeueCount,
+          ...partition,
         },
         {
           $set: {
@@ -4777,7 +5183,12 @@ export function createAgentTriggerDeliveryMethods(
 
     // Requeue is a new lane admission. Publication first idempotently prepares
     // its members, then allocates a new sequence on the original lane.
-    return toRecord(await publishStagedDelivery(staged));
+    const published = await publishStagedDelivery(staged);
+    /** Nothing was revived: the dead-letter deadline had already removed a batch receipt. */
+    if (published.status === 'dead' && published.lastError?.code === BATCH_RECEIPTS_EXPIRED) {
+      return null;
+    }
+    return toRecord(published);
   }
 
   async function countActiveAgentTriggerDeliveriesByUser(
@@ -5054,7 +5465,10 @@ export function createAgentTriggerDeliveryMethods(
     getAgentTriggerDelivery,
     getAgentTriggerDeliveryStatus,
     getAgentTriggerDeadLetters,
+    listAgentTriggerDeadLetterPage,
+    getAgentTriggerDeadLetter,
     requeueAgentTriggerDelivery,
+    dismissAgentTriggerDeadLetter,
     countActiveAgentTriggerDeliveriesByUser,
     recoverAgentTriggerLanePublications,
     recoverAgentTriggerBatchReceipts,

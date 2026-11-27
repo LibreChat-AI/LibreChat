@@ -15,6 +15,7 @@ const {
   TENANT_CONTEXT_REQUIRED,
   createPreAuthTenantGuard,
   requirePreAuthTenantContext,
+  selectLoginAuth,
   getAdminPanelUrl,
   exchangeAdminCode,
   createSetBalanceConfig,
@@ -37,6 +38,7 @@ const {
   getUserById,
   upsertBalanceFields,
 } = require('~/models');
+const { getLdapConfig } = require('~/server/services/Config/ldap');
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
 const { getOpenIdConfig } = require('~/strategies');
@@ -156,6 +158,12 @@ function buildGoogleAdminRefreshDeps(sessionExpiry) {
   };
 }
 
+const loginAuth = selectLoginAuth({
+  ldap: getLdapConfig(),
+  directory: middleware.requireLdapAuth,
+  local: middleware.requireLocalAuth,
+});
+
 router.post(
   '/login/local',
   preAuthTenantMiddleware,
@@ -165,7 +173,7 @@ router.post(
   middleware.loginLimiter,
   middleware.checkBan,
   middleware.validateEmailLogin,
-  middleware.requireLocalAuth,
+  loginAuth,
   tenantContextMiddleware,
   requireAdminAccess,
   setBalanceConfig,

@@ -8,6 +8,7 @@ import { createHostFileService, HostFileAdmission, HostFileServiceError } from '
 import type { HostFileDescriptor, HostFileStore } from '@librechat/agents';
 import type { RunConfig, RunStepResumeState } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
+import type { SdkFrame } from './peer';
 import { createHostFileChannel, createWorkerFileChannel } from './files';
 import { createPolicyReceiver, createPolicySender } from './sealed';
 import { createRemoteSdkServer } from './server';
@@ -203,8 +204,31 @@ it('round trips bounded bytes, private staging, and publication on real WebSocke
       file: staged,
     });
     expect(f.publications.size).toBe(1);
-    expect(f.frames.join('')).not.toContain('abcd');
-    expect(f.frames.join('')).not.toContain(Buffer.from('abcd').toString('base64'));
+    const sealed = {
+      version: 1,
+      publicKey: expect.any(String),
+      nonce: expect.any(String),
+      tag: expect.any(String),
+      ciphertext: expect.any(String),
+    };
+    expect(f.frames.length).toBeGreaterThan(0);
+    for (const captured of f.frames) {
+      const frame: SdkFrame = JSON.parse(captured);
+      if (frame.type === 'call') {
+        expect(frame).toEqual({
+          type: 'call',
+          id: expect.any(String),
+          method: expect.any(String),
+          data: sealed,
+        });
+      } else {
+        expect(frame).toEqual({
+          type: 'result',
+          id: expect.any(String),
+          data: { version: 1, ok: true, value: sealed },
+        });
+      }
+    }
     expect(f.admission.snapshot()).toEqual({ operations: 0, reservedBytes: 0 });
   } finally {
     await f.close();

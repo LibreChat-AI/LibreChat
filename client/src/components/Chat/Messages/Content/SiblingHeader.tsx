@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { GitBranchPlus } from 'lucide-react';
-import { MessageTimestamp } from '@librechat/chat/components';
+import { MessageTimestamp, NAV_CLEARANCE } from '@librechat/chat/components';
 import { EModelEndpoint, parseEphemeralAgentId, stripAgentIdSuffix } from 'librechat-data-provider';
 import type { TMessage, Agent } from 'librechat-data-provider';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
@@ -106,7 +106,12 @@ export default function SiblingHeader({
   }, [agentId, agentsMap]);
 
   return (
-    <div className="border-border-light mb-2 flex items-center justify-between gap-2 border-b pb-2">
+    <div
+      className={cn(
+        'border-border-light mb-2 flex items-center justify-between gap-2 border-b pb-2',
+        NAV_CLEARANCE.pad,
+      )}
+    >
       <div className="flex min-w-0 items-center gap-2">
         <div className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full">
           <MessageIcon

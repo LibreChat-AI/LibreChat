@@ -14,13 +14,15 @@ import {
 } from '@librechat/chat/react';
 import type { BackgroundTasksView } from '../BackgroundTasks/useTasks';
 import type { TaskRow } from '../BackgroundTasks/rows';
-import { findTaskTarget, focusTaskTarget, scrollToTaskTarget } from '../BackgroundTasks/jump';
+import type { SessionFilesView } from './useFiles';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { visitTaskTarget } from '../BackgroundTasks/jump';
 import Section from '../BackgroundTasks/Section';
 import { SESSION_RAIL_ID } from './state';
 import { useLocalize } from '~/hooks';
 import SessionRow from './Row';
 import { cn } from '~/utils';
+import Files from './Files';
 
 const isActive = (row: TaskRow) => row.status === 'running' || row.status === 'stopping';
 
@@ -31,12 +33,15 @@ const isActive = (row: TaskRow) => row.status === 'running' || row.status === 's
  */
 export default function SessionRail({
   view,
+  files,
   conversationId,
   agentId,
   sheet,
   onClose,
 }: {
   view: BackgroundTasksView;
+  /** The conversation's files and which of them it leaves out of later turns. */
+  files: SessionFilesView;
   conversationId: string;
   /** The conversation's own agent, which a self-spawned subagent runs as. */
   agentId?: string | null;
@@ -82,12 +87,7 @@ export default function SessionRail({
   const openRow = useCallback(
     (row: TaskRow): boolean => {
       if (row.kind === 'tool') {
-        const target = findTaskTarget(row);
-        if (target == null) return false;
-        if (sheet) onClose(false);
-        focusTaskTarget(target);
-        scrollToTaskTarget(target);
-        return true;
+        return visitTaskTarget(row, sheet ? () => onClose(false) : undefined);
       }
       if (
         openSubagentPanel == null ||
@@ -193,7 +193,7 @@ export default function SessionRail({
       data-testid="session-rail"
       className={cn(
         'bg-surface-sidebar text-text-primary flex h-full shrink-0 flex-col',
-        sheet ? 'fixed inset-0 z-[100]' : 'border-border-light w-80 border-s',
+        sheet ? 'fixed inset-0 z-[100]' : 'w-full',
       )}
     >
       <div className="flex h-[3.25rem] shrink-0 items-center gap-1 ps-4 pe-2">
@@ -279,7 +279,8 @@ export default function SessionRail({
             {tools.map(toolRow)}
           </Section>
         )}
-        {rows.length === 0 && !view.loadFailed && !view.incomplete && (
+        <Files view={files} />
+        {rows.length === 0 && files.rows.length === 0 && !view.loadFailed && !view.incomplete && (
           <p className="text-text-secondary px-2 pt-1 text-sm">
             {localize('com_ui_session_empty')}
           </p>

@@ -618,6 +618,104 @@ it.each([
   expect(storage.acquireFileDeletion).not.toHaveBeenCalled();
 });
 
+describe('uploads that each land in a new remote location', () => {
+  const provisionUnique = (
+    storage: FileDeleteStorage,
+    operation: (
+      claim: FileStorageClaim,
+      onUploadStart: () => void,
+    ) => Promise<ReturnType<typeof result>>,
+  ) =>
+    withFileProvisioning({
+      file,
+      userId: 'caller',
+      destination: 'code:route:sandbox',
+      uniqueRemote: true,
+      storage,
+      operation,
+    });
+  const lostResponse = () =>
+    jest.fn(async (_claim: FileStorageClaim, start: () => void) => {
+      start();
+      throw Object.assign(new Error('Request failed with status code 500'), {
+        response: { status: 500 },
+      });
+    });
+  const unknownOutcome = async (storage: FileDeleteStorage) => {
+    await expect(provisionUnique(storage, lostResponse())).rejects.toBeInstanceOf(
+      FileProvisionOutcomeUnknownError,
+    );
+  };
+
+  it('replaces an upload with an unknown outcome and keeps its claim', async () => {
+    const { storage, provisioners } = setup();
+    await unknownOutcome(storage);
+    const [unknownClaim] = storage.acquireFileProvision.mock.calls[0];
+    const replacement = jest.fn(async () => result('replacement'));
+
+    await expect(provisionUnique(storage, replacement)).resolves.toBe('replacement');
+
+    const [replacementClaim] = storage.acquireFileProvision.mock.calls[1];
+    expect(replacement).toHaveBeenCalledTimes(1);
+    expect(replacementClaim.token).not.toBe(unknownClaim.token);
+    expect(storage.commitFileProvision).toHaveBeenCalledWith(
+      expect.objectContaining({ claim: replacementClaim }),
+    );
+    expect(storage.releaseFileProvision).toHaveBeenCalledTimes(1);
+    expect(storage.releaseFileProvision).toHaveBeenCalledWith(replacementClaim);
+    expect([...provisioners.keys()]).toEqual([unknownClaim.token]);
+    const remove = jest.fn();
+    await expect(
+      withFileDeletion({ file, userId: 'caller', storage, operation: remove }),
+    ).rejects.toBeInstanceOf(FileProvisionOutcomeUnknownError);
+    expect(remove).not.toHaveBeenCalled();
+    expect(storage.acquireFileDeletion).not.toHaveBeenCalled();
+  });
+
+  it('shares one replacement between concurrent callers', async () => {
+    const { storage } = setup();
+    await unknownOutcome(storage);
+    const replacement = jest.fn(async () => result('replacement'));
+
+    await expect(
+      Promise.all([provisionUnique(storage, replacement), provisionUnique(storage, replacement)]),
+    ).resolves.toEqual(['replacement', 'replacement']);
+
+    expect(replacement).toHaveBeenCalledTimes(1);
+    expect(storage.acquireFileProvision).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps every unknown claim when a replacement is unknown too', async () => {
+    const { storage, provisioners } = setup();
+    await unknownOutcome(storage);
+    await unknownOutcome(storage);
+
+    await expect(provisionUnique(storage, async () => result('third'))).resolves.toBe('third');
+
+    const [first, second] = storage.acquireFileProvision.mock.calls.map(([claim]) => claim.token);
+    expect([...provisioners.keys()]).toEqual([first, second]);
+    expect(storage.releaseFileProvision).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases only its own claim when a replacement is rejected outright', async () => {
+    const { storage, provisioners } = setup();
+    await unknownOutcome(storage);
+    const [unknownClaim] = storage.acquireFileProvision.mock.calls[0];
+    const denied = Object.assign(new Error('denied'), { response: { status: 403 } });
+
+    await expect(
+      provisionUnique(storage, async (_claim, start) => {
+        start();
+        throw denied;
+      }),
+    ).rejects.toBe(denied);
+    await expect(provisionUnique(storage, async () => result('fresh'))).resolves.toBe('fresh');
+
+    expect(storage.acquireFileProvision).toHaveBeenCalledTimes(3);
+    expect([...provisioners.keys()]).toEqual([unknownClaim.token]);
+  });
+});
+
 it.each([403, 429].flatMap(storageStatusErrors))(
   'releases a definitive SDK upload rejection and permits a fresh upload: %j',
   async (error) => {

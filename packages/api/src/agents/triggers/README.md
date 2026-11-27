@@ -76,9 +76,15 @@ operations. Exposing them through an admin API requires a separate authorization
 
 Queued-turn and maintenance scans start at a 30-second cadence and double the next idle wait
 up to two minutes after confirmed-empty discovery. Inspected reservations, reconciliation
-candidates, outstanding cleanup markers, full legacy-receipt pages, and failed scans do not
-count as empty. A failed discovery waits for its sibling Mongo operation to settle before a
-new pass or shutdown can complete; successfully acquired work still gets processed.
+candidates, outstanding cleanup markers, legacy-receipt pages that held an expired receipt, and
+failed scans do not count as empty. A failed discovery waits for its sibling Mongo operation to
+settle before a new pass or shutdown can complete; successfully acquired work still gets
+processed.
+
+The legacy-receipt sweep reads one page of conversations per maintenance pass and restarts at the
+end of the collection. A page of live conversations is not work, so it does not hold the loop at
+its base interval: the sweep advances at the cadence the loop has settled into, and
+`maintenanceMaxIntervalMs: 30000` restores the 30-second pace.
 
 Local failed publication and requeue, unfinished terminal finalization, and purge markers wake
 maintenance without waiting for an idle timer. A committed root success or dead letter remains
@@ -100,6 +106,12 @@ experimental clustered startup:
 | `maintenanceMaxIntervalMs` | 120000 | 30000–300000 |
 | `deliveryMaxIntervalMs` | 15000 | 1000–300000 |
 | `completionWaitMaxIntervalMs` | 60000 | 5000–300000 |
+
+`maxIntervalMs` (1000-3600000) in the same block is one deployment-wide ceiling for every
+idle-backoff loop: while it is set it replaces `deliveryMaxIntervalMs`, `queuedTurnMaxIntervalMs`,
+`maintenanceMaxIntervalMs` and the default ceilings of the code-environment reconciler, the MCP
+authorization retry and the schedule erasure sweep. A loop never waits less than its own interval.
+`completionWaitMaxIntervalMs` has its own back-off and keeps its cap.
 
 `completionWaitMaxIntervalMs` caps how long a background or subagent completion waits between
 readiness checks while its result or parent turn is not ready. It backs off from 5 seconds by a tenth

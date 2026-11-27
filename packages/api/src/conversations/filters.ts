@@ -40,6 +40,15 @@ const firstValue = (value: unknown): unknown => (Array.isArray(value) ? value[0]
 const ISO_DATE =
   /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-](?:0\d|1[0-4])(?::?[0-5]\d)?)?)?$/;
 
+/** `Z`, `+HH`, `+HHMM` and `+HH:MM` as `Z` or `+HH:MM`; none reads as UTC. */
+const normalizeZone = (zone: string | undefined): string => {
+  if (zone == null || zone === 'Z') {
+    return 'Z';
+  }
+  const digits = zone.slice(1).replace(':', '');
+  return `${zone[0]}${digits.slice(0, 2)}:${digits.slice(2) || '00'}`;
+};
+
 const parseDate = (value: unknown): { date?: Date; invalid?: boolean } => {
   const raw = firstValue(value);
   if (raw == null || raw === '') {
@@ -74,10 +83,12 @@ const parseDate = (value: unknown): { date?: Date; invalid?: boolean } => {
   if (!readsBackClean) {
     return { invalid: true };
   }
-  /* An offset the regex could not rule out can still be unparsable; a NaN date would
-     reach the query builder as a filter it silently drops. */
+  /* `new Date()` reads only `Z` and `+HH:MM` reliably, so an hour-only or colonless
+     offset is rewritten to that form; a NaN date would reach the query builder as a
+     filter it silently drops. */
   const hasTime = match[4] != null;
-  const date = new Date(`${raw.replace(' ', 'T')}${hasTime && zone == null ? 'Z' : ''}`);
+  const stamp = raw.slice(0, raw.length - (zone?.length ?? 0)).replace(' ', 'T');
+  const date = new Date(`${stamp}${hasTime ? normalizeZone(zone) : ''}`);
   if (Number.isNaN(date.getTime())) {
     return { invalid: true };
   }
@@ -97,16 +108,17 @@ const parseEndpoints = (
     if (typeof entry !== 'string') {
       return { invalid: true };
     }
-    const trimmed = entry.trim();
-    if (trimmed === '') {
+    /* Trimming only detects a blank entry: a custom endpoint name may carry surrounding
+       whitespace, and conversations store it verbatim, so the name matches as sent. */
+    if (entry.trim() === '') {
       continue;
     }
-    if (trimmed.length > limits.maxEndpointNameLength) {
+    if (entry.length > limits.maxEndpointNameLength) {
       return { invalid: true };
     }
     /** Repeated values would widen the `$in` without widening the result. */
-    if (!endpoints.includes(trimmed)) {
-      endpoints.push(trimmed);
+    if (!endpoints.includes(entry)) {
+      endpoints.push(entry);
     }
   }
   if (endpoints.length === 0) {

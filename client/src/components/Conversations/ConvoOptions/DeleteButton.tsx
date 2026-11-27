@@ -1,8 +1,8 @@
 import React, { useCallback } from 'react';
 import { Trans } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
-import { useParams, useNavigate } from 'react-router-dom';
 import {
   Button,
   Spinner,
@@ -14,6 +14,7 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
+import useOpenConversationId from '~/hooks/Conversations/useOpenConversationId';
 import { useDeleteConversationMutation } from '~/data-provider';
 import { useLocalize, useNewConvo } from '~/hooks';
 import { NotificationSeverity } from '~/common';
@@ -26,15 +27,13 @@ type DeleteButtonProps = {
   setShowDeleteDialog?: (value: boolean) => void;
   triggerRef?: React.RefObject<HTMLButtonElement>;
   setMenuOpen?: (open: boolean) => void;
-  currentConversationId?: string;
-  /** Read when the delete settles, for callers whose dialog outlives the route it was opened on. */
+  /** Read when the delete settles, for callers whose dialog can close before it does. */
   getCurrentConversationId?: () => string | undefined;
 };
 
 export function DeleteConversationDialog({
   setShowDeleteDialog,
   conversationId,
-  currentConversationId,
   getCurrentConversationId,
   setMenuOpen,
   retainView,
@@ -43,7 +42,6 @@ export function DeleteConversationDialog({
   setMenuOpen?: (open: boolean) => void;
   setShowDeleteDialog: (value: boolean) => void;
   conversationId: string;
-  currentConversationId?: string;
   getCurrentConversationId?: () => string | undefined;
   retainView: () => void;
   title: string;
@@ -53,14 +51,14 @@ export function DeleteConversationDialog({
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
   const { newConversation } = useNewConvo();
-  const { conversationId: routeConversationId } = useParams();
-  const currentConvoId = currentConversationId ?? routeConversationId;
+  const getOpenConversationId = useOpenConversationId();
 
   const deleteMutation = useDeleteConversationMutation({
     onSuccess: () => {
       setShowDeleteDialog(false);
-      const openConvoId = getCurrentConversationId ? getCurrentConversationId() : currentConvoId;
-      if (openConvoId === conversationId || openConvoId === 'new') {
+      /** Only the chat on screen is replaced; an unsent one is never the chat deleted. */
+      const openConvoId = (getCurrentConversationId ?? getOpenConversationId)();
+      if (openConvoId === conversationId) {
         newConversation();
         navigate('/c/new', { replace: true });
       }
@@ -120,7 +118,6 @@ export function DeleteConversationDialog({
 
 export default function DeleteButton({
   conversationId,
-  currentConversationId,
   getCurrentConversationId,
   retainView,
   title,
@@ -142,7 +139,6 @@ export default function DeleteButton({
       <DeleteConversationDialog
         setShowDeleteDialog={setShowDeleteDialog}
         conversationId={conversationId}
-        currentConversationId={currentConversationId}
         getCurrentConversationId={getCurrentConversationId}
         setMenuOpen={setMenuOpen}
         retainView={retainView}

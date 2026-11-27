@@ -24,7 +24,7 @@ import {
   updateConvoInAllQueries,
   removeConvoFromAllQueries,
   CONVERSATION_LIST_KEYS,
-  clearArchivedConversationMessagesCache,
+  clearNewConversationAlias,
   clearDeletedConversationMessagesCache,
 } from '~/utils';
 import useUpdateTagsInConvo from '~/hooks/Conversations/useUpdateTagsInConvo';
@@ -168,7 +168,7 @@ export const useArchiveConvoMutation = (
           isArchived ? null : _data,
         );
         if (isArchived) {
-          clearArchivedConversationMessagesCache(queryClient, vars.conversationId);
+          clearNewConversationAlias(queryClient, vars.conversationId);
         }
         if (_data.chatProjectId) {
           queryClient.invalidateQueries([QueryKeys.project, _data.chatProjectId]);

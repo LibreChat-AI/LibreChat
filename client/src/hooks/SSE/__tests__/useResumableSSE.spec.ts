@@ -4,6 +4,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { renderHook as renderBareHook, act, waitFor } from '@testing-library/react';
 import {
   Constants,
+  ErrorTypes,
   ContentTypes,
   LocalStorageKeys,
   QueryKeys,
@@ -98,6 +99,7 @@ const mockQueryClient = {
   getQueryCache: () => ({
     findAll: mockFindAll,
     getAll: mockQueryCache.getAll.bind(mockQueryCache),
+    get: mockQueryCache.get.bind(mockQueryCache),
     find: mockQueryCache.find.bind(mockQueryCache),
     subscribe: mockQueryCache.subscribe.bind(mockQueryCache),
   }),
@@ -188,6 +190,12 @@ jest.mock('jotai', () => {
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {},
+}));
+
+/** The pane's conversation is read only when a new chat's first turn is left mid-reply. */
+jest.mock('~/hooks/Conversations/useGetConversation', () => ({
+  __esModule: true,
+  default: () => () => null,
 }));
 
 jest.mock('~/Providers/ChatSettingsContext', () => {
@@ -338,7 +346,8 @@ function renderHook<Result, Props>(
 const CONV_ID = 'conv-abc-123';
 
 type PartialSubmission = {
-  conversation: { conversationId?: string };
+  conversation: { conversationId?: string; agent_id?: string };
+  addedConvo?: { conversationId?: string; agent_id?: string };
   isRegenerate?: boolean;
   compact?: boolean;
   editedContent?: Record<string, unknown>;
@@ -3707,6 +3716,70 @@ describe('useResumableSSE', () => {
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
     expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.userTerms]);
     expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.startupConfig]);
+    unmount();
+  });
+
+  it.each([
+    {
+      reason: 'agent access',
+      status: 403,
+      data: {
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
+      },
+    },
+    {
+      reason: 'a deleted agent',
+      status: 404,
+      data: { error: 'Not Found', message: 'agent not found', type: ErrorTypes.AGENT_NOT_FOUND },
+    },
+  ])(
+    'refetches the selected agents when a send is refused for $reason',
+    async ({ status, data }) => {
+      (request.post as jest.Mock).mockRejectedValueOnce({ response: { status, data } });
+      const submission = buildSubmission({
+        conversation: { conversationId: CONV_ID, agent_id: 'agent_main' },
+        addedConvo: { conversationId: CONV_ID, agent_id: 'agent_added' },
+      });
+      const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+      await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+      expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_main']);
+      expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_added']);
+      unmount();
+    },
+  );
+
+  it('refetches the selected agent when a started run fails because its agent is gone', async () => {
+    const submission = buildSubmission({
+      conversation: { conversationId: CONV_ID, agent_id: 'agent_main' },
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    /* An agent manager skips the chat route's agent check, so the run's own start fails instead. */
+    const failure = { status: 404, code: ErrorTypes.AGENT_NOT_FOUND, error: 'Agent not found' };
+    await act(async () => {
+      getLastSSE()._emit('error', { data: JSON.stringify({ error: JSON.stringify(failure) }) });
+    });
+
+    expect(mockErrorHandler).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_main']);
+    unmount();
+  });
+
+  it('leaves agent details alone when a send is refused for another reason', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 403, data: { error: 'Forbidden', message: 'Forbidden' } },
+    });
+    const submission = buildSubmission({
+      conversation: { conversationId: CONV_ID, agent_id: 'agent_main' },
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+    expect(mockInvalidateQueries).not.toHaveBeenCalledWith([QueryKeys.agent, 'agent_main']);
     unmount();
   });
 

@@ -224,6 +224,36 @@ export type AgentTriggerDeliveryStatusRecord = Pick<
   | 'handling'
 >;
 
+/**
+ * Administrative view of a dead delivery: identity, routing and failure metadata only.
+ * The envelope's input and payload, results and failure text stay in the stored row.
+ */
+export interface AgentTriggerDeadLetter {
+  id: string;
+  /** Idempotency key, as the server logs name the delivery. */
+  deliveryKey: string;
+  user: string;
+  source?: string;
+  event?: string;
+  agentId?: string;
+  attempts: number;
+  requeues: number;
+  /** Failure code as stored; a caller decides whether it is safe to show. */
+  code?: string;
+  /** False once the delivery reached a generation or an event actor, where a second run could repeat work. */
+  requeueable: boolean;
+  /** False while a batch receipt or an external action of this delivery is still open. */
+  dismissable: boolean;
+  createdAt: Date;
+  diedAt?: Date;
+  expiresAt?: Date;
+}
+
+export interface AgentTriggerDeadLetterPage {
+  letters: AgentTriggerDeadLetter[];
+  total: number;
+}
+
 export interface IAgentTriggerLaneSequence {
   _id: string;
   value: number;

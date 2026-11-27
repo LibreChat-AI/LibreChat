@@ -1,9 +1,9 @@
-import { useRef, useEffect, useCallback } from 'react';
-import { useAtom, useStore } from 'jotai';
+import { memo, useRef, useEffect, useCallback } from 'react';
 import { ArrowUpRight, X } from 'lucide-react';
+import { useAtom, useStore, useSetAtom } from 'jotai';
 import { cn, Button, Composer, useLocalize, useFocusTrap } from '@librechat/client';
+import type { KeyboardEvent as ReactKeyboardEvent, ReactElement, ReactNode } from 'react';
 import type { ComposerStopProps, ComposerKeyVerdict } from '@librechat/client';
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import type { FollowedGeneration, FollowedRunEnd } from '../../react/follow';
 import type { ChatContract } from '../../react/chat/contract';
@@ -186,6 +186,120 @@ function SideChatComposer({
 }
 
 /**
+ * The subagent panel's header, which is main chat's: a bar that floats over the thread and
+ * fades into it, so the conversation scrolls under it. Drawn again for another title and for
+ * nothing else: not for a reply being written under it, nor for a key pressed below.
+ */
+const PanelHeader = memo(function PanelHeader({
+  title,
+  onOpenAsMain,
+  onClose,
+}: {
+  title: string;
+  onOpenAsMain: () => void;
+  onClose: () => void;
+}): ReactElement {
+  const localize = useLocalize();
+  return (
+    <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
+      <h2 className="min-w-0 flex-1 truncate ps-2 text-sm font-semibold" title={title}>
+        {title}
+      </h2>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        onClick={onOpenAsMain}
+        aria-label={localize('com_ui_side_chat_open_main')}
+        title={localize('com_ui_side_chat_open_main')}
+        className="h-8 w-8 shrink-0"
+      >
+        <ArrowUpRight className="size-[1.0625rem]" aria-hidden="true" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        onClick={onClose}
+        aria-label={localize('com_ui_close')}
+        className="h-8 w-8 shrink-0"
+      >
+        <X className="size-[1.0625rem]" aria-hidden="true" />
+      </Button>
+    </header>
+  );
+});
+
+type PanelSurfaceProps = Pick<
+  SideChatComposerProps,
+  'contract' | 'title' | 'ready' | 'handoffKey' | 'onHandedTextTaken' | 'onDraftTaken'
+> & {
+  /** The conversation's list, which the surface places with what takes the reader's words. */
+  thread: ReactElement;
+  chat: SideChat;
+  clearsFooter: boolean;
+  focusWhenReady: boolean;
+};
+
+/**
+ * The list with what takes the reader's words: the app's surface when it gives one, or the
+ * panel's plain field. It is where the words not sent yet are read, so a key pressed redraws
+ * this and the field, and neither the panel around it nor the list. And it is redrawn for
+ * nothing else that does not change what it is handed: not for a reply being written.
+ */
+const PanelSurface = memo(function PanelSurface({
+  contract,
+  thread,
+  chat,
+  title,
+  ready,
+  handoffKey,
+  onHandedTextTaken,
+  onDraftTaken,
+  clearsFooter,
+  focusWhenReady,
+}: PanelSurfaceProps): ReactElement {
+  const { Surface } = useSideChatHost();
+  const [draft, setDraft] = useAtom(sideChatDraftFamily(chat.conversation.conversationId ?? ''));
+  if (Surface == null) {
+    return (
+      <>
+        {thread}
+        <SideChatComposer
+          contract={contract}
+          value={draft}
+          onChange={setDraft}
+          title={title}
+          ready={ready}
+          handoff={chat.text ? chat : undefined}
+          handoffKey={handoffKey}
+          onHandedTextTaken={onHandedTextTaken}
+          onDraftTaken={onDraftTaken}
+          clearsFooter={clearsFooter}
+          focusWhenReady={focusWhenReady}
+        />
+      </>
+    );
+  }
+  return (
+    <Surface
+      contract={contract}
+      ready={ready}
+      handedText={chat.text}
+      handoffKey={handoffKey}
+      onHandedTextTaken={onHandedTextTaken}
+      onDraftTaken={onDraftTaken}
+      draft={draft}
+      onDraftChange={setDraft}
+      clearsFooter={clearsFooter}
+      focusWhenReady={focusWhenReady}
+    >
+      {thread}
+    </Surface>
+  );
+});
+
+/**
  * A conversation of the reader's own, open beside the main one: main chat's message list and a
  * composer, driven through a core `Chat`. The main conversation stays where it is; the control
  * in the header moves this one into its place.
@@ -210,7 +324,8 @@ export default function SideChatPanel({
   const openConversation = host.useOpenConversation();
   const { handOffComposerText } = useChatSurface();
   const conversationId = chat.conversation.conversationId ?? '';
-  const [draft, setDraft] = useAtom(sideChatDraftFamily(conversationId));
+  /** Written here and read where it is drawn: the panel itself is not redrawn for every key. */
+  const setDraft = useSetAtom(sideChatDraftFamily(conversationId));
   const takeText = useCallback(() => onHandedTextTaken(chat), [chat, onHandedTextTaken]);
   const takeDraft = useCallback(
     (text: string) => {
@@ -345,6 +460,7 @@ export default function SideChatPanel({
   const title = pane.conversation?.title ?? opened.title ?? localize('com_ui_new_chat');
   const openAsMain = useCallback(() => {
     /** Words not sent yet go with the conversation, to the composer it opens under. */
+    const draft = store.get(sideChatDraftFamily(conversationId));
     if (draft.trim() !== '') {
       handOffComposerText(conversationId, draft);
       takeDraft(draft);
@@ -352,8 +468,8 @@ export default function SideChatPanel({
     openConversation(pane.conversation ?? opened);
     onClose();
   }, [
+    store,
     conversationId,
-    draft,
     handOffComposerText,
     onClose,
     openConversation,
@@ -361,6 +477,15 @@ export default function SideChatPanel({
     pane.conversation,
     takeDraft,
   ]);
+
+  /**
+   * What the header's controls do now, behind functions that are the same for the panel's life:
+   * a host's own callbacks need not be, and the header is not redrawn for a new one.
+   */
+  const controls = useRef({ openAsMain, onClose });
+  controls.current = { openAsMain, onClose };
+  const pressOpenAsMain = useCallback(() => controls.current.openAsMain(), []);
+  const pressClose = useCallback(() => controls.current.onClose(), []);
 
   let body: ReactNode;
   if (followed.isLoadError) {
@@ -388,41 +513,20 @@ export default function SideChatPanel({
   } else {
     body = (
       <DrivenThread id={conversationId} index={SIDE_CHAT_PANE} followed={followed}>
-        {(contract, thread) =>
-          host.Surface == null ? (
-            <>
-              {thread}
-              <SideChatComposer
-                contract={contract}
-                value={draft}
-                onChange={setDraft}
-                title={title}
-                ready={held && !followed.isLoading}
-                handoff={chat.text ? chat : undefined}
-                handoffKey={onDraftTaken ? chat : conversationId}
-                onHandedTextTaken={takeText}
-                onDraftTaken={takeDraft}
-                clearsFooter={clearsFooter}
-                focusWhenReady={!isSheet}
-              />
-            </>
-          ) : (
-            <host.Surface
-              contract={contract}
-              ready={held && !followed.isLoading}
-              handedText={chat.text}
-              handoffKey={onDraftTaken ? chat : conversationId}
-              onHandedTextTaken={takeText}
-              onDraftTaken={takeDraft}
-              draft={draft}
-              onDraftChange={setDraft}
-              clearsFooter={clearsFooter}
-              focusWhenReady={!isSheet}
-            >
-              {thread}
-            </host.Surface>
-          )
-        }
+        {(contract, thread) => (
+          <PanelSurface
+            contract={contract}
+            thread={thread}
+            chat={chat}
+            title={title}
+            ready={held && !followed.isLoading}
+            handoffKey={onDraftTaken ? chat : conversationId}
+            onHandedTextTaken={takeText}
+            onDraftTaken={takeDraft}
+            clearsFooter={clearsFooter}
+            focusWhenReady={!isSheet}
+          />
+        )}
       </DrivenThread>
     );
   }
@@ -439,34 +543,7 @@ export default function SideChatPanel({
       data-chat-pane={SIDE_CHAT_PANE}
       className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
-      {/* The subagent panel's header, which is main chat's: a bar that floats over the thread
-          and fades into it, so the conversation scrolls under it. */}
-      <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
-        <h2 className="min-w-0 flex-1 truncate ps-2 text-sm font-semibold" title={title}>
-          {title}
-        </h2>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={openAsMain}
-          aria-label={localize('com_ui_side_chat_open_main')}
-          title={localize('com_ui_side_chat_open_main')}
-          className="h-8 w-8 shrink-0"
-        >
-          <ArrowUpRight className="size-[1.0625rem]" aria-hidden="true" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={onClose}
-          aria-label={localize('com_ui_close')}
-          className="h-8 w-8 shrink-0"
-        >
-          <X className="size-[1.0625rem]" aria-hidden="true" />
-        </Button>
-      </header>
+      <PanelHeader title={title} onOpenAsMain={pressOpenAsMain} onClose={pressClose} />
       {/* The gutter a list beside a chat needs; see `FollowedChildThread`. A size container, as
           main chat's column is: a composer caps its width against the panel, not the window. */}
       <div className="@container flex min-h-0 flex-1 flex-col sm:px-2">{body}</div>

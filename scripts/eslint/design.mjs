@@ -114,6 +114,7 @@ const COMPOSING = new Set([
   'Property',
   'SpreadElement',
   'TSAsExpression',
+  'TSNonNullExpression',
   'TSSatisfiesExpression',
   'TemplateLiteral',
 ]);
@@ -175,16 +176,38 @@ function bareDims(value, topology) {
   });
 }
 
-/** The enclosing variants of a utility: every variant that is not a disabled selector, so
- *  `md:disabled:opacity-50` and `md:theme-disabled:opacity-100` share `md`. */
-const enclosingOf = (variants) => variants.filter((variant) => !isDisabledVariant(variant));
+/** Tailwind's default breakpoints, smallest first, which the app's theme does not override. */
+const BREAKPOINTS = ['sm', 'md', 'lg', 'xl', '2xl'];
+
+/** Each breakpoint's position in `breakpoints`, smallest first. */
+const rankBreakpoints = (breakpoints) => new Map(breakpoints.map((name, rank) => [name, rank]));
+
+/** A responsive variant: a mobile-first `min-width` breakpoint (`md`, `min-md`) or a
+ *  `max-width` one (`max-md`), with the breakpoint's rank. */
+function breakpointOf(variant, ranks) {
+  const [, bound, name] = /^(min-|max-)?(.*)$/.exec(variant);
+  const rank = ranks.get(name);
+  return rank === undefined ? undefined : { max: bound === 'max-', rank };
+}
+
+/** Whether a dim's variant `held` guarantees the recipe's `variant`: the same variant, or a
+ *  breakpoint that implies it, as `lg` implies `md` and `max-md` implies `max-lg`. */
+function implies(held, variant, ranks) {
+  if (held === variant) return true;
+  const dim = breakpointOf(held, ranks);
+  const recipe = breakpointOf(variant, ranks);
+  if (!dim || !recipe || dim.max !== recipe.max) return false;
+  return dim.max ? dim.rank <= recipe.rank : dim.rank >= recipe.rank;
+}
 
 /** Whether `value` spells out a recipe's full-opacity override for the element `need` fades.
- *  The override may sit under fewer enclosing variants than the dim, since it is then active
- *  whenever the dim is, but not under variants the dim lacks. A dim under a descendant modifier
- *  fades another element, which no recipe restores, so the order of variants never matters. */
-function spellsRecipe(value, need) {
-  const dimEnclosing = enclosingOf(splitVariants(need.dim ?? '').variants);
+ *  Every variant the override sits under besides its marker must hold whenever the dim does: one
+ *  the dim carries too (`md`, or a `disabled` the marker already implies), or a breakpoint one of
+ *  the dim's implies. Fewer variants than the dim are fine, since the override is then active
+ *  whenever the dim is. A dim under a descendant modifier fades another element, which no recipe
+ *  restores, so the order of variants never matters. */
+function spellsRecipe(value, need, ranks) {
+  const held = splitVariants(need.dim ?? '').variants;
   return value.split(/\s+/).some((token) => {
     const { variants, base } = splitVariants(token);
     const match = /^(!?)opacity-100(!?)$/.exec(base);
@@ -195,7 +218,7 @@ function spellsRecipe(value, need) {
     if (need.important && !match[1] && !match[2]) return false;
     return variants
       .filter((_, i) => i !== marker)
-      .every((variant) => dimEnclosing.includes(variant));
+      .every((variant) => held.some((dim) => implies(dim, variant, ranks)));
   });
 }
 
@@ -206,10 +229,8 @@ const covers = (recipe, need) =>
 
 /** The expression under TypeScript wrappers that do not change its value: `[recipe] as const`,
  *  `map satisfies ClassMap`, `value!`. */
-const unwrap = (node) =>
-  ['TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression'].includes(node?.type)
-    ? unwrap(node.expression)
-    : node;
+const WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression']);
+const unwrap = (node) => (WRAPPERS.has(node?.type) ? unwrap(node.expression) : node);
 
 /** The variable a name resolves to from `scope`, or `undefined` when nothing declares it. */
 function findVariable(scope, name) {
@@ -264,6 +285,7 @@ const PASSING = new Set([
   'BinaryExpression',
   'CallExpression',
   'TSAsExpression',
+  'TSNonNullExpression',
   'TSSatisfiesExpression',
   'TemplateLiteral',
 ]);
@@ -368,16 +390,19 @@ function chosenByDisabled(start, source, known) {
 }
 
 /** Whether an object belongs to a call's arguments, as a class map or a `cva` config does,
- *  rather than being a props or style object of its own. */
+ *  rather than being a props or style object of its own: spread into one (`{ ...{ … } }`) or
+ *  under a TypeScript wrapper counts. */
 function isCallArgument(object) {
   let current = object;
   while (
     [
       'ObjectExpression',
       'Property',
+      'SpreadElement',
       'ArrayExpression',
       'ConditionalExpression',
       'LogicalExpression',
+      ...WRAPPERS,
     ].includes(current.parent?.type)
   ) {
     current = current.parent;
@@ -448,9 +473,25 @@ const isCva = (call, source, filename) =>
   call.callee.name === 'cva' &&
   isClassCall(call, source, filename);
 
+/** The string a `const` identifier holds, when it is a plain string or a template without
+ *  expressions. */
+function constantString(identifier, source) {
+  const variable = findVariable(source.getScope(identifier), identifier.name);
+  const declarator = variable?.defs[0]?.node;
+  if (declarator?.type !== 'VariableDeclarator' || declarator.parent.kind !== 'const') {
+    return undefined;
+  }
+  const init = unwrap(declarator.init);
+  let value = init?.type === 'Literal' ? init.value : undefined;
+  if (init?.type === 'TemplateLiteral' && init.expressions.length === 0) {
+    value = init.quasis[0].value.cooked;
+  }
+  return typeof value === 'string' ? value : undefined;
+}
+
 /** Reads, for one class list, what a recipe reference resolves to and which strings and
  *  expressions always emit one. */
-function recipeReader(context) {
+function recipeReader(context, ranks) {
   const source = context.sourceCode;
   const inRecipesFile = RECIPES_FILE.test(context.filename);
 
@@ -487,7 +528,8 @@ function recipeReader(context) {
   };
 
   /** A spelled-out recipe for the dim's element, `!important` when the dim is. */
-  const stringCovers = (value, need) => typeof value === 'string' && spellsRecipe(value, need);
+  const stringCovers = (value, need) =>
+    typeof value === 'string' && spellsRecipe(value, need, ranks);
 
   /** Whether `node` emits a recipe covering `need` (the dim's element and importance) on every
    *  path through it. */
@@ -503,7 +545,9 @@ function recipeReader(context) {
           node.expressions.some((expression) => always(expression, topology))
         );
       case 'Identifier':
-        return covers(recipeOf(node), topology);
+        return (
+          covers(recipeOf(node), topology) || stringCovers(constantString(node, source), topology)
+        );
       case 'MemberExpression':
         return !node.computed && covers(memberRecipeOf(node), topology);
       case 'CallExpression':
@@ -543,13 +587,23 @@ function recipeReader(context) {
     }
   };
 
-  /** The keys a class-map entry sets, by name or by the source of a computed key; a spread sets
+  /** The string a class-map key names: its name or literal, or a computed key whose value is
+   *  known (a literal, a template without expressions, a `const` string). */
+  const keyValue = (property) => {
+    if (!property.computed) return property.key.name ?? String(property.key.value);
+    const key = unwrap(property.key);
+    if (key.type === 'Literal') return String(key.value);
+    if (key.type === 'TemplateLiteral' && key.expressions.length === 0) {
+      return key.quasis[0].value.cooked;
+    }
+    return key.type === 'Identifier' ? constantString(key, source) : undefined;
+  };
+
+  /** The keys a class-map entry sets, by value or by the source of a computed key; a spread sets
    *  the keys of the object it spreads. */
   const entryKeys = (property) => {
     if (property.type === 'Property') {
-      const literal = property.key.type === 'Literal' ? String(property.key.value) : undefined;
-      if (!property.computed || literal !== undefined) return [literal ?? keyName(property)];
-      return [`[${source.getText(property.key)}]`];
+      return [keyValue(property) ?? `[${source.getText(property.key)}]`];
     }
     const argument = unwrap(property.argument);
     return argument.type === 'ObjectExpression' ? argument.properties.flatMap(entryKeys) : [];
@@ -563,15 +617,44 @@ function recipeReader(context) {
     return argument.type !== 'ObjectExpression' || argument.properties.some(unknownSpread);
   };
 
-  /** Whether a later entry of the same map can overwrite `property`: an unknown spread, or an
-   *  entry or known spread that sets one of its keys. */
-  const overwritten = (property) => {
-    const { properties } = property.parent;
-    const keys = new Set(entryKeys(property));
-    return properties
-      .slice(properties.indexOf(property) + 1)
-      .some((later) => unknownSpread(later) || entryKeys(later).some((key) => keys.has(key)));
+  /** The spread that carries an object literal into an enclosing map: `{ ...{ a: true } }`. */
+  const spreadAround = (object) => {
+    let node = object;
+    while (WRAPPERS.has(node.parent?.type)) node = node.parent;
+    const spread = node.parent;
+    return spread?.type === 'SpreadElement' && spread.parent?.type === 'ObjectExpression'
+      ? spread
+      : undefined;
   };
+
+  /** Whether a later entry can overwrite `property`: an unknown spread, or an entry or known
+   *  spread that sets one of its keys, in its own map or after the spread that carries it into an
+   *  enclosing one. */
+  const overwritten = (property) => {
+    const keys = new Set(entryKeys(property));
+    for (let entry = property; entry; entry = spreadAround(entry.parent)) {
+      const { properties } = entry.parent;
+      const later = properties.slice(properties.indexOf(entry) + 1);
+      if (
+        later.some((next) => unknownSpread(next) || entryKeys(next).some((key) => keys.has(key)))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /** The entries of a class map, with those of the object literals it spreads. */
+  const entriesOf = (object) =>
+    object.properties.flatMap((property) => {
+      if (property.type === 'Property') return [property];
+      const argument = unwrap(property.argument);
+      return argument.type === 'ObjectExpression' ? entriesOf(argument) : [];
+    });
+
+  /** Whether an entry's key names a covering recipe. */
+  const keyCovers = (property, topology) =>
+    property.computed ? always(property.key, topology) : stringCovers(property.key.value, topology);
 
   /** A class-map entry that is always on, names a covering recipe, and is not overwritten. */
   const mapEntryAlways = (property, topology) =>
@@ -586,9 +669,7 @@ function recipeReader(context) {
       property.type === 'Property' &&
       unwrap(property.value).type === 'Literal' &&
       unwrap(property.value).value === true &&
-      (property.computed
-        ? always(property.key, topology)
-        : stringCovers(property.key.value, topology))
+      keyCovers(property, topology)
     );
   };
 
@@ -665,17 +746,21 @@ function recipeReader(context) {
           always(parent.left === child ? parent.right : parent.left, topology)
         );
       case 'ObjectExpression': {
-        if (child.type !== 'Property') return false;
-        const condition = source.getText(child.value);
-        return parent.properties.some(
+        /** The entry that emits the string: `child`, or the one inside an object literal `child`
+         *  spreads into this map. */
+        let entry = child.type === 'Property' ? child : undefined;
+        for (let node = start; !entry && node && node !== child; node = node.parent) {
+          if (node.type === 'Property') entry = node;
+        }
+        if (!entry) return false;
+        const condition = source.getText(entry.value);
+        return entriesOf(parent).some(
           (property) =>
-            property !== child &&
-            property.type === 'Property' &&
+            property !== entry &&
             (mapEntryAlways(property, topology) ||
               (source.getText(property.value) === condition &&
-                (property.computed
-                  ? always(property.key, topology)
-                  : stringCovers(property.key.value, topology)))),
+                !overwritten(property) &&
+                keyCovers(property, topology))),
         );
       }
       default:
@@ -776,6 +861,9 @@ const disabledRecipe = {
       {
         type: 'object',
         properties: {
+          /** The theme's breakpoints, smallest first, so a recipe under a smaller one than the
+           *  dim's (`md:` for `lg:disabled:`) counts. */
+          breakpoints: { type: 'array', items: { type: 'string' }, uniqueItems: true },
           /** Components whose rendered class list already composes a recipe on the element
            *  that takes `className`, so a caller's dim there is painted over by the recipe. */
           primitives: { type: 'array', items: { type: 'string' }, uniqueItems: true },
@@ -795,7 +883,8 @@ const disabledRecipe = {
     const source = context.sourceCode;
     const primitives = new Set(context.options[0]?.primitives ?? []);
     const sources = new Set(context.options[0]?.sources ?? ['@librechat/client']);
-    const restored = recipeReader(context);
+    const ranks = rankBreakpoints(context.options[0]?.breakpoints ?? BREAKPOINTS);
+    const restored = recipeReader(context, ranks);
 
     /** A configured primitive imported from a configured module or, inside the component
      *  library, from its own file; when the file declares no such name at all, the name alone. */
@@ -825,7 +914,7 @@ const disabledRecipe = {
       if (element) bareTopology = control ? 'self' : 'within';
       const picked = known.get(STATIC) === true || chosenByDisabled(node, source, known);
       const chosen = picked ? bareDims(value, bareTopology) : [];
-      const spelled = (need) => bareOnly && spellsRecipe(value, need);
+      const spelled = (need) => bareOnly && spellsRecipe(value, need, ranks);
       const dims = [...(bareOnly ? [] : variantDims(value)), ...chosen].filter(
         (need) => !spelled(need),
       );
@@ -841,21 +930,6 @@ const disabledRecipe = {
       if (!missing) return;
       context.report({ node: reported, messageId: 'missing', data: { dim: missing.dim } });
     };
-    /** The string a `const` identifier holds, when it is a plain string or a template without
-     *  expressions. */
-    const constantString = (identifier) => {
-      const variable = findVariable(source.getScope(identifier), identifier.name);
-      const declarator = variable?.defs[0]?.node;
-      if (declarator?.type !== 'VariableDeclarator' || declarator.parent.kind !== 'const') {
-        return undefined;
-      }
-      const init = unwrap(declarator.init);
-      let value = init?.type === 'Literal' ? init.value : undefined;
-      if (init?.type === 'TemplateLiteral' && init.expressions.length === 0) {
-        value = init.quasis[0].value.cooked;
-      }
-      return typeof value === 'string' ? value : undefined;
-    };
     /** A constant class string the element names (`const faded = 'opacity-50'` then
      *  `<button disabled className={faded} />`): read where it is used, since the literal on its
      *  own carries no disabled context. */
@@ -866,12 +940,12 @@ const disabledRecipe = {
       if (expression?.type !== 'Identifier') return;
       const element = attribute.parent;
       if (disabledExpressions(element, source).get(STATIC) !== true) return;
-      const value = constantString(expression);
+      const value = constantString(expression, source);
       if (value === undefined) return;
       const primitive = isPrimitive(element);
       const dim = bareDims(value, 'self').find((need) => {
         if (primitive && !need.important && need.topology === 'self') return false;
-        return !spellsRecipe(value, need);
+        return !spellsRecipe(value, need, ranks);
       });
       if (!dim) return;
       context.report({ node: expression, messageId: 'missing', data: { dim: dim.dim } });
@@ -890,7 +964,7 @@ const disabledRecipe = {
         if (parent.type === 'JSXExpressionContainer' && parent.parent.type === 'JSXAttribute') {
           return;
         }
-        const value = constantString(node);
+        const value = constantString(node, source);
         if (value === undefined || !value.includes('opacity-')) return;
         check(node, value, node, true);
       },

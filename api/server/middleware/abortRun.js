@@ -3,7 +3,7 @@ const { logger } = require('@librechat/data-schemas');
 const { CacheKeys, RunStatus, isUUID } = require('librechat-data-provider');
 const { initializeClient } = require('~/server/services/Endpoints/assistants');
 const { checkMessageGaps, recordUsage } = require('~/server/services/Threads');
-const { deleteMessages, getConvo } = require('~/models');
+const { getConvo } = require('~/models');
 const getLogStores = require('~/cache/getLogStores');
 
 const three_minutes = 1000 * 60 * 3;
@@ -72,12 +72,6 @@ async function abortRun(req, res) {
     logger.error('[abortRun] Error fetching or processing run', error);
   }
 
-  /* TODO: a reconciling strategy between the existing intermediate message would be more optimal than deleting it */
-  await deleteMessages({
-    user: req.user.id,
-    unfinished: true,
-    conversationId,
-  });
   runMessages = await checkMessageGaps({
     openai,
     run_id,

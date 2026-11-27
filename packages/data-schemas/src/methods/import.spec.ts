@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE, createConversationImportMethods } from './import';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
+import { createResponseScopeModel } from '~/models/responseScope';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 
@@ -175,12 +176,14 @@ describe('conversation import cleanup methods', () => {
     const deleteMessages = jest.fn().mockResolvedValue(undefined);
     const findProjects = jest.fn().mockResolvedValue([]);
     const deleteConversations = jest.fn().mockResolvedValue(undefined);
-    const responseScopes = { bulkWrite: jest.fn().mockResolvedValue(undefined) };
+    const responseScopes = createResponseScopeModel(mongoose);
     const deleteReplies = jest.fn().mockResolvedValue(undefined);
     const deleteFeedbackEvents = jest.fn().mockResolvedValue(undefined);
     const deleteFeedback = jest.fn().mockResolvedValue(undefined);
     const cleanupMongoose = {
-      model: jest.fn().mockReturnValue(responseScopes),
+      connection: mongoose.connection,
+      mongo: mongoose.mongo,
+      model: mongoose.model.bind(mongoose),
       models: {
         Message: { deleteMany: deleteMessages },
         Conversation: { distinct: findProjects, deleteMany: deleteConversations },
@@ -203,6 +206,7 @@ describe('conversation import cleanup methods', () => {
 
     await methods.deleteImportedMessages(scope);
     await methods.deleteImportedConversations(scope);
+    expect(await responseScopes.countDocuments({ closed: true })).toBe(conversationIds.length);
 
     for (const [cleanupMock, ownerField, conversationField] of [
       [deleteReplies, 'principalId', 'conversationId'],

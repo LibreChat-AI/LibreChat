@@ -23,7 +23,9 @@ import {
 } from './worker';
 import { createBackgroundResponseEnvelope, createResponseResumeEnvelope } from './queue';
 import { createBackgroundResponseTransport } from './transport';
+import { projectCanonicalResponseTurn } from './turnProjection';
 import { buildPendingBackgroundResponse } from './background';
+import { createStoredToolContinuation } from './continuation';
 
 const secret = 'worker-test-secret';
 const userId = new mongoose.Types.ObjectId().toString();
@@ -51,7 +53,11 @@ afterAll(async () => {
   await mongo?.stop();
 });
 
-async function fixture(tenantId?: string) {
+async function fixture(
+  tenantId?: string,
+  input: unknown = 'Saved input',
+  previous_response_id?: string,
+) {
   const owner = { userId, tenantId };
   return tenantStorage.run(owner, async () => {
     await mongoose.models.User.create({
@@ -68,13 +74,76 @@ async function fixture(tenantId?: string) {
       requestKey: 'request',
       fingerprint: 'fingerprint',
       conversationId: 'conversation',
-      parentMessageId: 'root',
-      requestJSON: JSON.stringify({ model: 'agent', input: 'Saved input', background: true }),
+      parentMessageId: previous_response_id ?? 'root',
+      requestJSON: JSON.stringify({
+        model: 'agent',
+        input,
+        background: true,
+        previous_response_id,
+      }),
     });
     if (!saved.ok) throw new Error('Fixture reservation failed');
     return saved.record;
   });
 }
+
+it('uses the stored admitted continuation without rereading the original parent', async () => {
+  const input = [
+    { type: 'function_call', call_id: 'call_lookup', name: 'lookup', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_lookup', output: 'ready' },
+  ];
+  const record = await fixture('owner', input, 'resp_original');
+  const token = mintBackgroundResponseWorkerToken(record, secret);
+  const getMessage = jest.fn();
+  const hydrate = createStoredToolContinuation({ getMessage, logger: { error: jest.fn() } });
+  const { server } = app('owner', (req, res) => hydrate(req, res, () => res.json(req.body)));
+  const response = await request(server)
+    .post('/')
+    .set('x-lc-response-worker', '1')
+    .auth(token, { type: 'bearer' })
+    .expect(200);
+  expect(response.body.input).toEqual(input);
+  expect(getMessage).not.toHaveBeenCalled();
+  const origin = { responseId: 'resp_original', callIds: ['call_lookup'] };
+  const projected = projectCanonicalResponseTurn(record, {
+    generationCreatedAt: 1,
+    providerExecutionId: 'provider',
+    status: 'completed',
+    responseJSON: JSON.stringify({
+      ...buildPendingBackgroundResponse(record),
+      status: 'completed',
+    }),
+    turnJSON: JSON.stringify({
+      version: 1,
+      context: { userId },
+      conversation: { conversationId: record.conversationId, agent_id: record.agentId },
+      inputs: [
+        {
+          index: 0,
+          messageId: 'result',
+          parentMessageId: 'resp_original',
+          clientToolOrigin: origin,
+        },
+      ],
+      parentMessageId: 'result',
+      trace: {},
+    }),
+  });
+  expect(projected?.messages[0]).toMatchObject({
+    isUserSubmitted: true,
+    metadata: { responseClientToolOrigin: origin },
+    content: [
+      {
+        tool_call: {
+          id: 'call_lookup',
+          output: 'ready',
+          clientToolCall: true,
+          runStepStatus: 'completed',
+        },
+      },
+    ],
+  });
+});
 
 function app(contextTenant?: string, onWorker?: RequestHandler) {
   const server = express();

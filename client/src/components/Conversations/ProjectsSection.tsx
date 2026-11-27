@@ -1,4 +1,4 @@
-import { memo, useCallback, useId, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useDrop } from 'react-dnd';
 import { useRecoilValue } from 'recoil';
 import * as Ariakit from '@ariakit/react';
@@ -104,6 +104,12 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
     (data?.pages[data.pages.length - 1]?.nextCursor ?? null) != null;
   const visible = conversations.slice(0, INLINE_CHAT_LIMIT);
 
+  /** A disabled query still reports `isLoading`: a project never opened would
+   *  pulse skeletons out of sight, and has no answer to call empty either. */
+  if (!expanded && data == null) {
+    return null;
+  }
+
   if (isLoading && conversations.length === 0) {
     return (
       <div data-testid={`project-chats-loading-${projectId}`} aria-busy="true">
@@ -188,6 +194,39 @@ const ProjectItem = memo(
     const menuId = useId();
     const [expanded, setExpanded] = useState(defaultExpanded);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
+    /**
+     * One-way: true once the pointer or focus has reached the row, or its menu was asked for.
+     * Until then the row draws a plain button in place of the menu's trigger, because Ariakit's
+     * trigger is a hovercard anchor that listens on the document from the moment it mounts, so
+     * every listed project would otherwise add a listener to every page.
+     */
+    const [reached, setReached] = useState(false);
+    const placeholder = useRef<HTMLButtonElement>(null);
+    const trigger = useRef<HTMLButtonElement>(null);
+    /**
+     * What the placeholder was asked to do, replayed on the trigger once it mounts so Ariakit opens
+     * the menu the way it would have: a click with its own `detail`, or an arrow key reaching the
+     * placeholder by keyboard (Shift+Tab lands on it first), which Ariakit reads by placement.
+     */
+    const handoff = useRef<{ click: number } | { key: string } | null>(null);
+    useLayoutEffect(() => {
+      const next = handoff.current;
+      const button = trigger.current;
+      if (next == null || button == null) {
+        return;
+      }
+      handoff.current = null;
+      if ('click' in next) {
+        button.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true, detail: next.click }),
+        );
+        return;
+      }
+      button.focus();
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: next.key, bubbles: true, cancelable: true }),
+      );
+    }, [reached]);
     /** The dialog items keep the menu open so it does not steal focus from the
      *  dialog mounting beside it; closing the dialog closes the menu too. */
     const closeMenuWith = (setOpen: (open: boolean) => void, open: boolean) => {
@@ -303,6 +342,17 @@ const ProjectItem = memo(
     return (
       <li className="max-w-full min-w-0 list-none" ref={projectRowRef}>
         <div
+          onPointerEnter={(event) => {
+            if (event.pointerType === 'mouse') {
+              setReached(true);
+            }
+          }}
+          onFocus={(event) => {
+            /* A tap focuses the placeholder before its click: swapping it then would lose the click. */
+            if (!placeholder.current?.contains(event.target)) {
+              setReached(true);
+            }
+          }}
           className={cn(
             'group text-text-primary relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
             isActive || isMenuOpen || (isDropOver && canDrop)
@@ -348,26 +398,53 @@ const ProjectItem = memo(
                 </a>
               }
             />
-            <DropdownPopup
-              portal={true}
-              focusLoop={true}
-              unmountOnHide={true}
-              menuId={menuId}
-              isOpen={isMenuOpen}
-              setIsOpen={setIsMenuOpen}
-              className="z-[125]"
-              minWidth="11rem"
-              iconClassName="me-2 text-text-secondary"
-              trigger={
-                <Ariakit.MenuButton
-                  aria-label={localize('com_ui_more_options')}
-                  className={rowActionClasses({ open: isMenuOpen })}
-                >
-                  <Ellipsis className="h-4 w-4" aria-hidden="true" />
-                </Ariakit.MenuButton>
-              }
-              items={menuItems}
-            />
+            {reached ? (
+              <DropdownPopup
+                portal={true}
+                focusLoop={true}
+                unmountOnHide={true}
+                menuId={menuId}
+                isOpen={isMenuOpen}
+                setIsOpen={setIsMenuOpen}
+                className="z-[125]"
+                minWidth="11rem"
+                iconClassName="me-2 text-text-secondary"
+                trigger={
+                  <Ariakit.MenuButton
+                    ref={trigger}
+                    aria-label={localize('com_ui_more_options')}
+                    className={rowActionClasses({ open: isMenuOpen })}
+                  >
+                    <Ellipsis className="h-4 w-4" aria-hidden="true" />
+                  </Ariakit.MenuButton>
+                }
+                items={menuItems}
+              />
+            ) : (
+              /* Touch has no hover, and Shift+Tab lands here first: hand what it is asked to the trigger. */
+              <button
+                ref={placeholder}
+                type="button"
+                aria-label={localize('com_ui_more_options')}
+                aria-haspopup="menu"
+                aria-expanded={false}
+                className={rowActionClasses()}
+                onClick={(event) => {
+                  handoff.current = { click: event.detail };
+                  setReached(true);
+                }}
+                onKeyDown={(event) => {
+                  if (!event.key.startsWith('Arrow')) {
+                    return;
+                  }
+                  event.preventDefault();
+                  handoff.current = { key: event.key };
+                  setReached(true);
+                }}
+              >
+                <Ellipsis className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
           </div>
         </div>
         <Collapse open={expanded}>

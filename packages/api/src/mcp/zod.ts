@@ -542,6 +542,8 @@ const GEMINI_UNSUPPORTED_KEYS = new Set([
   'contentEncoding',
   'contentMediaType',
   'contentSchema',
+  /** OpenAPI keyword emitted beside `oneOf` (e.g. Pydantic `Field(discriminator=...)`). */
+  'discriminator',
 ]);
 
 /**

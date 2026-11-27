@@ -27,24 +27,12 @@ const UNDOCK = 'Open in new window';
 const DOCK = 'Dock back to panel';
 const HTML_ARTIFACT = 'E2E HTML Artifact';
 const UNDOCKED_PANE = '#undocked-artifacts-root #artifact-viewer';
-/**
- * The trigger row's accessible name carries its format badge and whether
- * opening it renders a preview, alongside the title and the action — so it is
- * matched on the title rather than spelled out here.
- */
-const artifactTrigger = (page: Page, title: string) =>
-  messagesView(page).getByRole('button', {
-    name: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-  });
-
+/** The reply opens its artifact as it arrives; these cases start from a settled reply. */
 async function openHtmlArtifact(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-  /* Opened while the reply is still finalizing, the pane follows the stream
-   * onto the code tab; these cases start from a settled reply. */
   await sendMessageAndWaitForCompletion(page, 'E2E_HTML_ARTIFACT_REPLY', { timeout: 60000 });
 
-  await artifactTrigger(page, HTML_ARTIFACT).click();
   const panel = page.getByRole('region', { name: HTML_ARTIFACT });
   await expect(panel).toBeVisible();
   return panel;
@@ -193,7 +181,6 @@ test.describe('undocked artifacts pane', () => {
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await sendMessageAndWaitForCompletion(page, 'E2E_HTML_ARTIFACT_REPLY', { timeout: 60000 });
 
-    await artifactTrigger(page, HTML_ARTIFACT).click();
     const panel = page.getByRole('region', { name: HTML_ARTIFACT });
     await expect(panel).toBeVisible();
 
@@ -355,10 +342,9 @@ test.describe('artifacts sheet on a phone', () => {
     const response = await sendMessage(page, 'E2E_HTML_ARTIFACT_REPLY');
     expect(response.ok()).toBeTruthy();
 
-    await artifactTrigger(page, HTML_ARTIFACT).click();
-
+    /* The reply opens its artifact as it arrives, on a phone as a sheet. */
     const sheet = page.getByRole('dialog', { name: HTML_ARTIFACT });
-    await expect(sheet).toBeVisible();
+    await expect(sheet).toBeVisible({ timeout: 30000 });
     await expect(sheet.getByRole('button', { name: UNDOCK })).toHaveCount(0);
     await expect(sheet.getByRole('button', { name: 'Close' })).toBeVisible();
   });

@@ -23,6 +23,19 @@ function renderWithCopy(useMessageCopy: (input: MessageCopyInput) => MessageCopy
 }
 
 describe('MinimalHoverButtons', () => {
+  it.each([false, true])(
+    'only exposes usage for model search results, user=%s',
+    (isCreatedByUser) => {
+      const renderMessageUsage = jest.fn(() => null);
+      render(
+        <MessagesHostProvider host={createMessagesHost({ renderMessageUsage })}>
+          <MinimalHoverButtons message={{ ...message, isCreatedByUser }} />
+        </MessagesHostProvider>,
+      );
+      expect(renderMessageUsage).toHaveBeenCalledTimes(isCreatedByUser ? 0 : 1);
+    },
+  );
+
   it('asks the host to copy the row and shows the copied state it reports', () => {
     const useMessageCopy = jest.fn<MessageCopy, [MessageCopyInput]>(() => ({
       copyToClipboard: (setIsCopied) => setIsCopied(true),

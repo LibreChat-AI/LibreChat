@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
-import type { TSchedule, ScheduleMCPConsentView } from 'librechat-data-provider';
+import type { TSchedule, RunGrantView } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import ScheduleDialog from '../ScheduleDialog';
 
@@ -96,7 +96,7 @@ jest.mock('librechat-data-provider', () => {
 });
 
 /** What a schedule of an agent could be allowed, as the server offers it before creation. */
-const offerFor = (tools: string[], other: string[] = []): ScheduleMCPConsentView => ({
+const offerFor = (tools: string[], other: string[] = []): RunGrantView => ({
   state: 'missing',
   revision: null,
   expiresAtMs: null,
@@ -920,7 +920,7 @@ describe('ScheduleDialog', () => {
       expect(dataService.getScheduleMCPOffer).toHaveBeenCalledTimes(1);
 
       // The agent dropped a tool after the form read the offer.
-      let answer!: (offer: ScheduleMCPConsentView) => void;
+      let answer!: (offer: RunGrantView) => void;
       jest.mocked(dataService.getScheduleMCPOffer).mockReturnValue(
         new Promise((resolve) => {
           answer = resolve;
@@ -949,7 +949,7 @@ describe('ScheduleDialog', () => {
     describe('and again as it is edited', () => {
       const save = () => screen.getByRole('button', { name: 'com_ui_save' });
       /** The schedule has a grant that lists `query` and asks nothing. */
-      const stored: ScheduleMCPConsentView = {
+      const stored: RunGrantView = {
         ...offerFor(['export', 'query']),
         state: 'active',
         revision: 'grant-1',
@@ -1049,7 +1049,7 @@ describe('ScheduleDialog', () => {
 
       describe('with no field of the schedule edited', () => {
         const confirmed = jest.mocked(dataService.confirmScheduleMCPConsent);
-        const open = async (view: ScheduleMCPConsentView = stored) => {
+        const open = async (view: RunGrantView = stored) => {
           mockLimits = { ...mockLimits, mcpConsent: true };
           jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(view);
           confirmed.mockResolvedValue(view);
@@ -1181,7 +1181,7 @@ describe('ScheduleDialog', () => {
 
         it('authorizes a schedule whose grant is not in force, as the form shows it', async () => {
           const user = userEvent.setup();
-          const missing: ScheduleMCPConsentView = {
+          const missing: RunGrantView = {
             ...offerFor(['query']),
             offer: { digest: 'd'.repeat(64), maxLifetimeHours: 24, everything: true },
           };
@@ -1284,6 +1284,52 @@ describe('ScheduleDialog', () => {
       jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue(offerFor(['query']));
       await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
       expect(await screen.findByRole('checkbox', { name: 'query' })).toBeVisible();
+    });
+  });
+
+  describe('running without a server that is not ready', () => {
+    const strict = () => screen.getByRole('checkbox', { name: 'com_ui_schedule_mcp_strict' });
+
+    it('creates a schedule that does, unless its owner asks for every server', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(strict()).not.toBeChecked();
+      await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('mcpStrict');
+    });
+
+    it('creates one that waits for every server when its owner ticks the box', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(strict());
+      await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0]).toMatchObject({ mcpStrict: true });
+    });
+
+    it('shows what a stored schedule is set to, and saves a change of it alone', async () => {
+      const user = userEvent.setup();
+      renderDialog(storedSchedule({ mcpStrict: true }));
+      expect(strict()).toBeChecked();
+      await user.click(strict());
+      await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      const { payload } = mockMutate.mock.calls[0][0];
+      expect(payload).toMatchObject({ mcpStrict: false });
+      for (const field of ['name', 'prompt', 'agent_id', 'cadence', 'timezone'])
+        expect(payload).not.toHaveProperty(field);
+    });
+
+    it('leaves the setting out of an edit that does not touch it', async () => {
+      const user = userEvent.setup();
+      renderDialog(storedSchedule({ mcpStrict: true }));
+      await user.type(screen.getByPlaceholderText('com_ui_schedule_name_placeholder'), ' v2');
+      await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0].payload).not.toHaveProperty('mcpStrict');
     });
   });
 });

@@ -73,6 +73,7 @@ mcpSettings:
 actions:
   allowedDomains:
     - example.com
+    - example.org
 
 mcpServers:
   e2e-memory:
@@ -107,8 +108,8 @@ mcpServers:
   e2e-http:
     type: streamable-http
     url: &e2e-http-url http://127.0.0.1:8765/mcp
-    # The fixture is explicitly anonymous; enrollment and execution bind the same auth descriptor.
-    requiresOAuth: false
+    # `requiresOAuth` is left to startup detection, as most deployments leave it: a grant on this
+    # server (`remoteApi.integrations` below) must match the configuration a run checks it against.
     title: E2E HTTP
     description: Local HTTP MCP fixture for allowlist-override e2e tests.
     timeout: 30000
@@ -225,6 +226,7 @@ endpoints:
       - web_search
       - artifacts
       - subagents
+      - subagent_graphs
       - actions
       - context
       - skills

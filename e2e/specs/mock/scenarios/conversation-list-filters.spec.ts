@@ -173,6 +173,43 @@ test('a date cutoff lists only conversations active since it @scenario:list-date
   expect(await listIds(page, `endpoints=${endpoint}&createdAfter=${cutoff}`)).toEqual([recent]);
 });
 
+test('a cutoff with an hour-only or colonless offset filters like the same instant in UTC @scenario:list-date-cutoff-short-offset', async ({
+  page,
+}) => {
+  const endpoint = uniqueEndpoint();
+  const after = randomUUID();
+  const before = randomUUID();
+  const cutoff = new Date(Date.now() - 7 * DAY);
+  cutoff.setUTCMinutes(0, 0, 0);
+  await seedRows(endpoint, [
+    { conversationId: after, updatedAt: new Date(cutoff.getTime() + 60 * 1000) },
+    { conversationId: before, updatedAt: new Date(cutoff.getTime() - 60 * 1000) },
+  ]);
+  /* The same instant written at +02: wall-clock two hours past the UTC cutoff. */
+  const local = new Date(cutoff.getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 19);
+
+  for (const zone of ['+02', '+0200', '+02:00']) {
+    const query = `endpoints=${endpoint}&updatedAfter=${encodeURIComponent(`${local}${zone}`)}`;
+    expect(await listIds(page, query), zone).toEqual([after]);
+  }
+});
+
+test('an endpoint name with surrounding whitespace matches the conversations stored under it @scenario:list-endpoint-facet-matches-padded-name', async ({
+  page,
+}) => {
+  const name = uniqueEndpoint();
+  const padded = ` ${name} `;
+  const onPadded = randomUUID();
+  const onPlain = randomUUID();
+  await seedRows(padded, [
+    { conversationId: onPadded },
+    { conversationId: onPlain, endpoint: name },
+  ]);
+
+  expect(await listIds(page, `endpoints=${encodeURIComponent(padded)}`)).toEqual([onPadded]);
+  expect(await listIds(page, `endpoints=${name}`)).toEqual([onPlain]);
+});
+
 test('an endpoint facet lists only conversations that ran on the named endpoints @scenario:list-endpoint-facet-matches-any', async ({
   page,
 }) => {
@@ -273,6 +310,29 @@ test('the shared facet follows live links and drops expired ones @scenario:list-
   const rows = (body as ListResponse).conversations;
   expect(rows.map((row) => row.conversationId).sort()).toEqual([live, expiring].sort());
   expect(rows.every((row) => row.isShared === true)).toBe(true);
+});
+
+test('a list without the shared facet still flags the chats with a live link @scenario:list-flags-shared-rows-without-facet', async ({
+  page,
+}) => {
+  const endpoint = uniqueEndpoint();
+  const shared = randomUUID();
+  const lapsed = randomUUID();
+  const unshared = randomUUID();
+  await seedRows(endpoint, [
+    { conversationId: shared },
+    { conversationId: lapsed },
+    { conversationId: unshared },
+  ]);
+  await seedShare(shared, null);
+  await seedShare(lapsed, new Date(Date.now() - DAY));
+
+  const { status, body } = await list(page, `endpoints=${endpoint}`);
+  expect(status).toBe(200);
+  const flags = Object.fromEntries(
+    (body as ListResponse).conversations.map((row) => [row.conversationId, row.isShared]),
+  );
+  expect(flags).toEqual({ [shared]: true, [lapsed]: false, [unshared]: false });
 });
 
 test('a malformed facet is refused instead of listing unfiltered @scenario:list-malformed-facet-refused', async ({

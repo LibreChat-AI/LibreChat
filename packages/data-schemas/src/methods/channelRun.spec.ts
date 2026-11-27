@@ -1228,13 +1228,16 @@ it('finalizes permanent required failure after active sends settle, releases the
       { operationId: 'optional', attempts: 1, outcome: 'unknown' },
       108,
     );
+    const queued = (await storage.admit(event('next'), 108)).run;
+    expect(queued).toMatchObject({ state: 'queued', laneId: run.laneId });
+    expect(await storage.claim(tenantId, 'channel', 'next', 108, 1000)).toBeNull();
     const failed = await storage.commitDelivery(tenantId, fence(run), 109);
     expect(failed.state).toBe('failed');
     expect(failed.errorCode).toBe('delivery_permanent_failure');
     expect(failed.execution).not.toHaveProperty('encryptedApiKey');
     expect(failed).not.toHaveProperty('leaseOwner');
-    await storage.admit(event('next'), 110);
     const next = (await storage.claim(tenantId, 'channel', 'next', 111, 1000))!;
+    expect(next.runId).toBe(queued.runId);
     expect(
       (await storage.prepareExecution(tenantId, fence(next), 112)).execution?.parentMessageId,
     ).toBe('00000000-0000-0000-0000-000000000000');

@@ -35,6 +35,31 @@ export type SubagentTriggerProjection = {
   expectedActionToolName?: string;
 };
 
+type MessageTriggerEvent = { type: string; occurredAt: Date };
+
+/** What an outside event was about. See `tTriggerDetailSchema` for each field. */
+export type MessageTriggerDetail = {
+  repo: string;
+  number: number;
+  actor: string;
+  bot?: boolean;
+  url?: string;
+  title?: string;
+  state?: string;
+  text?: string;
+  sha?: string;
+  branch?: string;
+  labels?: string[];
+};
+
+/** What started a turn no person sent. See `tMessageTriggerSchema` for the form a client reads. */
+export type MessageTrigger = {
+  event: MessageTriggerEvent;
+  subject?: { kind: string; id: string };
+  origin?: { event: MessageTriggerEvent };
+  detail?: MessageTriggerDetail;
+};
+
 /** Server-private durable receipt for one parent-to-child control invocation. */
 export interface ISubagentTaskControlReceipt {
   invocationId: string;
@@ -140,6 +165,7 @@ export interface IMessage extends Document {
     controlReceipts?: ISubagentTaskControlReceipt[];
   };
   subagentTriggerProjection?: SubagentTriggerProjection;
+  trigger?: MessageTrigger;
   contextMeta?: Partial<IAgentEventActorContextMeta>;
   attachments?: unknown[];
   /** Skills the user invoked manually via the `$` popover on this turn. UI-only metadata for `SkillPills`. */
