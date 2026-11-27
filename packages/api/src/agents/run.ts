@@ -170,6 +170,7 @@ import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { createRunPolicy } from '~/agents/authority/run';
 import { buildLangfuseConfig } from '~/langfuse/config';
 import { getCustomEndpointConfig } from '~/app/config';
+import { isStableContextEnabled } from './promptCache';
 import { applyTestRunHook } from '~/agents/testHook';
 import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
@@ -2872,7 +2873,13 @@ export async function createRun({
 
     const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
 
-    let additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
+    /** With `stableContext` the conversation dates and one-turn context follow the
+     *  instructions every turn and conversation shares, so a provider cache keeps those. */
+    let additionalInstructions = (
+      isStableContextEnabled(appConfig)
+        ? [agent.additional_instructions ?? '', dynamicToolInstructions]
+        : [dynamicToolInstructions, agent.additional_instructions ?? '']
+    )
       .join('\n')
       .trim();
     if (isSubagent && agent.alwaysApplySkillPrimes?.length) {
