@@ -4,7 +4,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { TMessage } from 'librechat-data-provider';
 import type { Response } from 'express';
-import type { SpeechChunk, SpeechMessageCache } from './speech';
+import type { SpeechMessageCache } from './speech';
 import {
   streamSpeech,
   capSpeechInput,
@@ -203,14 +203,22 @@ function listener() {
   return { res, http: res as unknown as Response };
 }
 
-/** Reads of a message being written: one result per read, then nothing new. */
-function reads(results: (SpeechChunk[] | string)[], onRead?: (count: number) => void) {
-  let count = 0;
-  return jest.fn(async () => {
-    count++;
-    onRead?.(count);
-    return results[count - 1] ?? [];
+/**
+ * The real chunk processor over a controlled message: a string is a reply still being written,
+ * `{ text, complete }` a finished one, and nothing stored a reply not saved yet. `onRead` runs as
+ * each read of the message starts.
+ */
+function message(stored?: Parameters<SpeechMessageCache['set']>[1], onRead?: () => void) {
+  const { cache, processChunks } = setup();
+  if (stored !== undefined) {
+    cache.set(messageId, stored);
+  }
+  const read = cache.get.getMockImplementation();
+  cache.get.mockImplementation(async (key: string) => {
+    onRead?.();
+    return read?.(key);
   });
+  return { poll: processChunks, reads: cache.get };
 }
 
 /** A provider that answers each text with its own audio. */
@@ -220,15 +228,12 @@ describe('streamSpeech', () => {
   it('speaks each chunk in order and ends the response with the last one', async () => {
     const { res, http } = listener();
     const synthesize = speaker();
-    const poll = reads([
-      [{ text: 'One.', isFinished: false }],
-      [{ text: 'Two.', isFinished: true }],
-    ]);
+    const { poll } = message('The first sentence is spoken. And the rest');
 
     await streamSpeech({ res: http, poll, signal: new AbortController().signal, synthesize });
 
-    expect(synthesize.mock.calls).toEqual([['One.'], ['Two.']]);
-    expect(res.audio).toBe('<One.><Two.>');
+    expect(synthesize.mock.calls).toEqual([['The first sentence is spoken.'], ['And the rest']]);
+    expect(res.audio).toBe('<The first sentence is spoken.><And the rest>');
     expect(res.writableEnded).toBe(true);
     expect(res.status).not.toHaveBeenCalled();
   });
@@ -236,11 +241,11 @@ describe('streamSpeech', () => {
   it('reads nothing and asks for no speech once the client already left', async () => {
     const { res, http } = listener();
     const synthesize = speaker();
-    const poll = reads([[{ text: 'Nobody hears this.', isFinished: true }]]);
+    const { poll, reads } = message({ text: 'Nobody hears this.', complete: true });
 
     await streamSpeech({ res: http, poll, signal: AbortSignal.abort(), synthesize });
 
-    expect(poll).not.toHaveBeenCalled();
+    expect(reads).not.toHaveBeenCalled();
     expect(synthesize).not.toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
   });
@@ -249,7 +254,8 @@ describe('streamSpeech', () => {
     const { http } = listener();
     const left = new AbortController();
     const synthesize = speaker();
-    const poll = reads([[]], () => setImmediate(() => left.abort()));
+    /** The reply is not saved yet, so playback waits for it; the client leaves meanwhile. */
+    const { poll, reads } = message(undefined, () => setImmediate(() => left.abort()));
 
     const spoken = streamSpeech({ res: http, poll, signal: left.signal, synthesize });
     const outcome = await Promise.race([
@@ -258,7 +264,7 @@ describe('streamSpeech', () => {
     ]);
 
     expect(outcome).toBe('stopped');
-    expect(poll).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledTimes(1);
     expect(synthesize).not.toHaveBeenCalled();
   });
 
@@ -266,26 +272,27 @@ describe('streamSpeech', () => {
     const { http } = listener();
     const left = new AbortController();
     const synthesize = speaker();
-    const poll = reads([[{ text: 'Read as the client left.', isFinished: true }]], () =>
+    const { poll, reads } = message({ text: 'Read as the client left.', complete: true }, () =>
       left.abort(),
     );
 
     await streamSpeech({ res: http, poll, signal: left.signal, synthesize });
 
+    expect(reads).toHaveBeenCalledTimes(1);
     expect(synthesize).not.toHaveBeenCalled();
   });
 
-  it('answers 500 when the message cannot be read', async () => {
+  it('answers 500 once the message stays missing', async () => {
     const { res, http } = listener();
+    const synthesize = speaker();
+    const { poll, reads } = message();
     const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
     try {
-      await streamSpeech({
-        res: http,
-        poll: reads(['Message not found after 6 attempts']),
-        signal: new AbortController().signal,
-        synthesize: speaker(),
-      });
+      /** Six reads find nothing, each after a full polling wait, before playback gives up. */
+      await streamSpeech({ res: http, poll, signal: new AbortController().signal, synthesize });
 
+      expect(reads).toHaveBeenCalledTimes(6);
+      expect(synthesize).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.writableEnded).toBe(true);
       expect(error).toHaveBeenCalledWith(
@@ -294,21 +301,22 @@ describe('streamSpeech', () => {
     } finally {
       error.mockRestore();
     }
-  });
+  }, 20_000);
 
   it('answers 500 when the provider fails before any audio, logging the length but not the text', async () => {
     const { res, http } = listener();
+    const { poll } = message({ text: 'Private words.', complete: true });
     const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
     try {
       await streamSpeech({
         res: http,
-        poll: reads([[{ text: 'Private words.', isFinished: true }]]),
+        poll,
         signal: new AbortController().signal,
         synthesize: () => Promise.reject(new Error('provider unavailable')),
       });
 
       expect(res.status).toHaveBeenCalledWith(500);
-      const logged = error.mock.calls.map(([message]) => String(message)).join('\n');
+      const logged = error.mock.calls.map(([line]) => String(line)).join('\n');
       expect(logged).toContain('of 14 characters');
       expect(logged).not.toContain('Private words.');
     } finally {
@@ -318,22 +326,20 @@ describe('streamSpeech', () => {
 
   it('keeps the audio already sent when a later chunk fails', async () => {
     const { res, http } = listener();
+    const { poll } = message('The first sentence is spoken. And the rest');
     const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
     try {
       await streamSpeech({
         res: http,
-        poll: reads([
-          [
-            { text: 'One.', isFinished: false },
-            { text: 'Two.', isFinished: true },
-          ],
-        ]),
+        poll,
         signal: new AbortController().signal,
         synthesize: (text) =>
-          text === 'One.' ? speaker()(text) : Promise.reject(new Error('provider unavailable')),
+          text === 'And the rest'
+            ? Promise.reject(new Error('provider unavailable'))
+            : speaker()(text),
       });
 
-      expect(res.audio).toBe('<One.>');
+      expect(res.audio).toBe('<The first sentence is spoken.>');
       expect(res.status).not.toHaveBeenCalled();
     } finally {
       error.mockRestore();

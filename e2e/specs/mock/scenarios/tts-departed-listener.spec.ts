@@ -114,7 +114,7 @@ test.describe('text-to-speech for a listener who leaves', () => {
   });
 
   test('a message that cannot be read or spoken still answers as before @scenario:auto-speech-failures-answer-as-before', () => {
-    unit(`${LOOP} answers 500 when the message cannot be read`);
+    unit(`${LOOP} answers 500 once the message stays missing`);
     unit(
       `${LOOP} answers 500 when the provider fails before any audio, logging the length but not the text`,
     );
