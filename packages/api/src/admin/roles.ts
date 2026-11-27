@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { PrincipalType, SystemRoles, partialWithoutDefaults } from 'librechat-data-provider';
 import {
   logger,
@@ -298,6 +299,15 @@ function roleIdentity(role: Pick<IRole, '_id'>): { id: string } | undefined {
   return role._id != null ? { id: String(role._id) } : undefined;
 }
 
+/** Whether `role` is still `expected`, the role document a request read earlier: a role
+ * recreated under the same name has another `_id`. */
+function isSameRole(expected: Pick<IRole, '_id'>, role: Pick<IRole, '_id'> | null): boolean {
+  return (
+    role != null &&
+    (expected._id == null || role._id == null || String(expected._id) === String(role._id))
+  );
+}
+
 /** What a role rename moved to the new name along with the role. */
 interface RoleDependentsMoved {
   /** The profile as the new name now holds it; `null` when the role had none. */
@@ -383,6 +393,51 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     recordAuditEntry,
     logPrefix: '[adminRoles]',
   });
+
+  /** Reads a role again; `known` is false when the read itself failed. */
+  const readRole = (name: string) =>
+    getRoleByName(name).then(
+      (role) => ({ known: true, role }),
+      () => ({ known: false, role: null }),
+    );
+
+  /**
+   * The previous role an add's undo put back by name may no longer be `held`, the role the user
+   * had when the add began: deleted after its own deletion swept its members, or replaced by a
+   * role created under its name since. It is read back, and unless it is still `held` the user
+   * moves on to USER, which always exists, while the undo's write (`token`) is still theirs; the
+   * move is audited as the deletion's would have been. A read or write that fails keeps the
+   * restored role.
+   */
+  async function leaveDeletedRole(
+    req: ServerRequest,
+    userId: string,
+    { role, token, held }: { role: string; token: string; held: IRole | null },
+  ) {
+    const lookup = await readRole(role);
+    if (!lookup.known || (held != null && isSameRole(held, lookup.role))) {
+      return;
+    }
+    const moved = await updateUser(
+      userId,
+      { role: SystemRoles.USER },
+      { role, roleToken: token },
+    ).catch((error: unknown) => {
+      logger.error(
+        `[adminRoles] user ${userId} may still hold the deleted role "${role}" an add restored:`,
+        getSafeErrorMetadata(error),
+      );
+      return null;
+    });
+    if (moved) {
+      await emitRevocationAudit(req, {
+        action: 'role.member_removed',
+        severity: memberChangeSeverity(role),
+        target: roleTarget(role),
+        metadata: { userId, newRole: SystemRoles.USER, cause: 'role_deleted' },
+      });
+    }
+  }
 
   /** Emits a `grant.removed` audit entry for each grant the role-deletion cascade
    * removed, so the cascade leaves the same forensic trail as an explicit revoke.
@@ -924,16 +979,10 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
         : null;
       /** Reads the role again to learn whether it still is the one this request targeted. */
-      const lookupRole = () =>
-        getRoleByName(name).then(
-          (role) => ({ known: true, role }),
-          () => ({ known: false, role: null }),
-        );
+      const lookupRole = () => readRole(name);
       /** A role recreated under the same name is a different role and must not inherit the
        * old one's dependents. */
-      const isTargetedRole = (role: IRole | null) =>
-        role != null &&
-        (existing._id == null || role._id == null || String(existing._id) === String(role._id));
+      const isTargetedRole = (role: IRole | null) => isSameRole(existing, role);
 
       const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
         invalidatingConfigStore(
@@ -1055,6 +1104,9 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       };
 
       let deleted: RoleDeletion | null;
+      /** The role is gone, but an account assigned to it while it was deleted may still hold its
+       * name: recorded with the deletion so the trail shows the cleanup was incomplete. */
+      let membersLeft = false;
       try {
         deleted = await deleteRoleByName(name, {
           id: existing._id != null ? String(existing._id) : undefined,
@@ -1086,7 +1138,13 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
           logger.error('[adminRoles] dependents not restored, role state unverifiable:', name);
           return res.status(500).json({ error: 'Failed to delete role' });
         }
-        if (error instanceof RoleDeletionError && error.reason !== 'delete_failed') {
+        membersLeft =
+          error instanceof RoleDeletionError && error.reason === 'late_reassignment_failed';
+        if (
+          error instanceof RoleDeletionError &&
+          error.reason !== 'delete_failed' &&
+          !membersLeft
+        ) {
           /** Another request deleted the role; the members this one moved first are audited. */
           await auditRemovedGrants();
           await auditReassignedMembers(movedBeforeFailure);
@@ -1094,8 +1152,15 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
           return res.status(404).json({ error: 'Role not found' });
         }
         /** Confirmed absent after the delete itself rejected: it committed with its
-         * acknowledgement lost, so it is audited and reported as one, with the members it moved. */
+         * acknowledgement lost, or committed and then could not move every account assigned to
+         * it meanwhile, which a retry cannot reach. Either way it is audited and reported as a
+         * deletion, with the members it moved. */
         deleted = { role: existing, reassignedUserIds: movedBeforeFailure };
+        if (membersLeft) {
+          logger.error(
+            `[adminRoles] role "${name}" deleted, but accounts assigned to it while it was deleted may still hold its name`,
+          );
+        }
       }
       await invalidateAccess();
       if (!deleted) {
@@ -1107,7 +1172,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       await auditRemovedGrants();
       const audited = deleted.reassignedUserIds;
       await auditReassignedMembers(audited);
-      await recordOutcome('success', undefined, {
+      await recordOutcome('success', membersLeft ? 'ROLE_MEMBERS_LEFT' : undefined, {
         grantsRemoved: removedGrants.length,
         membersReassigned: audited.length,
       });
@@ -1192,9 +1257,21 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         }
       }
 
+      const previous = user.role ?? SystemRoles.USER;
+      /** The custom role the user holds now, as stored, for an undo of this add to restore: that
+       * role, and never one created under its name meanwhile. */
+      const held =
+        isSystemRoleName(name) || isSystemRoleName(previous) ? null : await getRoleByName(previous);
+
       /** Conditional on the role read above: an overlapping identical request matches nothing,
-       * so exactly one request records the transition. */
-      const updated = await updateUser(userId, { role: name }, { role: user.role });
+       * so exactly one request records the transition. The token lets an undo match this write
+       * and no later assignment of the same name. */
+      const token = randomUUID();
+      const updated = await updateUser(
+        userId,
+        { role: name, roleToken: token },
+        { role: user.role },
+      );
       if (!updated) {
         const current = await findUser({ _id: userId });
         if (!current) {
@@ -1206,6 +1283,26 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return res.status(409).json({ error: 'User role changed concurrently' });
       }
 
+      const recordAdded = async () => {
+        await emitAudit(req, {
+          action: 'role.member_added',
+          severity: memberChangeSeverity(name, user.role),
+          target: roleTarget(name),
+          metadata: { userId, previousRole: user.role ?? null },
+        });
+        /** The single-role write also ends the user's membership of the previous role. */
+        if (user.role) {
+          await emitAudit(req, {
+            action: 'role.member_removed',
+            severity: memberChangeSeverity(user.role),
+            target: roleTarget(user.role),
+            metadata: { userId, newRole: name },
+          });
+        }
+      };
+
+      /** Before reading the role back: an add moved out of its role by that role's deletion
+       * must still never leave the partition without an admin. */
       if (user.role === SystemRoles.ADMIN && name !== SystemRoles.ADMIN) {
         const postCount = await countUsersByRole(SystemRoles.ADMIN);
         if (postCount === 0) {
@@ -1221,21 +1318,46 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         }
       }
 
-      await emitAudit(req, {
-        action: 'role.member_added',
-        severity: memberChangeSeverity(name, user.role),
-        target: roleTarget(name),
-        metadata: { userId, previousRole: user.role ?? null },
-      });
-      /** The single-role write also ends the user's membership of the previous role. */
-      if (user.role) {
-        await emitAudit(req, {
-          action: 'role.member_removed',
-          severity: memberChangeSeverity(user.role),
-          target: roleTarget(user.role),
-          metadata: { userId, newRole: name },
-        });
+      if (!isSystemRoleName(name)) {
+        /**
+         * A deletion of the role whose last member read came before this write cannot see the
+         * user, so the role is read back. Gone, replaced under its name or unreadable, the add is
+         * undone while this write (`token`) is still the user's last assignment
+         * (`leaveDeletedRole` when the previous role is gone too). An add another write moved the
+         * user out of or past first (the deletion's own sweep, which audits its move, or a later
+         * assignment of a role recreated under the name) stood until then and is audited.
+         */
+        const lookup = await readRole(name);
+        if (!lookup.known || !isSameRole(existing, lookup.role)) {
+          const restored = randomUUID();
+          const outcome = await updateUser(
+            userId,
+            { role: previous, roleToken: restored },
+            { role: name, roleToken: token },
+          ).then(
+            (undone) => (undone ? 'undone' : 'moved'),
+            (undoError) => {
+              logger.error(
+                `[adminRoles] user ${userId} may still hold the role "${name}" its add assigned:`,
+                getSafeErrorMetadata(undoError),
+              );
+              return 'failed';
+            },
+          );
+          if (outcome === 'undone' && !isSystemRoleName(previous)) {
+            await leaveDeletedRole(req, userId, { role: previous, token: restored, held });
+          }
+          if (outcome !== 'undone') {
+            await recordAdded();
+          }
+          if (lookup.known && outcome !== 'failed') {
+            return res.status(404).json({ error: 'Role not found' });
+          }
+          return res.status(500).json({ error: 'Failed to add role member' });
+        }
       }
+
+      await recordAdded();
       return res.status(200).json({ success: true });
     } catch (error) {
       logger.error('[adminRoles] addRoleMember error:', getSafeErrorMetadata(error));

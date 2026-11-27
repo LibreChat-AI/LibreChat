@@ -872,6 +872,7 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     observedRole: roleBeforeClaims,
     updateUser,
     findUser,
+    getRolesByNames: findRolesByNames,
     recordAuditEntry,
     source: 'openid_login',
     tenantId: user.tenantId,

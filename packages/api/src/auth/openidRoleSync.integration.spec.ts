@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { SystemRoles } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createMethods, createModels } from '@librechat/data-schemas';
+import { createMethods, createModels, tenantStorage } from '@librechat/data-schemas';
 import type { IUser, RecordAuditEntryInput } from '@librechat/data-schemas';
 import { writeIdpRoleChange } from './openidRoleSync';
 
@@ -13,6 +13,8 @@ beforeAll(async () => {
   await mongoose.connect(mongoServer.getUri());
   createModels(mongoose);
   methods = createMethods(mongoose);
+  /** Role sync only assigns a role that exists. */
+  await methods.createRoleByName({ name: 'BASIC-USER' });
 });
 
 afterAll(async () => {
@@ -37,7 +39,12 @@ async function storedRole(userId: string): Promise<string | undefined> {
   return user?.role;
 }
 
-function write(userId: string, update: Partial<IUser>, observedRole: string | undefined) {
+function write(
+  userId: string,
+  update: Partial<IUser>,
+  observedRole: string | undefined,
+  tenantId?: string,
+) {
   const entries: RecordAuditEntryInput[] = [];
   const result = writeIdpRoleChange({
     userId,
@@ -45,10 +52,12 @@ function write(userId: string, update: Partial<IUser>, observedRole: string | un
     observedRole,
     updateUser: methods.updateUser,
     findUser: methods.findUser,
+    getRolesByNames: methods.findRolesByNames,
     recordAuditEntry: async (entry) => {
       entries.push(entry);
     },
     source: 'openid_login',
+    tenantId,
   });
   return { entries, result };
 }
@@ -106,6 +115,64 @@ describe('writeIdpRoleChange against MongoDB', () => {
     expect((await result)?.role).toBe('BASIC-USER');
     expect(entries).toHaveLength(1);
     expect(entries[0].metadata).toMatchObject({ previousRole: null, role: 'BASIC-USER' });
+  });
+
+  it('takes back a sync into a role deleted before the write, unaudited, and fails the login', async () => {
+    await methods.createRoleByName({ name: 'GONE-USER' });
+    const userId = await createUser(SystemRoles.USER);
+    await methods.deleteRoleByName('GONE-USER');
+
+    const { entries, result } = write(userId, { role: 'GONE-USER' }, SystemRoles.USER);
+
+    await expect(result).rejects.toThrow(
+      'OpenID role sync configured roles do not exist: GONE-USER',
+    );
+    expect(await storedRole(userId)).toBe(SystemRoles.USER);
+    expect(entries).toHaveLength(0);
+  });
+
+  it("a sync written between a deletion's last member read and the delete is moved by the deletion", async () => {
+    await methods.createRoleByName({ name: 'LATE-USER' });
+    const userId = await createUser(SystemRoles.USER);
+    let synced: ReturnType<typeof write> | undefined;
+    const Role = mongoose.models.Role;
+    const real = Role.findOneAndDelete.bind(Role);
+    const spy = jest.spyOn(Role, 'findOneAndDelete').mockImplementationOnce(((
+      filter: mongoose.FilterQuery<unknown>,
+    ) => {
+      const query = real(filter);
+      const exec = query.exec.bind(query);
+      query.exec = (async () => {
+        synced = write(userId, { role: 'LATE-USER' }, SystemRoles.USER);
+        await synced.result;
+        return exec();
+      }) as typeof query.exec;
+      return query;
+    }) as unknown as typeof Role.findOneAndDelete);
+
+    let deleted: Awaited<ReturnType<typeof methods.deleteRoleByName>>;
+    try {
+      deleted = await methods.deleteRoleByName('LATE-USER');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect((await synced?.result)?.role).toBe('LATE-USER');
+    expect(synced?.entries).toHaveLength(1);
+    expect(deleted?.reassignedUserIds).toEqual([userId]);
+    expect(await storedRole(userId)).toBe(SystemRoles.USER);
+  });
+
+  it("reads the role back in the account's tenant", async () => {
+    const tenantId = 'tenant-role-sync';
+    await tenantStorage.run({ tenantId }, () => methods.createRoleByName({ name: 'TENANT-USER' }));
+    const userId = await tenantStorage.run({ tenantId }, () => createUser(SystemRoles.USER));
+
+    const { entries, result } = write(userId, { role: 'TENANT-USER' }, SystemRoles.USER, tenantId);
+
+    expect((await result)?.role).toBe('TENANT-USER');
+    expect(await storedRole(userId)).toBe('TENANT-USER');
+    expect(entries).toHaveLength(1);
   });
 
   it('resolves null without an audit entry when the user was deleted before the write', async () => {
