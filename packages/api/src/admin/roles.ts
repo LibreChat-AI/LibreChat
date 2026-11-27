@@ -401,14 +401,20 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     );
 
   /**
-   * The previous role an add's undo put back can be gone as well: deleted after its own deletion
-   * swept its members. It is read back the same way, and when gone the user moves on to USER,
-   * which always exists, while they still hold that role; the move is audited as the deletion's
-   * would have been. A read or write that fails keeps the restored role.
+   * The previous role an add's undo put back by name may no longer be `held`, the role the user
+   * had when the add began: deleted after its own deletion swept its members, or replaced by a
+   * role created under its name since. It is read back, and unless it is still `held` the user
+   * moves on to USER, which always exists, while they still hold the name; the move is audited
+   * as the deletion's would have been. A read or write that fails keeps the restored role.
    */
-  async function leaveDeletedRole(req: ServerRequest, userId: string, role: string) {
+  async function leaveDeletedRole(
+    req: ServerRequest,
+    userId: string,
+    role: string,
+    held: IRole | null,
+  ) {
     const lookup = await readRole(role);
-    if (!lookup.known || lookup.role != null) {
+    if (!lookup.known || (held != null && isSameRole(held, lookup.role))) {
       return;
     }
     const moved = await updateUser(userId, { role: SystemRoles.USER }, { role }).catch(
@@ -1248,6 +1254,12 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         }
       }
 
+      const previous = user.role ?? SystemRoles.USER;
+      /** The custom role the user holds now, as stored, for an undo of this add to restore: that
+       * role, and never one created under its name meanwhile. */
+      const held =
+        isSystemRoleName(name) || isSystemRoleName(previous) ? null : await getRoleByName(previous);
+
       /** Conditional on the role read above: an overlapping identical request matches nothing,
        * so exactly one request records the transition. */
       const updated = await updateUser(userId, { role: name }, { role: user.role });
@@ -1290,7 +1302,6 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
          */
         const lookup = await readRole(name);
         if (!lookup.known || !isSameRole(existing, lookup.role)) {
-          const previous = user.role ?? SystemRoles.USER;
           const outcome = await updateUser(userId, { role: previous }, { role: name }).then(
             (undone) => (undone ? 'undone' : 'moved'),
             (undoError) => {
@@ -1302,7 +1313,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
             },
           );
           if (outcome === 'undone' && !isSystemRoleName(previous)) {
-            await leaveDeletedRole(req, userId, previous);
+            await leaveDeletedRole(req, userId, previous, held);
           }
           if (outcome !== 'undone') {
             await recordAdded();

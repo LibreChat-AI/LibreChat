@@ -1842,9 +1842,10 @@ describe('createRemoteAgentAuth', () => {
         ['STANDARD-USER', 'BASIC-USER', 'USER'],
         'name',
       );
-      /** The configured roles are validated, then the assigned one read back, in the tenant. */
+      /** The configured roles are validated, the held role read before the write and the
+       * assigned one read back after it, all in the tenant. */
       expect(deps.getRolesByNames).toHaveBeenLastCalledWith(['BASIC-USER'], 'name');
-      expect(lookupTenants).toEqual(['tenant-role-sync', 'tenant-role-sync']);
+      expect(lookupTenants).toEqual(['tenant-role-sync', 'tenant-role-sync', 'tenant-role-sync']);
       expect(deps.updateUser).toHaveBeenCalledWith(
         'uid123',
         { role: 'BASIC-USER' },

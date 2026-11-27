@@ -584,6 +584,26 @@ describe('writeIdpRoleChange', () => {
     );
   });
 
+  it('moves the account on to USER when a role was recreated under the previous name', async () => {
+    const sync = syncInto('BASIC-USER', [], 'STANDARD-USER');
+    const standard = [
+      [{ _id: 'standard-1', name: 'STANDARD-USER' }],
+      [{ _id: 'standard-2', name: 'STANDARD-USER' }],
+    ];
+    sync.getRolesByNames.mockImplementation(async (names: string[]) =>
+      names.includes('STANDARD-USER') ? (standard.shift() ?? []) : [],
+    );
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist: BASIC-USER');
+
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER },
+      { role: 'STANDARD-USER' },
+    );
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
   it('audits the change when another write moved the account out before the take-back', async () => {
     const sync = syncInto('BASIC-USER', []);
     sync.updateUser.mockResolvedValueOnce({ role: 'BASIC-USER' }).mockResolvedValueOnce(null);

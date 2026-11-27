@@ -46,7 +46,7 @@ type OpenIdRolesForOpenIdSyncInput = {
 type OpenIdRoleSyncRolesLookup = (
   roleNames: string[],
   fieldsToSelect?: string | string[] | null,
-) => Promise<Array<{ name?: string | null }> | null | undefined>;
+) => Promise<Array<{ _id?: unknown; name?: string | null }> | null | undefined>;
 
 type LibreChatRolesForOpenIdSyncInput = {
   rolePriority: string[];
@@ -389,16 +389,27 @@ type IdpRoleWriteInput<T extends RoleRecord> = {
   tenantId?: string;
 };
 
-/** Whether a role named exactly `role` exists in the account's tenant `tenantId`, or without one
- * in the request's partition: where role sync validated the configured roles. */
-async function roleExists(
+type StoredRole = { _id?: unknown; name?: string | null };
+
+/** The role named exactly `role` in the account's tenant `tenantId`, or without one in the
+ * request's partition (where role sync validated the configured roles); `null` when none. */
+async function findRole(
   role: string,
   tenantId: string | undefined,
   getRolesByNames: OpenIdRoleSyncRolesLookup,
-): Promise<boolean> {
+): Promise<StoredRole | null> {
   const read = async () => (await getRolesByNames([role], 'name')) ?? [];
   const roles = tenantId ? await tenantStorage.run({ tenantId }, read) : await read();
-  return roles.some((found) => found?.name === role);
+  return roles.find((found) => found?.name === role) ?? null;
+}
+
+/** Whether writing `role` over `previousRole` moves the account into another custom role, which
+ * a deletion can remove while the write is in flight. */
+function assignsCustomRole(
+  role: string | null | undefined,
+  previousRole: string | null,
+): role is string {
+  return !!role && role !== previousRole && !systemRoles.has(role);
 }
 
 /** What reading back the custom role a write assigned found. `stood`: the change stayed in
@@ -415,17 +426,20 @@ type RoleReadBackDeps<T extends RoleRecord> = Pick<
 >;
 
 /**
- * The previous role an undo put back can be gone as well: deleted after its own deletion swept
- * its members. It is read back the same way, and when gone the account moves on to USER, which
- * always exists, while it still holds that role. Resolves to whether it moved; a read or write
- * that fails keeps the restored role.
+ * The previous role an undo put back by name may no longer be `held`, the role the account had
+ * before the write: deleted after its own deletion swept its members, or replaced by a role
+ * created under its name since. It is read back, and unless it is still `held` the account moves
+ * on to USER, which always exists, while it still holds the name. Resolves to whether it moved;
+ * a read or write that fails keeps the restored role.
  */
 async function leaveDeletedRole<T extends RoleRecord>(
   role: string,
+  held: StoredRole | null,
   { userId, tenantId, getRolesByNames, updateUser }: RoleReadBackDeps<T>,
 ): Promise<boolean> {
   try {
-    if (await roleExists(role, tenantId, getRolesByNames)) {
+    const current = await findRole(role, tenantId, getRolesByNames);
+    if (current != null && held != null && String(current._id) === String(held._id)) {
       return false;
     }
     return (await updateUser(userId, { role: SystemRoles.USER } as Partial<T>, { role })) != null;
@@ -446,12 +460,13 @@ async function leaveDeletedRole<T extends RoleRecord>(
 async function readBackRole<T extends RoleRecord>(
   role: string,
   previousRole: string | null,
+  held: StoredRole | null,
   deps: RoleReadBackDeps<T>,
 ): Promise<RoleReadBack> {
   const { userId, tenantId, getRolesByNames, updateUser } = deps;
   let error: unknown;
   try {
-    if (await roleExists(role, tenantId, getRolesByNames)) {
+    if ((await findRole(role, tenantId, getRolesByNames)) != null) {
       return { kept: true };
     }
   } catch (readError) {
@@ -463,7 +478,7 @@ async function readBackRole<T extends RoleRecord>(
       undone != null &&
       previousRole != null &&
       !systemRoles.has(previousRole) &&
-      (await leaveDeletedRole(previousRole, deps));
+      (await leaveDeletedRole(previousRole, held, deps));
     return { kept: false, stood: undone == null, fellBack, error };
   } catch (undoError) {
     logger.error(
@@ -499,19 +514,24 @@ export async function writeIdpRoleChange<T extends RoleRecord>({
   tenantId,
 }: IdpRoleWriteInput<T>): Promise<T | null> {
   let previousRole = observedRole ?? null;
+  const role = update.role;
   for (let attempt = 0; attempt < ROLE_WRITE_ATTEMPTS; attempt++) {
+    /** The custom role the account holds before a write into another, as stored, for an undo
+     * to restore: that role, and never one created under its name meanwhile. */
+    const held =
+      assignsCustomRole(role, previousRole) && previousRole && !systemRoles.has(previousRole)
+        ? await findRole(previousRole, tenantId, getRolesByNames)
+        : null;
     const user = await updateUser(userId, update, { role: previousRole });
     if (user) {
-      const role = update.role;
-      const check: RoleReadBack =
-        role && role !== previousRole && !systemRoles.has(role)
-          ? await readBackRole(role, previousRole, {
-              userId,
-              tenantId,
-              getRolesByNames,
-              updateUser,
-            })
-          : { kept: true };
+      const check: RoleReadBack = assignsCustomRole(role, previousRole)
+        ? await readBackRole(role, previousRole, held, {
+            userId,
+            tenantId,
+            getRolesByNames,
+            updateUser,
+          })
+        : { kept: true };
       if (check.kept || check.stood) {
         await recordIdpRoleChange({
           recordAuditEntry,
