@@ -26,7 +26,7 @@ import { mapWithConcurrency } from '~/utils/promise';
 import { buildToolClassification } from './classification';
 import { getToolDefinition } from './registry/definitions';
 import { toolkitExpansion } from './toolkits/mapping';
-import { isMCPAllPlaceholder } from '~/mcp/utils';
+import { isMCPAllPlaceholder, sortNames } from '~/mcp/utils';
 
 export interface MCPServerTool {
   function?: {
@@ -78,6 +78,8 @@ export interface LoadToolDefinitionsParams {
    * alias, or the aliased server's definitions would be emitted under the
    * unavailable server's names.
    */
+  /** Orders the tools of an `mcp_all` server by name (`promptCache.stableContext`). */
+  sortMcpTools?: boolean;
   accessibleServerNames?: readonly string[];
   /**
    * Upper bound on MCP server catalog lookups in flight at once: the deployment's
@@ -242,6 +244,7 @@ export async function loadToolDefinitions(
     rawServerNames,
     accessibleServerNames,
     mcpCatalogLookups = DEFAULT_LOOKUP_CONCURRENCY.mcpCatalogLookups,
+    sortMcpTools = false,
   } = params;
   const {
     getOrFetchMCPServerTools,
@@ -448,7 +451,9 @@ export async function loadToolDefinitions(
     }
 
     if (isMCPAllPlaceholder(toolName)) {
-      for (const [actualToolName, toolDef] of Object.entries(serverTools)) {
+      const toolNames = Object.keys(serverTools);
+      for (const actualToolName of sortMcpTools ? sortNames(toolNames) : toolNames) {
+        const toolDef = serverTools[actualToolName];
         if (toolDef?.function) {
           mcpToolDefs.push(
             bindToolApprovalIdentity(

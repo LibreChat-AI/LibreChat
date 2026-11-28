@@ -1,9 +1,10 @@
-import { ContentTypes } from 'librechat-data-provider';
+import { Tools, ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { TranslationKeys } from '@librechat/client';
 import type { TOptions } from 'i18next';
 import { firstErrorLine } from '../../../../core/parts/output';
-import { getFailedLines, getLiveActivity } from '../activity';
+import { getToolMeta } from '../../../../core/parts/outcome';
+import { getFailedLines, getLiveActivity, getStandardToolCall } from '../activity';
 
 const localize = (key: TranslationKeys, values?: TOptions): string =>
   key === 'com_ui_failed_subject' ? `Failed: ${String(values?.[0])}` : key;
@@ -102,6 +103,25 @@ describe('getFailedLines', () => {
     expect(
       getFailedLines([toPart({ name: 'lookup', output: 'rows' }, 'ok')], localize, []),
     ).toEqual([]);
+  });
+});
+
+describe('dispatcher calls in tool headers', () => {
+  it('names a completed call after the tool it ran', () => {
+    const part = toPart(
+      {
+        name: 'call_tool',
+        args: '{"name":"web_search","arguments":"{\\"query\\":\\"news\\"}"}',
+        output: 'done',
+        dispatched: { name: Tools.web_search, args: '{"query":"news"}' },
+      },
+      'call_1',
+    );
+    expect(getStandardToolCall(part)).toMatchObject({
+      name: Tools.web_search,
+      args: '{"query":"news"}',
+    });
+    expect(getToolMeta(part)).toMatchObject({ name: Tools.web_search, hasOutput: true });
   });
 });
 

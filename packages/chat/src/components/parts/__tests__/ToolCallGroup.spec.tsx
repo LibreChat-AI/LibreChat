@@ -1748,6 +1748,23 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByRole('button', { name: 'Asking 2 questions' })).toBeInTheDocument();
   });
 
+  it('keeps the active label while a question asked through the dispatcher is unanswered', () => {
+    const dispatched = makePart(
+      'q1',
+      '',
+      'call_tool',
+      '{"name":"ask_user_question","arguments":"{}"}',
+    );
+    renderGroup({
+      ...baseProps,
+      isSubmitting: true,
+      parts: [{ part: dispatched, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: 'Asking 1 question' })).toBeInTheDocument();
+  });
+
   it('uses a singular active label for one question grouped with reasoning', () => {
     renderGroup({
       ...baseProps,

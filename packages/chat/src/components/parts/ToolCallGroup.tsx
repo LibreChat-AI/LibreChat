@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
 import { cn, useLocalize } from '@librechat/client';
-import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
+import { Tools, Constants, ContentTypes, resolveDisplayToolCall } from 'librechat-data-provider';
 import { ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { CSSProperties } from 'react';
@@ -290,9 +290,9 @@ export default function ToolCallGroup({
           return true;
         }
         const toolCall = part[ContentTypes.TOOL_CALL] as
-          | { name?: string; id?: string; output?: string | null }
+          | { name?: string; id?: string; args?: unknown; output?: string | null }
           | undefined;
-        if (toolCall?.name !== ASK_USER_QUESTION) {
+        if (toolCall == null || resolveDisplayToolCall(toolCall).name !== ASK_USER_QUESTION) {
           return true;
         }
         return (

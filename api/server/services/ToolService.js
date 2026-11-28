@@ -4,6 +4,7 @@ const {
   sleep,
   createToolSearch,
   createBashExecutionTool,
+  TOOL_DISPATCHER_NAME,
   Constants: AgentConstants,
 } = require('@librechat/agents');
 const {
@@ -26,6 +27,8 @@ const {
   getCodeFileLocation,
   getMissingCustomUserVars,
   buildWebSearchDynamicContext,
+  getPromptTime,
+  isStableContextEnabled,
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
   getReplayablePendingMCPOAuthStarts,
@@ -1358,6 +1361,7 @@ async function loadToolDefinitionsWrapper({
       rawServerNames: mcpRawServerNames,
       accessibleServerNames: defsAccessibleServerNames,
       mcpCatalogLookups: appConfig?.concurrency?.mcpCatalogLookups,
+      sortMcpTools: isStableContextEnabled(appConfig),
     },
     {
       isBuiltInTool,
@@ -1468,6 +1472,7 @@ async function loadToolDefinitionsWrapper({
           rawServerNames: mcpRawServerNames,
           accessibleServerNames: defsAccessibleServerNames,
           mcpCatalogLookups: appConfig?.concurrency?.mcpCatalogLookups,
+          sortMcpTools: isStableContextEnabled(appConfig),
         },
         {
           isBuiltInTool,
@@ -1499,7 +1504,9 @@ async function loadToolDefinitionsWrapper({
 
   if (hasWebSearch) {
     toolContextMap[Tools.web_search] = buildWebSearchContext();
-    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext(req.turnStartedAt);
+    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext(
+      getPromptTime(req.config, req),
+    );
   }
 
   /**
@@ -2126,6 +2133,7 @@ async function loadAgentTools({
  * @param {string} [params.conversationId] - Resolved conversation identity for this request
  * @param {boolean} [params.actionsEnabled] - Whether the actions capability is enabled
  * @param {readonly string[]} [params.accessibleMcpServerNames] - COMPLETE accessible-server audit resolved at initialization
+ * @param {boolean} [params.toolDispatch] - The agent reaches deferred tools through the SDK's dispatcher
  * @returns {Promise<{ loadedTools: Array, configurable: Object }>}
  */
 async function loadToolsForExecution({
@@ -2153,6 +2161,7 @@ async function loadToolsForExecution({
   actionsEnabled,
   accessibleMcpServerNames,
   runFileCodeExecutionContext,
+  toolDispatch = false,
 }) {
   const appConfig = req.config;
   const allLoadedTools = [];
@@ -2285,9 +2294,11 @@ async function loadToolsForExecution({
   );
 
   if (isToolSearch && toolRegistry) {
+    /** With the dispatcher, found tools stay deferred: results carry their schemas. */
     const toolSearchTool = createToolSearch({
       mode: 'local',
       toolRegistry,
+      ...(toolDispatch && { toolDispatch: TOOL_DISPATCHER_NAME }),
     });
     allLoadedTools.push(toolSearchTool);
     configurable.toolRegistry = toolRegistry;
