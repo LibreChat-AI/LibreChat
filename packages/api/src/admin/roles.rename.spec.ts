@@ -117,6 +117,19 @@ function inTenant<T>(tenantId: string, run: () => Promise<T>): Promise<T> {
   return dataSchemas.tenantStorage.run({ tenantId }, run);
 }
 
+function roleRequest(
+  name: string,
+  body: Record<string, unknown>,
+  tenantId?: string,
+): ServerRequest {
+  return {
+    params: { name },
+    body,
+    query: {},
+    user: { _id: new Types.ObjectId(), id: 'admin', role: 'ADMIN', tenantId },
+  } as Partial<ServerRequest> as ServerRequest;
+}
+
 /** Renames as an admin without a tenant, or as one of `tenantId` inside its context. */
 async function rename(
   handlers: ReturnType<typeof createHandlers>,
@@ -125,12 +138,7 @@ async function rename(
   tenantId?: string,
 ): Promise<MockRes> {
   const res = mockRes();
-  const req = {
-    params: { name: from },
-    body,
-    query: {},
-    user: { _id: new Types.ObjectId(), id: 'admin', role: 'ADMIN', tenantId },
-  } as Partial<ServerRequest> as ServerRequest;
+  const req = roleRequest(from, body, tenantId);
   const run = () => handlers.updateRole(req, res);
   await (tenantId ? inTenant(tenantId, run) : run());
   return res;
@@ -237,11 +245,7 @@ describe('role rename moves what is keyed by the role name', () => {
       updateRoleByName: async (...args) => {
         const added = mockRes();
         await createHandlers().addRoleMember(
-          {
-            params: { name: 'editor' },
-            body: { userId: user.toString() },
-            user: { _id: new Types.ObjectId(), role: 'ADMIN' },
-          } as Partial<ServerRequest> as ServerRequest,
+          roleRequest('editor', { userId: user.toString() }),
           added,
         );
         expect(added.statusCode).toBe(200);
@@ -262,7 +266,7 @@ describe('role rename moves what is keyed by the role name', () => {
       { $set: { 'rename.expires': new Date(0) } },
     );
     const res = mockRes();
-    await createHandlers().createRole({ body: { name: 'editor' } } as ServerRequest, res);
+    await createHandlers().createRole(roleRequest('editor', { name: 'editor' }), res);
     expect(res.statusCode).toBe(409);
     expect(await methods.getPartitionRole('editor')).toBeNull();
     expect((await keyedBy('editor')).members).toEqual([userId]);
