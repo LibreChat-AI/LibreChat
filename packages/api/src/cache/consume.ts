@@ -6,8 +6,17 @@ const KeyvRedis = require('@keyv/redis').default as typeof import('@keyv/redis')
 import type { Keyv, DeserializedData } from 'keyv';
 import { observeRedisOperation } from './redisTelemetry';
 
+export interface ConsumedCacheEntry<T> {
+  value: T;
+  /** Absolute expiry (ms epoch), when the store recorded one. */
+  expires?: number;
+}
+
 /** Removes a Keyv entry atomically, including its serialized expiry. */
-export async function consumeCacheEntry<T>(cache: Keyv, key: string): Promise<T | undefined> {
+export async function consumeCacheEntry<T>(
+  cache: Keyv,
+  key: string,
+): Promise<ConsumedCacheEntry<T> | undefined> {
   const prefixedKey =
     cache.useKeyPrefix && cache.namespace && !key.startsWith(`${cache.namespace}:`)
       ? `${cache.namespace}:${key}`
@@ -39,5 +48,22 @@ export async function consumeCacheEntry<T>(cache: Keyv, key: string): Promise<T 
   if (!entry || (typeof entry.expires === 'number' && Date.now() > entry.expires)) {
     return undefined;
   }
-  return entry.value;
+  return { value: entry.value as T, expires: entry.expires };
+}
+
+/** Restores a value consumed by {@link consumeCacheEntry} for one more attempt. Uses the
+ *  consumed entry's remaining time, or the cache's default ttl when its expiry is unknown.
+ *  Skips the restore once that remaining time has already passed: Keyv treats a ttl of 0 as
+ *  no expiry, so restoring an expired entry would otherwise make it live indefinitely. */
+export async function restoreCacheEntry<T>(
+  cache: Keyv,
+  key: string,
+  consumed: ConsumedCacheEntry<T>,
+  now: number = Date.now(),
+): Promise<void> {
+  if (typeof consumed.expires === 'number' && consumed.expires <= now) {
+    return;
+  }
+  const ttl = typeof consumed.expires === 'number' ? consumed.expires - now : cache.ttl;
+  await cache.set(key, consumed.value, ttl);
 }
