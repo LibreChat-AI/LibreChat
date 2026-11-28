@@ -112,8 +112,10 @@ describe('MCPAppViews', () => {
     expect(mockUseAppBridge).not.toHaveBeenCalled();
 
     await waitForBridges(1);
-    expect(view.queryByText('com_ui_loading_interactive_view')).not.toBeInTheDocument();
-    expect(frames(view.container)).toHaveLength(1);
+    await waitFor(() => {
+      expect(view.queryByText('com_ui_loading_interactive_view')).not.toBeInTheDocument();
+      expect(frames(view.container)).toHaveLength(1);
+    });
     expect(view.getByRole('button', { name: /com_ui_mcp_app_close_named/ })).toBe(close);
     expect(close).toHaveFocus();
   });

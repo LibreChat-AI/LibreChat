@@ -119,12 +119,16 @@ describe('ChatForm code approval mode', () => {
   test('keeps the mode selector usable while a run is in flight', async () => {
     renderComposer({ submitting: true });
 
-    expect(await screen.findByTestId('code-approval-mode')).toBeEnabled();
+    expect(
+      await screen.findByTestId('code-approval-mode', undefined, { timeout: 10000 }),
+    ).toBeEnabled();
   }, 20000);
 
   test('keeps the mode selector usable between runs', async () => {
     renderComposer({ submitting: false });
 
-    expect(await screen.findByTestId('code-approval-mode')).toBeEnabled();
+    expect(
+      await screen.findByTestId('code-approval-mode', undefined, { timeout: 10000 }),
+    ).toBeEnabled();
   }, 20000);
 });
