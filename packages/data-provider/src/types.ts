@@ -1156,6 +1156,8 @@ export type TPrompt = {
   createdAt: string;
   updatedAt: string;
   _id?: string;
+  /** The current content policy blocked this prompt; `prompt` is then empty. */
+  contentFilterBlocked?: boolean;
 };
 
 export const PromptGroupSources = {
@@ -1172,7 +1174,7 @@ export type TPromptGroup = {
   oneliner?: string;
   category?: string;
   productionId?: string | null;
-  productionPrompt?: Pick<TPrompt, 'prompt'> | null;
+  productionPrompt?: Pick<TPrompt, 'prompt' | 'contentFilterBlocked'> | null;
   author: string;
   authorName: string;
   isPublic?: boolean;

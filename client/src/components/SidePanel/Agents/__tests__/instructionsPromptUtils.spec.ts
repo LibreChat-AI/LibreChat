@@ -2,8 +2,11 @@
  * @jest-environment jsdom
  */
 import type { TPromptRevisionChoicesResponse } from 'librechat-data-provider';
+import type { PreviewDisabledInput } from '../instructionsPromptUtils';
 import {
   isRestrictedInstructionsPrompt,
+  getPreviewDisabledReason,
+  isSelectionListed,
   buildPromptVersionOptions,
   getInstructionsPromptErrorCode,
   getRevisionsLoadErrorKey,
@@ -283,5 +286,96 @@ describe('getRevisionsLoadErrorKey', () => {
     expect(getRevisionsLoadErrorKey(new Error('network down'))).toBe(
       'com_agents_instructions_prompt_load_error',
     );
+  });
+});
+
+describe('isSelectionListed', () => {
+  const native: TPromptRevisionChoicesResponse = {
+    source: 'native',
+    groupId: 'g1',
+    revisions: [{ source: 'native', promptId: 'p1', version: 1, isProduction: true }],
+  };
+  const langfuse: TPromptRevisionChoicesResponse = {
+    source: 'langfuse',
+    groupId: 'g2',
+    revisions: [{ source: 'langfuse', version: 3 }],
+  };
+
+  it('lists Production, even with no revisions', () => {
+    expect(isSelectionListed({ ...native, revisions: [] }, { type: 'production' })).toBe(true);
+    expect(isSelectionListed(native, undefined)).toBe(true);
+  });
+
+  it('matches an exact selection against the listed revisions', () => {
+    expect(isSelectionListed(native, { type: 'exact', promptId: 'p1' })).toBe(true);
+    expect(isSelectionListed(native, { type: 'exact', promptId: 'p9' })).toBe(false);
+    expect(isSelectionListed(langfuse, { type: 'exact', version: 3 })).toBe(true);
+    expect(isSelectionListed(langfuse, { type: 'exact', version: 9 })).toBe(false);
+  });
+});
+
+describe('getPreviewDisabledReason', () => {
+  const ready: PreviewDisabledInput = {
+    groupId: 'g1',
+    restricted: false,
+    langfuseDisabled: false,
+    group: 'ready',
+    revisionsState: 'ready',
+    revisions: {
+      source: 'native',
+      groupId: 'g1',
+      revisions: [{ source: 'native', promptId: 'p1', version: 1, isProduction: true }],
+    },
+    selection: { type: 'exact', promptId: 'p1' },
+  };
+
+  it('returns null when the preview can open', () => {
+    expect(getPreviewDisabledReason(ready)).toBeNull();
+  });
+
+  it('explains a missing group selection', () => {
+    expect(getPreviewDisabledReason({ ...ready, groupId: '' })).toBe(
+      'com_agents_instructions_prompt_preview_no_group',
+    );
+  });
+
+  it('explains a restricted link before the empty group id it carries', () => {
+    expect(getPreviewDisabledReason({ ...ready, groupId: '', restricted: true })).toBe(
+      'com_agents_instructions_prompt_preview_restricted',
+    );
+  });
+
+  it('explains a Langfuse link while Langfuse linking is off', () => {
+    expect(
+      getPreviewDisabledReason({ ...ready, langfuseDisabled: true, revisionsState: 'loading' }),
+    ).toBe('com_agents_instructions_prompt_preview_langfuse_disabled');
+  });
+
+  it('explains a group missing from the listing', () => {
+    expect(getPreviewDisabledReason({ ...ready, group: 'missing' })).toBe(
+      'com_agents_instructions_prompt_preview_not_found',
+    );
+  });
+
+  it('explains loading prompts or versions', () => {
+    expect(getPreviewDisabledReason({ ...ready, group: 'loading' })).toBe('com_ui_loading');
+    expect(
+      getPreviewDisabledReason({ ...ready, revisionsState: 'loading', revisions: undefined }),
+    ).toBe('com_agents_instructions_prompt_preview_loading');
+  });
+
+  it('explains a failed prompts or versions load', () => {
+    expect(getPreviewDisabledReason({ ...ready, group: 'error' })).toBe(
+      'com_agents_instructions_prompt_preview_load_error',
+    );
+    expect(
+      getPreviewDisabledReason({ ...ready, revisionsState: 'error', revisions: undefined }),
+    ).toBe('com_agents_instructions_prompt_preview_load_error');
+  });
+
+  it('explains a pinned version that is no longer listed', () => {
+    expect(
+      getPreviewDisabledReason({ ...ready, selection: { type: 'exact', promptId: 'p_gone' } }),
+    ).toBe('com_agents_instructions_prompt_preview_version_missing');
   });
 });

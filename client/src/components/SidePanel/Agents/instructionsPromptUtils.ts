@@ -47,6 +47,22 @@ export function selectionValue(
   return 'production';
 }
 
+/** True for Production, or for an exact selection that matches a listed revision. */
+export function isSelectionListed(
+  data: TPromptRevisionChoicesResponse,
+  selection: PromptSelection | undefined,
+): boolean {
+  if (selection == null || selection.type === 'production') {
+    return true;
+  }
+  const selectedValue = selectionValue(data.source, selection);
+  return data.revisions.some((revision) =>
+    revision.source === 'native'
+      ? revision.promptId === selectedValue
+      : `v${revision.version}` === selectedValue,
+  );
+}
+
 /** Appends the saved selection as "no longer available" if it matches no listed revision. */
 export function buildPromptVersionOptions(
   data: TPromptRevisionChoicesResponse,
@@ -82,17 +98,14 @@ export function buildPromptVersionOptions(
     ...versionOptions,
   ];
 
-  if (selection != null && selection.type !== 'production') {
-    const selectedValue = selectionValue(data.source, selection);
-    if (!options.some((option) => option.value === selectedValue)) {
-      const label =
-        'version' in selection
-          ? localize('com_agents_instructions_prompt_langfuse_version_missing', {
-              0: String(selection.version),
-            })
-          : localize('com_agents_instructions_prompt_version_missing');
-      options.push({ value: selectedValue, label, selection });
-    }
+  if (selection != null && selection.type !== 'production' && !isSelectionListed(data, selection)) {
+    const label =
+      'version' in selection
+        ? localize('com_agents_instructions_prompt_langfuse_version_missing', {
+            0: String(selection.version),
+          })
+        : localize('com_agents_instructions_prompt_version_missing');
+    options.push({ value: selectionValue(data.source, selection), label, selection });
   }
 
   return options;
@@ -140,4 +153,47 @@ export function getRevisionsLoadErrorKey(error: unknown): TranslationKeys {
     return 'com_agents_instructions_prompt_source_unavailable';
   }
   return 'com_agents_instructions_prompt_load_error';
+}
+
+export type PreviewLoadState = 'loading' | 'error' | 'ready';
+
+export type PreviewDisabledInput = {
+  groupId: string;
+  restricted: boolean;
+  /** A saved Langfuse link while Langfuse linking is turned off. */
+  langfuseDisabled: boolean;
+  /** `missing`: the prompt listing loaded without the linked group. */
+  group: PreviewLoadState | 'missing';
+  revisionsState: PreviewLoadState;
+  revisions: TPromptRevisionChoicesResponse | undefined;
+  selection: PromptSelection | undefined;
+};
+
+/** Returns the copy key that explains why the preview cannot open, or `null` when it can. */
+export function getPreviewDisabledReason(input: PreviewDisabledInput): TranslationKeys | null {
+  if (input.restricted) {
+    return 'com_agents_instructions_prompt_preview_restricted';
+  }
+  if (input.groupId === '') {
+    return 'com_agents_instructions_prompt_preview_no_group';
+  }
+  if (input.langfuseDisabled) {
+    return 'com_agents_instructions_prompt_preview_langfuse_disabled';
+  }
+  if (input.group === 'missing') {
+    return 'com_agents_instructions_prompt_preview_not_found';
+  }
+  if (input.group === 'loading') {
+    return 'com_ui_loading';
+  }
+  if (input.revisionsState === 'loading') {
+    return 'com_agents_instructions_prompt_preview_loading';
+  }
+  if (input.group === 'error' || input.revisionsState === 'error' || input.revisions == null) {
+    return 'com_agents_instructions_prompt_preview_load_error';
+  }
+  if (!isSelectionListed(input.revisions, input.selection)) {
+    return 'com_agents_instructions_prompt_preview_version_missing';
+  }
+  return null;
 }

@@ -1,23 +1,30 @@
-import { useMemo } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Eye, ExternalLink } from 'lucide-react';
 import { Controller, useFormContext } from 'react-hook-form';
-import { Button, Label, ControlCombobox } from '@librechat/client';
+import { Button, Label, TooltipAnchor, ControlCombobox } from '@librechat/client';
 import type {
+  TPromptGroup,
   PromptSelection,
   TPromptGroupSource,
+  TResolvedPromptResponse,
   LangfuseAgentInstructionsPromptSelection,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { PreviewLoadState } from './instructionsPromptUtils';
 import type { TranslationKeys } from '~/hooks';
 import type { AgentForm } from '~/common';
 import {
   buildPromptVersionOptions,
   isRestrictedInstructionsPrompt,
+  getPreviewDisabledReason,
   getRevisionsLoadErrorKey,
   isLangfuseSelection,
   selectionValue,
   getHttpStatus,
 } from './instructionsPromptUtils';
 import { useGetAllPromptGroups, useGetPromptGroupRevisions } from '~/data-provider';
+import PreviewPrompt from '~/components/Prompts/dialogs/PreviewPrompt';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { PromptSourceBadge } from '~/components/Prompts/display';
 import { useLocalize } from '~/hooks';
@@ -81,12 +88,114 @@ function formatDisabledVersionLabel(
   return localize('com_ui_version_var', { 0: String(selection.version) });
 }
 
+/** Read-only preview of the live selection: the raw template, with no Use action. */
+function PreviewButton({
+  group,
+  selection,
+  disabledReason,
+  versionLabel,
+}: {
+  group: TPromptGroup | undefined;
+  selection?: PromptSelection;
+  disabledReason: TranslationKeys | null;
+  versionLabel: string;
+}) {
+  const localize = useLocalize();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const reasonId = useId();
+  const isDisabled = disabledReason != null || group == null;
+  const label = localize('com_agents_instructions_prompt_preview');
+
+  const getVersionLabel = (resolved: TResolvedPromptResponse | undefined) => {
+    if (selection != null && selection.type !== 'production') {
+      return versionLabel;
+    }
+    // Langfuse Production resolves live, so its version is known only after the read.
+    if (resolved?.source === 'langfuse') {
+      return localize('com_agents_instructions_prompt_production_version', {
+        0: String(resolved.version),
+      });
+    }
+    // Native Production reaches here only when the version list marks no revision as Production.
+    return localize('com_ui_production');
+  };
+
+  return (
+    <>
+      <TooltipAnchor
+        description={disabledReason != null ? localize(disabledReason) : label}
+        side="top"
+        render={
+          <Button
+            ref={triggerRef}
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-9 shrink-0"
+            aria-label={label}
+            // aria-disabled, not disabled: keeps the button focusable so the tooltip explains why.
+            aria-disabled={isDisabled || undefined}
+            aria-describedby={disabledReason != null ? reasonId : undefined}
+            aria-haspopup="dialog"
+            onClick={() => {
+              if (isDisabled) {
+                return;
+              }
+              setOpen(true);
+            }}
+          >
+            <Eye className="size-4" aria-hidden="true" />
+          </Button>
+        }
+      />
+      {disabledReason != null && (
+        <span id={reasonId} className="sr-only">
+          {localize(disabledReason)}
+        </span>
+      )}
+      {group != null && (
+        <PreviewPrompt
+          group={group}
+          open={open}
+          onOpenChange={setOpen}
+          selection={selection}
+          showActions={false}
+          substituteVariables={false}
+          getVersionLabel={getVersionLabel}
+          onCloseAutoFocus={() => {
+            requestAnimationFrame(() => {
+              triggerRef.current?.focus({ preventScroll: true });
+            });
+          }}
+          footer={
+            <div className="flex justify-end px-1 pb-1 sm:px-2">
+              <Link
+                to={`/prompts/${encodeURIComponent(group._id ?? '')}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-link hover:text-link-hover inline-flex items-center gap-1 text-sm hover:underline"
+              >
+                <ExternalLink className="size-3.5" aria-hidden="true" />
+                {localize('com_agents_instructions_prompt_open')}
+              </Link>
+            </div>
+          }
+        />
+      )}
+    </>
+  );
+}
+
 function VersionSelect({
   groupId,
   source,
   selection,
   onSelect,
   disabled,
+  restricted,
+  group,
+  groupState,
 }: {
   groupId: string;
   source?: TPromptGroupSource;
@@ -94,6 +203,11 @@ function VersionSelect({
   onSelect: (selection: PromptSelection) => void;
   /** True for a saved Langfuse link while the switch is off. */
   disabled?: boolean;
+  /** True when the editor cannot view the linked group. */
+  restricted: boolean;
+  /** The linked group from the prompt listing, used by the preview. */
+  group: TPromptGroup | undefined;
+  groupState: PreviewLoadState | 'missing';
 }) {
   const localize = useLocalize();
   const revisionsQuery = useGetPromptGroupRevisions(groupId, {
@@ -109,6 +223,34 @@ function VersionSelect({
   );
   const selectedValue = selectionValue(source, selection);
   const selectedOption = options.find((option) => option.value === selectedValue);
+  const revisionsListed = revisionsData != null && Array.isArray(revisionsData.revisions);
+  let revisionsState: PreviewLoadState = 'ready';
+  if (revisionsQuery.isLoading) {
+    revisionsState = 'loading';
+  } else if (revisionsQuery.isError || !revisionsListed) {
+    revisionsState = 'error';
+  }
+  // The listing's cached Production text can be older than this fresh version list, so the
+  // preview reads the revision the list marks as Production.
+  const productionRevision = revisionsListed
+    ? revisionsData.revisions.find(
+        (revision) => revision.source === 'native' && revision.isProduction,
+      )
+    : undefined;
+  const previewSelection: PromptSelection | undefined =
+    productionRevision?.source === 'native' &&
+    (selection == null || selection.type === 'production')
+      ? { type: 'exact', promptId: productionRevision.promptId }
+      : selection;
+  const previewDisabledReason = getPreviewDisabledReason({
+    groupId,
+    restricted,
+    langfuseDisabled: disabled === true,
+    group: groupState,
+    revisionsState,
+    revisions: revisionsListed ? revisionsData : undefined,
+    selection,
+  });
 
   let content: ReactNode;
   if (groupId === '') {
@@ -171,9 +313,21 @@ function VersionSelect({
       <Label id="instructions-prompt-version-label" variant="section" className="mb-1 block">
         {localize('com_agents_instructions_prompt_version_label')}
       </Label>
-      {/* `aria-labelledby`, not `htmlFor`: no state here renders a labelable control. */}
-      <div role="group" aria-labelledby="instructions-prompt-version-label">
-        {content}
+      <div className="flex min-w-0 items-start gap-1.5">
+        {/* `aria-labelledby`, not `htmlFor`: no state here renders a labelable control. */}
+        <div
+          role="group"
+          aria-labelledby="instructions-prompt-version-label"
+          className="min-w-0 flex-1"
+        >
+          {content}
+        </div>
+        <PreviewButton
+          group={group}
+          selection={previewSelection}
+          disabledReason={previewDisabledReason}
+          versionLabel={selectedOption?.label ?? ''}
+        />
       </div>
     </div>
   );
@@ -213,6 +367,14 @@ export default function InstructionsPromptFields() {
         // Falls back to the link's own source when the group is missing from the listing.
         const linkSource: TPromptGroupSource | undefined = selectedGroup?.source ?? link?.source;
         const linkedGroupMissing = groupId !== '' && !groupsFailed && selectedGroup == null;
+        let groupState: PreviewLoadState | 'missing' = 'ready';
+        if (groupsQuery.isLoading) {
+          groupState = 'loading';
+        } else if (groupsFailed) {
+          groupState = 'error';
+        } else if (linkedGroupMissing) {
+          groupState = 'missing';
+        }
         const isDisabledLangfuseLink = !langfuseEnabled && linkSource === 'langfuse';
         // Keyed off the saved link, not the live form value: the live groupId moves to the
         // newly picked group as soon as the user changes it, which would otherwise drop the
@@ -337,6 +499,9 @@ export default function InstructionsPromptFields() {
               source={linkSource}
               selection={link?.selection}
               disabled={isDisabledLangfuseLink}
+              restricted={isRestrictedInstructionsPrompt(field.value)}
+              group={selectedGroup}
+              groupState={groupState}
               onSelect={(selection) => {
                 if (groupId === '') {
                   return;
