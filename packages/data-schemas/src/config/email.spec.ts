@@ -152,6 +152,21 @@ describe('maskEmails coverage contract', () => {
   });
 
   it.each<Case>([
+    ['a nested comment', 'jane(outer(inner))@example.com ok', `${MASK} ok`],
+    ['a stray parenthesis', 'id jane)@example.com ok', `id ${MASK} ok`],
+    ['a colon', 'id jane:@example.com ok', `id ${MASK} ok`],
+    ['an escaped at sign', 'id jane\\@example.com ok', `id ${MASK} ok`],
+    ['a closing bracket', 'id jane」@example.com ok', `id ${MASK} ok`],
+    ['an encoded at sign', 'q=jane)%40example.com&x=1', `q=${MASK}&x=1`],
+    ['text glued to a failed at sign', 'jane@ex)@ample.com', MASK],
+  ])(
+    'masks the token the earlier patterns masked when no local part is read: %s',
+    (_label, input, expected) => {
+      expect(maskEmails(input)).toBe(expected);
+    },
+  );
+
+  it.each<Case>([
     ['at signs', 'jane@ex@ample.com', MASK],
     ['a handle', '@user@instance.social', MASK],
     ['an address after a domain', 'a@b.com@c.com', MASK],

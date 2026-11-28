@@ -515,6 +515,15 @@ function domain(text: string, from: number, encoded: boolean): number {
   return labels(text, from, limit) || loose(text, from, limit, encoded);
 }
 
+/** Start of the token the earlier patterns read as a local part: back to one of their delimiters. */
+function token(text: string, at: number, limit: number, encoded: boolean): number {
+  let start = at;
+  while (start > limit && !ends(text.charCodeAt(start - 1), encoded)) {
+    start--;
+  }
+  return start;
+}
+
 /** Appends a span, folding in the spans it overlaps. */
 function add(spans: Span[], start: number, end: number): void {
   let from = start;
@@ -565,6 +574,15 @@ export function findEmails(text: string): Span[] {
     const part = local(text, index, floor, encoded);
     let start = part.start;
     let units = part.units;
+    /** Nothing the grammar reads as a local part (a stray parenthesis, a nested comment, a colon):
+     * the token before the at sign stays masked, as the earlier patterns masked it. */
+    if (units === 0) {
+      const fallback = token(text, index, Math.max(floor, index - MAX_PART), encoded);
+      if (fallback < index) {
+        start = fallback;
+        units = 1;
+      }
+    }
     if (start === floor && floor > 0) {
       if (!masked) {
         start = Math.max(origin, index - MAX_PART);
