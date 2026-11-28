@@ -112,6 +112,7 @@ export const useMermaid = ({
       ...(themeVariables ? { theme: 'base' as const, themeVariables } : {}),
       // Security hardening: MUST come after ...config spread to prevent override
       securityLevel: 'strict',
+      suppressErrorRendering: true,
       maxTextSize: config?.maxTextSize ?? 50000,
       maxEdges: config?.maxEdges ?? 500,
     };
@@ -132,6 +133,9 @@ export const useMermaid = ({
         throw new Error('Failed to load mermaid library');
       }
 
+      // Initialize before parse/render so security and error-suppression config always apply
+      mermaidInstance.initialize(mermaidConfig);
+
       // Validate syntax first and capture detailed error
       try {
         await mermaidInstance.parse(content);
@@ -147,11 +151,13 @@ export const useMermaid = ({
         throw new Error(errorMessage);
       }
 
-      // Initialize with config
-      mermaidInstance.initialize(mermaidConfig);
-
-      // Render to SVG
-      const { svg } = await mermaidInstance.render(diagramId, content);
+      // Render to SVG and clean up any orphaned temp wrapper if render throws outside mermaid's catch blocks
+      let svg: string;
+      try {
+        ({ svg } = await mermaidInstance.render(diagramId, content));
+      } finally {
+        document.getElementById(`d${diagramId}`)?.remove();
+      }
 
       const sanitizedSvg = sanitizeMermaidSvg(svg);
 
