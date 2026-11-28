@@ -1,4 +1,5 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useMemo } from 'react';
+import { atom, useAtom } from 'jotai';
 import { MenuButton } from '@ariakit/react';
 import { ArrowUpDown, ListFilter } from 'lucide-react';
 import { Button, DropdownPopup } from '@librechat/client';
@@ -18,7 +19,8 @@ function Menu({
   icon: React.ReactNode;
 }) {
   const id = useId();
-  const [open, setOpen] = useState(false);
+  const visibility = useMemo(() => atom(false), []);
+  const [open, setOpen] = useAtom(visibility);
   return (
     <DropdownPopup
       menuId={id}
