@@ -2446,7 +2446,7 @@ function subagentResultResponses(text) {
 
       const copies = marker.viaSelf && !task.includes(copyPrompt);
       return {
-        response: '',
+        response: marker.label === 'oauth-reconnect' ? 'Checking specialist access.' : '',
         toolCalls: [
           {
             id: `call_e2e_subagent_${copies ? 'copy_' : ''}${marker.label}`,

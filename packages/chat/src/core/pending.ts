@@ -2,6 +2,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { AskUserQuestionPart } from './ask';
 import { ASK_USER_QUESTION, isAskUserQuestionPart } from './ask';
+import { isOAuthToolCallContent } from './steps/content';
 
 const getToolCallId = (part: TMessageContentParts | undefined): string =>
   part?.type === ContentTypes.TOOL_CALL
@@ -160,7 +161,11 @@ function applyAskUserQuestion(
     nextContent[existingIdx] = askPart;
     return { ...message, content: nextContent };
   }
-  return { ...message, content: [...content, askPart] };
+  // The pause occupies the next model slot; OAuth prompts stay outside that index space.
+  const oauthIndex = content.findIndex(isOAuthToolCallContent);
+  const nextContent = [...content];
+  nextContent.splice(oauthIndex < 0 ? nextContent.length : oauthIndex, 0, askPart);
+  return { ...message, content: nextContent };
 }
 
 /**
