@@ -46,6 +46,8 @@ export default function ShareButton({
   const localize = useLocalize();
   const { data: startupConfig } = useGetStartupConfig();
   const canSnapshotFiles = startupConfig?.sharedLinksSnapshotFilesEnabled === true;
+  const sharedLinksConfig = startupConfig?.interface?.sharedLinks;
+  const qrCodeEnabled = typeof sharedLinksConfig !== 'object' || sharedLinksConfig.qrCode !== false;
   const queryClient = useQueryClient();
   const [showQR, setShowQR] = useState(true);
   const [sharedLink, setSharedLink] = useState('');
@@ -111,6 +113,7 @@ export default function ShareButton({
         resolveTargetMessageId={isActiveConversation ? resolveTargetMessageId : undefined}
         showQR={showQR}
         setShowQR={setShowQR}
+        qrCodeEnabled={qrCodeEnabled}
         sharedLink={sharedLink}
         setSharedLink={setSharedLink}
         snapshotFiles={canSnapshotFiles ? snapshotFiles : undefined}
@@ -188,7 +191,7 @@ export default function ShareButton({
               </div>
             )}
 
-            {showQR && shareId && (
+            {qrCodeEnabled && showQR && shareId && (
               <div className="flex min-h-56 items-center justify-center py-1">
                 <div className="bg-surface-qr min-w-0 rounded-2xl p-3 shadow-xs">
                   {/* size is only the no-CSS fallback; the rem width is what renders,

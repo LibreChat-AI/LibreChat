@@ -451,6 +451,7 @@ interface:
   #   create: false
   #   share: true
   #   public: true # Allows users to toggle "share with everyone" for their links. Whether anonymous access is permitted is controlled by ALLOW_SHARED_LINKS_PUBLIC.
+  #   qrCode: false # Controls QR-code rendering and actions for conversation share links (default: true)
   #   snapshotFiles: true # Snapshot files referenced by a shared chat so viewers can preview/download them via the link. Enabled by default; the SHARED_LINKS_SNAPSHOT_FILES env var overrides this.
   # mcpServers:
   #   # Poll only while MCP controls are visible, in milliseconds (0 disables polling).

@@ -22,6 +22,12 @@ const mockGetMessagesByConvoId = jest.fn();
 const mockGetMessageById = jest.fn();
 let mockResolveTargetMessageId: (() => Promise<string>) | undefined;
 let mockLatestMessageId: string | null = 'message-1';
+let mockStartupConfig: {
+  sharedLinksSnapshotFilesEnabled: boolean;
+  interface?: { sharedLinks?: { qrCode?: boolean } | boolean };
+} = {
+  sharedLinksSnapshotFilesEnabled: true,
+};
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -40,7 +46,7 @@ jest.mock('librechat-data-provider/react-query', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { sharedLinksSnapshotFilesEnabled: true } }),
+  useGetStartupConfig: () => ({ data: mockStartupConfig }),
   fetchConversationMessages: jest.requireActual('~/data-provider/Messages/queries')
     .fetchConversationMessages,
 }));
@@ -65,27 +71,32 @@ jest.mock('../SharedLinkButton', () => ({
   default: ({
     showQR,
     setShowQR,
+    qrCodeEnabled,
     snapshotFiles,
     targetMessageId,
     resolveTargetMessageId,
   }: {
     showQR: boolean;
     setShowQR: (show: boolean) => void;
+    qrCodeEnabled: boolean;
     snapshotFiles?: boolean;
     targetMessageId?: string;
     resolveTargetMessageId?: () => Promise<string>;
   }) => {
     mockResolveTargetMessageId = resolveTargetMessageId;
     return (
-      <button
-        type="button"
-        data-testid="share-actions"
-        data-snapshot-files={String(snapshotFiles)}
-        data-target-message-id={String(targetMessageId)}
-        onClick={() => setShowQR(!showQR)}
-      >
-        {showQR ? 'com_ui_hide_qr' : 'com_ui_show_qr'}
-      </button>
+      <>
+        <span
+          data-testid="share-actions"
+          data-snapshot-files={String(snapshotFiles)}
+          data-target-message-id={String(targetMessageId)}
+        />
+        {qrCodeEnabled && (
+          <button type="button" data-testid="qr-code-toggle" onClick={() => setShowQR(!showQR)}>
+            {showQR ? 'com_ui_hide_qr' : 'com_ui_show_qr'}
+          </button>
+        )}
+      </>
     );
   },
 }));
@@ -128,6 +139,7 @@ describe('ShareButton', () => {
     mockGetMessageById.mockReset();
     mockLatestMessageId = 'message-1';
     mockResolveTargetMessageId = undefined;
+    mockStartupConfig = { sharedLinksSnapshotFilesEnabled: true };
   });
 
   it('centers the active QR code and keeps details behind inline info controls', () => {
@@ -149,11 +161,25 @@ describe('ShareButton', () => {
   it('lets the action bar hide and restore the QR code', () => {
     renderShareButton();
 
-    fireEvent.click(screen.getByTestId('share-actions'));
+    fireEvent.click(screen.getByTestId('qr-code-toggle'));
     expect(document.querySelector('svg[width="200"]')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('share-actions'));
+    fireEvent.click(screen.getByTestId('qr-code-toggle'));
     expect(document.querySelector('svg[width="200"]')).toBeInTheDocument();
+  });
+
+  it('hides the QR code and its action when QR sharing is disabled', () => {
+    mockStartupConfig = {
+      sharedLinksSnapshotFilesEnabled: true,
+      interface: { sharedLinks: { qrCode: false } },
+    };
+
+    renderShareButton();
+
+    expect(screen.getByTestId('share-actions')).toBeInTheDocument();
+    expect(screen.queryByTestId('qr-code-toggle')).not.toBeInTheDocument();
+    expect(document.querySelector('svg[width="200"]')).not.toBeInTheDocument();
+    expect(screen.getByTestId('shared-link-url')).toBeInTheDocument();
   });
 
   it('copies the shared URL through the reusable copy control', () => {

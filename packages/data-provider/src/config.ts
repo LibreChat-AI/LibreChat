@@ -3788,6 +3788,7 @@ export const interfaceSchema = z
           share: z.boolean().optional(),
           public: z.boolean().optional(),
           snapshotFiles: z.boolean().optional(),
+          qrCode: z.boolean().optional(),
         }),
       ])
       .optional(),
@@ -4015,6 +4016,7 @@ export const interfaceSchema = z
       share: true,
       public: true,
       snapshotFiles: true,
+      qrCode: true,
     },
     replyNotifications: {
       tabBadge: true,

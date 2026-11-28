@@ -79,6 +79,7 @@ export default function SharedLinkButton({
   resolveTargetMessageId,
   showQR,
   setShowQR,
+  qrCodeEnabled,
   sharedLink,
   setSharedLink,
   snapshotFiles,
@@ -89,6 +90,7 @@ export default function SharedLinkButton({
   resolveTargetMessageId?: () => Promise<string>;
   showQR: boolean;
   setShowQR: (showQR: boolean) => void;
+  qrCodeEnabled: boolean;
   sharedLink: string;
   setSharedLink: (sharedLink: string) => void;
   snapshotFiles?: boolean;
@@ -349,23 +351,25 @@ export default function SharedLinkButton({
                 )}
               />
 
-              <TooltipAnchor
-                description={qrCodeLabel}
-                render={(props) => (
-                  <Button
-                    {...props}
-                    type="button"
-                    onClick={() => setShowQR(!showQR)}
-                    variant="outline"
-                    size="icon"
-                    className="size-9 sm:size-10"
-                    aria-pressed={showQR}
-                    aria-label={qrCodeLabel}
-                  >
-                    <QrCode className="size-4" aria-hidden="true" />
-                  </Button>
-                )}
-              />
+              {qrCodeEnabled && (
+                <TooltipAnchor
+                  description={qrCodeLabel}
+                  render={(props) => (
+                    <Button
+                      {...props}
+                      type="button"
+                      onClick={() => setShowQR(!showQR)}
+                      variant="outline"
+                      size="icon"
+                      className="size-9 sm:size-10"
+                      aria-pressed={showQR}
+                      aria-label={qrCodeLabel}
+                    >
+                      <QrCode className="size-4" aria-hidden="true" />
+                    </Button>
+                  )}
+                />
+              )}
 
               <TooltipAnchor
                 description={localize('com_ui_delete_link')}
