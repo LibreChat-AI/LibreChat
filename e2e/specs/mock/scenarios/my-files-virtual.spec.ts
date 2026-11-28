@@ -187,7 +187,9 @@ test('row actions use the selected file for details, preview, download and confi
   const confirmation = page.getByRole('alertdialog');
   await expect(confirmation).toContainText(file.filename);
   await confirmation.getByRole('button', { name: 'Cancel' }).click();
-  await expect(trigger).toBeFocused();
+  await expect(menu.getByRole('menuitem', { name: 'Delete' })).toBeFocused();
+  await trigger.click();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
   const unavailable = dialog.getByRole('button', { name: 'Actions for ' + files[0].filename });
   await unavailable.click();
   await expect(menu.getByRole('menuitem', { name: 'Details' })).toBeVisible();

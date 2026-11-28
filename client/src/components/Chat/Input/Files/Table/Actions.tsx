@@ -20,13 +20,16 @@ import { formatFileSize, getDownloadFilename, triggerDownload } from '~/utils';
 import { useCodeOutputDownload, useFileDownload } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 import { labels } from './labels';
+import Confirm from './Confirm';
 
 export default function Actions({
   file,
   onDelete,
+  deleting,
 }: {
   file: TFile;
-  onDelete: (file: TFile, trigger: HTMLElement | null) => void;
+  onDelete: (files: TFile[]) => Promise<void>;
+  deleting: boolean;
 }) {
   const id = useId();
   const localize = useLocalize();
@@ -35,7 +38,8 @@ export default function Actions({
   const [dialog, setDialog] = useState<'details' | 'preview'>();
   const details = useRef<HTMLButtonElement>(null);
   const preview = useRef<HTMLButtonElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
+  const [snapshot, setSnapshot] = useState<TFile>();
+  const remove = useRef<HTMLButtonElement>(null);
   const owned = useFileDownload(file.user, file.file_id, { direct: false });
   const prefix = apiBaseUrl() + '/api/files/code/download/';
   const codePath =
@@ -89,7 +93,14 @@ export default function Actions({
         triggerDownload(result.data, getDownloadFilename(file.filename, file.file_id, file.source));
       },
     },
-    { label: localize('com_ui_delete'), onClick: () => onDelete(file, trigger.current) },
+    {
+      label: localize('com_ui_delete'),
+      hideOnClick: false,
+      ref: remove,
+      render: <Button variant="ghost" />,
+      disabled: deleting,
+      onClick: () => setSnapshot(file),
+    },
   ];
   return (
     <>
@@ -100,7 +111,6 @@ export default function Actions({
         setIsOpen={setMenu}
         trigger={
           <MenuButton
-            ref={trigger}
             render={<Button variant="ghost" size="icon" />}
             aria-label={localize('com_files_actions_named', { 0: file.filename })}
           >
@@ -129,6 +139,17 @@ export default function Actions({
             </dl>
           </OGDialogContent>
         </OGDialog>
+      )}
+      {snapshot && (
+        <Confirm
+          files={[snapshot]}
+          triggerRef={remove}
+          onClose={() => setSnapshot(undefined)}
+          onConfirm={() => {
+            setMenu(false);
+            void onDelete([snapshot]);
+          }}
+        />
       )}
       {dialog === 'preview' && (
         <FilePreviewDialog

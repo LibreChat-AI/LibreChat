@@ -9,7 +9,6 @@ import type { TFile } from 'librechat-data-provider';
 import { formatFileSize } from '~/utils';
 import { useLocalize } from '~/hooks';
 import { labels } from './labels';
-import Actions from './Actions';
 
 function Filename({ file, detail }: { file: TFile; detail: string }) {
   const localize = useLocalize();
@@ -67,9 +66,7 @@ function Filename({ file, detail }: { file: TFile; detail: string }) {
   );
 }
 
-export function useColumns(
-  onDelete: (file: TFile, trigger: HTMLElement | null) => void,
-): ColumnDef<TFile>[] {
+export function useColumns(): ColumnDef<TFile>[] {
   const localize = useLocalize();
   const { i18n } = useTranslation();
   const narrow = useMediaQuery('(max-width: 639px)');
@@ -139,10 +136,9 @@ export function useColumns(
         size: 48,
         enableSorting: false,
         header: () => <span className="sr-only">{localize('com_ui_more_options')}</span>,
-        cell: ({ row }) => <Actions file={row.original} onDelete={onDelete} />,
       },
       { accessorKey: 'source', filterFn: 'equalsString' },
       { accessorKey: 'context', filterFn: 'equalsString' },
     ];
-  }, [localize, i18n.language, narrow, onDelete]);
+  }, [localize, i18n.language, narrow]);
 }
