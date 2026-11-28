@@ -4,6 +4,7 @@ import type { SharedFileSnapshot } from '~/types';
 export interface ISharedLink extends Document {
   conversationId: string;
   title?: string;
+  spec?: string;
   user?: string;
   messages?: Types.ObjectId[];
   shareId?: string;
@@ -14,6 +15,7 @@ export interface ISharedLink extends Document {
   tenantId?: string;
   snapshotFiles?: boolean;
   fileSnapshots?: SharedFileSnapshot[];
+  claim?: string;
 }
 
 /**
@@ -52,6 +54,7 @@ const shareSchema: Schema<ISharedLink> = new Schema(
       type: String,
       index: true,
     },
+    spec: { type: String, select: false },
     user: {
       type: String,
       index: true,
@@ -80,6 +83,11 @@ const shareSchema: Schema<ISharedLink> = new Schema(
       type: [fileSnapshotSchema],
       default: undefined,
     },
+    /** The key the link was created for (conversation, target message); see `createSharedLink`. */
+    claim: {
+      type: String,
+      select: false,
+    },
   },
   { timestamps: true },
 );
@@ -91,5 +99,16 @@ shareSchema.index({ conversationId: 1, user: 1, targetMessageId: 1, tenantId: 1 
  * lookup could not use it and would scan every link in the deployment. */
 shareSchema.index({ user: 1, conversationId: 1 });
 shareSchema.index({ updatedAt: -1 });
+/**
+ * One claimed link per key: a second create for the key fails its insert instead of racing. Links
+ * made before the claim existed carry none. `createSharedLink` builds it too, for
+ * `MONGO_AUTO_INDEX=false`.
+ */
+export const CLAIM_INDEX: Record<string, 1> = { user: 1, claim: 1 };
+export const CLAIM_INDEX_OPTIONS: {
+  unique: boolean;
+  partialFilterExpression: Record<string, unknown>;
+} = { unique: true, partialFilterExpression: { claim: { $exists: true } } };
+shareSchema.index(CLAIM_INDEX, CLAIM_INDEX_OPTIONS);
 
 export default shareSchema;

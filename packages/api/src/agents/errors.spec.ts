@@ -13,6 +13,8 @@ import {
   getUserFacingProviderError,
   isFatalAgentInitializationError,
   getAgentErrorMetadata,
+  AgentNotFoundError,
+  AgentModelPolicyError,
   AGENT_ATTACHMENT_LIMIT_EXCEEDED,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isStepLimitError,
@@ -180,6 +182,23 @@ describe('LangChain provider error text', () => {
   });
 
   describe('getUserFacingProviderError', () => {
+    it('keeps a model-policy rejection safe and actionable under content protection', () => {
+      const error = new AgentModelPolicyError();
+      expect(getUserFacingProviderError(error, true)).toBe(error.message);
+      expect(getAgentErrorMetadata(error, true)).toMatchObject({
+        status: 403,
+        code: 'model_not_allowed',
+      });
+    });
+    it.each(['model_not_allowed', 'ERR_REMOTE'])(
+      'withholds provider code %s under protection',
+      (code) => {
+        const error = Object.assign(new Error('private provider text'), { status: 403, code });
+        expect(getAgentErrorMetadata(error, true)).toEqual({ status: 403 });
+        expect(getUserFacingProviderError(error, true)).toBe(GENERIC_PROVIDER_ERROR);
+      },
+    );
+
     it('strips the docs URL from the forwarded provider message', () => {
       const error = new Error(`429 budget exceeded${troubleshooting('MODEL_RATE_LIMIT')}`);
       expect(getUserFacingProviderError(error, false)).toBe('429 budget exceeded');
@@ -352,6 +371,16 @@ describe('getAgentErrorMetadata', () => {
       expect(error).not.toHaveProperty('statusCode');
     },
   );
+
+  it('names a missing agent with its status and the code the chat route answers with', () => {
+    const error = new AgentNotFoundError();
+
+    expect(getAgentErrorMetadata(error)).toEqual({
+      status: 404,
+      code: ErrorTypes.AGENT_NOT_FOUND,
+    });
+    expect(error.message).toBe('Agent not found');
+  });
 
   it('keeps status precedence and code-only provider failures', () => {
     expect(getAgentErrorMetadata({ status: 409, statusCode: 401, code: 'RUN_REPLACED' })).toEqual({

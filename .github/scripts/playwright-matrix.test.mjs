@@ -136,18 +136,18 @@ function gateFails(results, mcpRun = '') {
   });
 }
 
-test('PR selection and fail-open defaults use fifteen memory shards and two Redis transport shards', () => {
+test('PR selection and fail-open defaults use forty memory shards and two Redis transport shards', () => {
   assert.equal(defaults.length, 2);
   assert.deepEqual(defaults[0], prMatrix);
-  assert.equal(prMatrix.include.length, 17);
-  assertPartition(prMatrix, 'memory', 'full', 15);
+  assert.equal(prMatrix.include.length, 42);
+  assertPartition(prMatrix, 'memory', 'full', 40);
   assertPartition(prMatrix, 'redis', 'transport', 2);
 });
 
 test('nightly and default manual runs retain full-suite coverage on both stores', () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.coverage.default, 'full');
-  assert.equal(defaults[1].include.length, 25);
-  assertPartition(defaults[1], 'memory', 'full', 15);
+  assert.equal(defaults[1].include.length, 50);
+  assertPartition(defaults[1], 'memory', 'full', 40);
   assertPartition(defaults[1], 'redis', 'full', 10);
 });
 
@@ -201,8 +201,8 @@ test('an explicit Redis skip drops both transport shards and no memory shard', (
   const { matrix, outputs } = select(t, decision(false, false));
   assert.equal(outputs.decided, 'true');
   assert.equal(outputs.mcp_run, 'false');
-  assert.equal(matrix.include.length, 15);
-  assertPartition(matrix, 'memory', 'full', 15);
+  assert.equal(matrix.include.length, 40);
+  assertPartition(matrix, 'memory', 'full', 40);
 });
 
 test('missing or non-boolean Redis decisions retain both transport shards', (t) => {
@@ -250,7 +250,7 @@ test('graduated spec skips keep the same pool across shards and remain opt-in', 
   assert.deepEqual(fallback.matrix, prMatrix);
 });
 
-/** What the `shard_timings` hand-off step outputs for one restored cache file, or for none. */
+/** What the `shard_timings` hand-off step outputs for one downloaded file, or for none. */
 function handOff(t, cached) {
   const scratch = mkdtempSync(join(scriptsDir, '.playwright-matrix-test-'));
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -292,7 +292,85 @@ test('missing or malformed recorded timings leave every shard on the committed f
   }
 });
 
-test('timings are saved only by a push, under the path and key prefix the shards restore from', () => {
+/** Runs the `shard_timings` download step against a fake `gh` serving these artifacts. */
+function download(t, artifacts) {
+  const scratch = mkdtempSync(join(scriptsDir, '.playwright-matrix-test-'));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  writeFileSync(join(scratch, 'list.json'), JSON.stringify({ artifacts }));
+  writeFileSync(join(scratch, 'shard-timings.json'), '{"files":{"a.spec.ts":2}}');
+  const zipped = spawnSync('zip', ['-q', 'timings.zip', 'shard-timings.json'], { cwd: scratch });
+  assert.equal(zipped.status, 0, String(zipped.stderr));
+  rmSync(join(scratch, 'shard-timings.json'));
+  writeFileSync(
+    join(scratch, 'gh'),
+    [
+      '#!/usr/bin/env bash',
+      'case "$2" in',
+      '  *"/artifacts?"*) jq -r "$4" list.json ;;',
+      '  */zip) echo "$2" >> fetched; cat timings.zip ;;',
+      '  *) exit 1 ;;',
+      'esac',
+      '',
+    ].join('\n'),
+    { mode: 0o700 },
+  );
+  const step = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'restore');
+  const result = spawnSync('bash', ['-e', '-c', step.run], {
+    cwd: scratch,
+    encoding: 'utf8',
+    timeout: 10000,
+    env: {
+      PATH: `${scratch}:${process.env.PATH}`,
+      REPO: 'fixture/repo',
+      GH_TOKEN: 'test-fixture',
+      RUNNER_TEMP: scratch,
+    },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const read = (name) => {
+    try {
+      return readFileSync(join(scratch, name), 'utf8');
+    } catch {
+      return undefined;
+    }
+  };
+  return { fetched: read('fetched'), timings: read('e2e/.generated/shard-timings.json') };
+}
+
+const artifact = (id, created_at, { branch = 'dev', head = 1, expired = false } = {}) => ({
+  id,
+  expired,
+  created_at,
+  workflow_run: { head_branch: branch, head_repository_id: head, repository_id: 1 },
+});
+
+test('every ref downloads the newest timings published from dev in this repository', (t) => {
+  const resolver = workflow.jobs.shard_timings;
+  assert.deepEqual(resolver.permissions, { actions: 'read' });
+  const restore = resolver.steps.find((entry) => entry.id === 'restore');
+  assert.equal(restore['continue-on-error'], true);
+  assert.equal(restore.uses, undefined);
+  const { fetched, timings } = download(t, [
+    artifact(1, '2026-11-20T00:00:00Z'),
+    artifact(5, '2026-11-24T12:00:00Z', { expired: true }),
+    artifact(2, '2026-11-24T10:00:00Z'),
+    artifact(3, '2026-11-24T11:00:00Z', { head: 2 }),
+    artifact(4, '2026-11-24T11:30:00Z', { branch: 'feature' }),
+  ]);
+  assert.equal(fetched, 'repos/fixture/repo/actions/artifacts/2/zip\n');
+  assert.equal(timings, '{"files":{"a.spec.ts":2}}');
+});
+
+test('with no published timings the download leaves the shards on the committed file', (t) => {
+  const { fetched, timings } = download(t, [
+    artifact(3, '2026-11-24T11:00:00Z', { head: 2 }),
+    artifact(4, '2026-11-24T11:30:00Z', { branch: 'feature' }),
+  ]);
+  assert.equal(fetched, undefined);
+  assert.equal(timings, undefined);
+});
+
+test('timings are published only by a push, as the artifact the shards download', () => {
   const recorder = yaml.load(
     readFileSync(new URL('../workflows/playwright-timings.yml', import.meta.url), 'utf8'),
   ).jobs.record;
@@ -300,18 +378,26 @@ test('timings are saved only by a push, under the path and key prefix the shards
   assert.match(find.run, /--workflow playwright-mock\.yml --branch dev --event push/);
   assert.match(find.run, /--status success/);
   const restore = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'restore');
-  const save = recorder.steps.find((entry) => entry.uses?.startsWith('actions/cache/save@'));
-  assert.equal(restore['continue-on-error'], true);
-  assert.equal(save.with.path, restore.with.path);
-  assert.ok(save.with.key.startsWith(restore.with['restore-keys']));
-  const saves = (event, built) =>
-    condition(save.if, {
+  const publish = recorder.steps.find((entry) =>
+    entry.uses?.startsWith('actions/upload-artifact@'),
+  );
+  assert.ok(restore.run.includes(`name=${publish.with.name}&`));
+  assert.equal(publish.with.path, 'e2e/.generated/shard-timings.json');
+  assert.match(restore.run, / shard-timings\.json -d e2e\/\.generated/);
+  const marker = recorder.steps.find((entry) => entry.uses?.startsWith('actions/cache/save@'));
+  const lookup = recorder.steps.find((entry) => entry.id === 'recorded');
+  assert.equal(marker.with.key, lookup.with.key);
+  const runs = (step, event, built) =>
+    condition(step.if, {
       github: { event_name: event },
       steps: { build: { outputs: { built } } },
     });
-  assert.equal(saves('push', 'true'), true);
-  assert.equal(saves('push', ''), false);
-  assert.equal(saves('pull_request', 'true'), false);
+  for (const step of [publish, marker]) {
+    assert.equal(runs(step, 'push', 'true'), true);
+    assert.equal(runs(step, 'push', ''), false);
+    assert.equal(runs(step, 'pull_request', 'true'), false);
+  }
+  assert.ok(recorder.steps.indexOf(publish) < recorder.steps.indexOf(marker));
 });
 
 test('the required gate still waits for all shards and rejects failures without fighting cancellation', () => {

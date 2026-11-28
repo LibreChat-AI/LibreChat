@@ -30,7 +30,7 @@ const RECEIPTS_ROUTE = /\/api\/agents\/chat\/queued-turns\?/;
 const STATUS_ROUTE = /\/api\/agents\/chat\/status\//;
 const MESSAGES_ROUTE = /\/api\/messages\/[^/?]+(?:\?|$)/;
 
-type ReceiptsBody = { queuedTurns?: Array<{ status?: string }> };
+type ReceiptsBody = { queuedTurns?: Array<{ status?: string; text?: string }> };
 type StatusBody = { active?: boolean; resumeState?: { userMessage?: { text?: string } } };
 
 /**
@@ -116,6 +116,62 @@ function holdBackSuccessor(page: Page, successorText: string) {
       await unroute(page, STATUS_ROUTE, status);
       await unroute(page, MESSAGES_ROUTE, messages);
     },
+  };
+}
+
+/**
+ * Holds only the receipt projection, from the first snapshot that lists the
+ * queued turn as waiting, the way a slow receipt poll leaves it while the backend
+ * admits that turn and runs its reply to completion. Stream status and history
+ * pass through, so the pane attaches to that run and sees it finish while the
+ * receipts still call the turn queued.
+ */
+function holdBackReceipts(page: Page, text: string) {
+  let frozen: ReceiptsBody | null = null;
+  const receipts = async (route: Route) => {
+    const response = await route.fetch();
+    if (response.status() !== 200) {
+      return route.fulfill({ response });
+    }
+    const body = (await response.json()) as ReceiptsBody;
+    const waiting = body.queuedTurns?.some(
+      (turn) => turn.text === text && (turn.status === 'queued' || turn.status === 'claimed'),
+    );
+    if (frozen == null && waiting === true) {
+      frozen = body;
+    }
+    return route.fulfill({ response, json: frozen ?? body });
+  };
+  return {
+    arm: () => page.route(RECEIPTS_ROUTE, receipts),
+    held: () => frozen != null,
+    release: () => unroute(page, RECEIPTS_ROUTE, receipts),
+  };
+}
+
+/**
+ * Lets the status read that ends the predecessor's stream find the queued turn's
+ * run already going, as it does whenever the backend admits that turn within the
+ * read's round trip: a read that still reports the predecessor finished is
+ * repeated until a newer run is reported. The pane then hands its open stream to
+ * that run, so the run's own end is what the queue drain sees next.
+ */
+function handOffAtOnce(page: Page, predecessorText: string) {
+  const status = async (route: Route) => {
+    let response = await route.fetch();
+    for (let attempt = 0; attempt < 40 && response.status() === 200; attempt++) {
+      const body = (await response.json()) as StatusBody;
+      if (body.active !== false || body.resumeState?.userMessage?.text !== predecessorText) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      response = await route.fetch();
+    }
+    return route.fulfill({ response });
+  };
+  return {
+    arm: () => page.route(STATUS_ROUTE, status),
+    release: () => unroute(page, STATUS_ROUTE, status),
   };
 }
 
@@ -249,6 +305,90 @@ test.describe('server-queued follow-up reveal', () => {
       await expect(messageTurns(page).nth(5)).toContainText(MOCK_REPLY_TEXT);
       await expect(messageTurns(page).nth(6)).toContainText(nextQueueText);
       await expect(messageTurns(page).nth(7)).toContainText(MOCK_REPLY_TEXT);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
+  test('a queued follow-up admitted before its receipt says so shows once after its own reply @scenario:queued-turn-shows-once-after-late-admission', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = uniqueLabel('queue-late-admission');
+    /** A streamed reply, so the pane attaches to the queued turn's own run before it ends. */
+    const queueText = `E2E_SLOW_REPLY:queued-own-reply-${label}`;
+    const copies = () => messageTurns(page).filter({ hasText: queueText });
+    let agentId: string | undefined;
+
+    try {
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      const token = await getAccessToken(page);
+      const agent = await createAgent(page, token, uniqueAgentName('E2E Late Admission Agent'));
+      agentId = agent.id;
+      await selectAgent(page, agent.name);
+      await establishConversation(page, `queue-late-admission-setup-${label}`);
+
+      const predecessorText = `E2E_SLOW_REPLY:${label}`;
+      const receipts = holdBackReceipts(page, queueText);
+      const handoff = handOffAtOnce(page, predecessorText);
+      await receipts.arm();
+      await handoff.arm();
+
+      const run = await sendMessage(page, predecessorText);
+      expect(run.ok()).toBeTruthy();
+
+      await typeDuringRun(page, queueText);
+      const [enqueued] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === 'POST' &&
+            new URL(response.url()).pathname === '/api/agents/chat/queued-turns',
+          { timeout: 10000 },
+        ),
+        messageInput(page).press('ControlOrMeta+Enter'),
+      ]);
+      expect(enqueued.ok()).toBeTruthy();
+      await expect(queuedRows(page).filter({ hasText: queueText })).toBeVisible({ timeout: 10000 });
+      /** The run ahead is still streaming, so the held snapshot can only call the turn queued. */
+      await expect.poll(receipts.held, { timeout: 10000 }).toBe(true);
+      await expect(messageTurns(page).nth(3)).not.toContainText(SLOW_REPLY_LAST_CHUNK);
+
+      /** The backend admits the turn as soon as that run ends and its own reply runs to the end. */
+      await expect(messageTurns(page).nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK, {
+        timeout: 60000,
+      });
+      await expect(messageTurns(page).nth(5)).toContainText(SLOW_REPLY_LAST_CHUNK, {
+        timeout: 30000,
+      });
+      await handoff.release();
+      /** Its receipt still reads queued, so the end of that reply draws it again below it. */
+      const pending = page.getByTestId('pending-turn');
+      await expect(pending).toContainText(queueText, { timeout: 10000 });
+      await expect(copies()).toHaveCount(2);
+
+      await receipts.release();
+      /** The next receipt read shows the turn admitted before that reply began: the extra copy
+       *  goes at once, not after a later run or a quiet-window fallback. */
+      await expect(pending).toHaveCount(0, { timeout: 10000 });
+      await expect(copies()).toHaveCount(1);
+      await expect(queuedRows(page)).toHaveCount(0);
+
+      /** Nothing is running or waiting, so the next message is sent, not queued. */
+      const nextLabel = `after-late-admission-${label}`;
+      const next = await sendMessage(page, replyPrompt(nextLabel));
+      expect(next.ok()).toBeTruthy();
+      await expect(messageTurns(page).nth(7)).toContainText(replyText(nextLabel), {
+        timeout: 30000,
+      });
+
+      /** The turn ran once and history holds it once. */
+      const conversationPath = new URL(page.url()).pathname;
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await expect(page).toHaveURL(conversationPath);
+      await expect(messageTurns(page)).toHaveCount(8, { timeout: 30000 });
+      await expect(messageTurns(page).nth(4)).toContainText(queueText);
+      await expect(messageTurns(page).nth(5)).toContainText(SLOW_REPLY_LAST_CHUNK);
+      await expect(copies()).toHaveCount(1);
     } finally {
       await cleanupAgent(page, agentId);
     }

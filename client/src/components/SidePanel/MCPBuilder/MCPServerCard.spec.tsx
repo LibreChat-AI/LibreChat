@@ -19,6 +19,7 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('@librechat/client', () => ({
   MCPIcon: () => <span />,
+  CustomIcon: () => null,
 }));
 
 jest.mock('./MCPCardActions', () => ({
@@ -31,7 +32,6 @@ jest.mock('./MCPCardActions', () => ({
 }));
 
 jest.mock('./MCPServerDialog', () => ({ __esModule: true, default: () => null }));
-jest.mock('~/components/ui/CustomIcon', () => ({ __esModule: true, default: () => null }));
 jest.mock('~/components/MCP/McpOAuthDialog', () => ({
   __esModule: true,
   default: ({ open, oauthUrl }: { open: boolean; oauthUrl: string }) =>

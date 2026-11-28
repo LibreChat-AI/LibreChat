@@ -1,0 +1,184 @@
+import { useMemo } from 'react';
+import { FileText } from 'lucide-react';
+import { cn, useLocalize } from '@librechat/client';
+import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import type { CSSProperties } from 'react';
+import { toolPanelSpacingClassName } from '../../react/parts/disclosure';
+import { parseJsonField } from '../../core/parts/parseJsonField';
+import { useToolCallIntent } from '../../react/parts/intent';
+import CodeWindowHeader from './CodeWindowHeader';
+import useToolCallState from './useToolCallState';
+import useLazyHighlight from './useLazyHighlight';
+import { AttachmentGroup } from './Attachment';
+import { TOOL_ROW_CLASSES } from './rows';
+import ProgressText from './ProgressText';
+import BareStatus from './BareStatus';
+
+const LANG_MAP: Record<string, string> = {
+  py: 'python',
+  js: 'javascript',
+  ts: 'typescript',
+  tsx: 'typescript',
+  jsx: 'javascript',
+  rs: 'rust',
+  go: 'go',
+  rb: 'ruby',
+  java: 'java',
+  kt: 'kotlin',
+  swift: 'swift',
+  cs: 'csharp',
+  php: 'php',
+  lua: 'lua',
+  r: 'r',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  json: 'json',
+  yaml: 'yaml',
+  yml: 'yaml',
+  toml: 'toml',
+  md: 'markdown',
+  sql: 'sql',
+  css: 'css',
+  scss: 'scss',
+  less: 'less',
+  html: 'html',
+  xml: 'xml',
+  c: 'c',
+  cpp: 'cpp',
+  h: 'c',
+  hpp: 'cpp',
+};
+
+const FILENAME_MAP: Record<string, string> = {
+  makefile: 'makefile',
+  dockerfile: 'dockerfile',
+};
+
+export function langFromPath(filePath: string): string {
+  const name = filePath.split('/').pop()?.toLowerCase() ?? '';
+  const byName = FILENAME_MAP[name];
+  if (byName) {
+    return byName;
+  }
+  const ext = name.includes('.') ? (name.split('.').pop() ?? '') : '';
+  return LANG_MAP[ext] ?? 'plaintext';
+}
+
+export default function ReadFileCall({
+  toolCallId,
+  stepId,
+  isSubmitting,
+  runStepStatus,
+  initialProgress = 0.1,
+  args,
+  output = '',
+  attachments,
+  hideAttachments = false,
+  onExpand,
+}: {
+  toolCallId?: string;
+  stepId?: string;
+  initialProgress: number;
+  isSubmitting: boolean;
+  runStepStatus?: PartMetadata['runStepStatus'];
+  args?: string | Record<string, unknown>;
+  output?: string;
+  attachments?: TAttachment[];
+  hideAttachments?: boolean;
+  onExpand?: () => void;
+}): React.JSX.Element {
+  const localize = useLocalize();
+  const filePath = useMemo(
+    () => parseJsonField(args, 'path') || parseJsonField(args, 'file_path'),
+    [args],
+  );
+  const intent = useToolCallIntent(args);
+  const fileName = filePath.split('/').pop() || filePath;
+  const lang = useMemo(() => langFromPath(filePath), [filePath]);
+
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!filePath,
+      panelReady: output.length > 0,
+      keepLabelRow: intent != null,
+      onExpand,
+      runStepStatus,
+    });
+
+  const highlighted = useLazyHighlight(showCode && hasOutput ? output : undefined, lang);
+
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize('com_ui_read_file', { 0: fileName }));
+
+  return (
+    <>
+      <BareStatus phase={phase} active={bare} text={finishedText} />
+      {!bare && (
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={intent ?? localize('com_ui_reading_file', { 0: fileName })}
+            finishedText={finishedText}
+            icon={
+              <FileText
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!filePath || hasOutput}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
+      <div
+        className="tool-call-expand"
+        style={
+          {
+            '--tool-expand-rows': expandStyle.gridTemplateRows,
+            '--tool-expand-opacity': expandStyle.opacity,
+            '--tool-expand-transition': expandStyle.transition,
+          } as CSSProperties
+        }
+      >
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
+          {hasOutput && (
+            <div
+              className={cn(
+                toolPanelSpacingClassName,
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
+              )}
+            >
+              <CodeWindowHeader language={fileName} label={filePath || undefined} code={output} />
+              <pre
+                dir="ltr"
+                className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
+              >
+                <code className={`hljs language-${lang} !whitespace-pre`}>
+                  {highlighted ?? output}
+                </code>
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+      {!hideAttachments && attachments && attachments.length > 0 && (
+        <AttachmentGroup attachments={attachments} />
+      )}
+    </>
+  );
+}

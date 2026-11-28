@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Response, Page, BrowserContext } from '@playwright/test';
+import { getE2EBaseURL } from '../setup/env';
 
-const basePath = 'http://localhost:3080/c/';
+const basePath = new URL('/c/', getE2EBaseURL()).href;
 const initialUrl = `${basePath}new`;
 const endpoints = ['google', 'openAI', 'azureOpenAI'];
 const endpoint = endpoints[1];

@@ -1,13 +1,14 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { ListTodo } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { useAtom, useAtomValue } from 'jotai';
 import { TooltipAnchor } from '@librechat/client';
-import { Constants } from 'librechat-data-provider';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   SESSION_RAIL_ID,
   sessionRailOpen,
   sessionRailSlot,
+  sessionRailDocked,
+  sessionRailSheetSlot,
   SESSION_TOGGLE_ID,
   sessionRailAutoOpen,
   sessionRailDismissed,
@@ -17,14 +18,16 @@ import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useBackgroundTasks from '../BackgroundTasks/useTasks';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useTaskExpiry } from '../BackgroundTasks/clock';
+import useSessionFiles from './useFiles';
 import { useLocalize } from '~/hooks';
 import SessionRail from './Rail';
 import { cn } from '~/utils';
 
 /**
- * The chat header's session control and the rail it opens. It is always offered, so a reader
- * learns one place to look, and it is the single reader of the conversation's tasks: the dot on
- * the control and the rows in the rail cannot disagree.
+ * The chat header's session control and the rail it opens. A saved conversation always offers
+ * it, so a reader learns one place to look; a chat with no messages yet has nothing a session
+ * could hold, so the header leaves it out there. It is the single reader of the conversation's
+ * tasks: the dot on the control and the rows in the rail cannot disagree.
  *
  * With `autoOpen`, work that starts running shows the rail without being asked. That costs the
  * thread one re-wrap and no render: the rail's column narrows it, and nothing outside this
@@ -35,11 +38,17 @@ function Session({
   agentId,
   isSubmitting,
   autoOpen = true,
+  files: listFiles = true,
 }: {
   conversationId: string;
   agentId?: string | null;
   isSubmitting: boolean;
   autoOpen?: boolean;
+  /**
+   * Whether the conversation's files are listed. Off where leaving one out would change nothing:
+   * an assistants thread keeps its own copy of every attachment upstream.
+   */
+  files?: boolean;
 }) {
   const localize = useLocalize();
   const slot = useAtomValue(sessionRailSlot);
@@ -51,27 +60,37 @@ function Session({
    * Shown for this conversation because work started in it. That is not the reader's standing
    * choice, so it is not remembered as one and it ends with the conversation. Closing the rail
    * is an answer: it is not shown again for the same conversation, whatever starts later and
-   * however often the reader comes back to it. An unsaved chat has no identity to remember
-   * that under, so its answer lasts as long as this control does.
+   * however often the reader comes back to it.
    */
   const [summoned, setSummoned] = useState(false);
   const wanted = useAtomValue(sessionRailAutoOpen);
   const [dismissedIds, setDismissedIds] = useAtom(sessionRailDismissed);
-  const dismissedUnsaved = useRef(false);
-  const saved = conversationId !== '' && conversationId !== Constants.NEW_CONVO;
-  const dismissed = saved && dismissedIds.includes(conversationId);
+  const dismissed = dismissedIds.includes(conversationId);
   const open = sheet ? sheetOpen : docked || summoned;
+  /**
+   * The layout makes the rail's column while a docked rail is open, and the rail is drawn once
+   * the column is there. Told before paint, so the column and the rail arrive together, and
+   * taken back when this control goes, as it does on a chat with no messages.
+   */
+  const sheetSlot = useAtomValue(sessionRailSheetSlot);
+  const setColumn = useSetAtom(sessionRailDocked);
+  const column = open && !sheet;
+  useLayoutEffect(() => {
+    setColumn(column);
+  }, [column, setColumn]);
+  useLayoutEffect(() => () => setColumn(false), [setColumn]);
+  const target = sheet ? sheetSlot : slot;
   const [now, setNow] = useState(() => Date.now());
   const view = useBackgroundTasks({ conversationId, isSubmitting, now, details: open });
   const { activeCount, awaitingCount, failedCount, incomplete } = view;
   useTaskExpiry(view.rows, setNow);
+  /** Read only while the rail shows them: a closed rail asks nothing about files. */
+  const files = useSessionFiles({ conversationId, enabled: open && listFiles });
 
   /** Never as a sheet: that would cover the conversation the reader is in the middle of. */
   const working = activeCount > 0;
   useEffect(() => {
-    if (autoOpen && wanted && working && !sheet && !dismissed && !dismissedUnsaved.current) {
-      setSummoned(true);
-    }
+    if (autoOpen && wanted && working && !sheet && !dismissed) setSummoned(true);
   }, [autoOpen, wanted, working, sheet, dismissed]);
 
   const setOpen = useCallback(
@@ -82,10 +101,6 @@ function Session({
       }
       setSummoned(false);
       setDocked(next);
-      if (!saved) {
-        dismissedUnsaved.current = !next;
-        return;
-      }
       /** Closing is remembered for this conversation; opening it by hand takes that back. */
       setDismissedIds((ids) => {
         const others = ids.filter((id) => id !== conversationId);
@@ -95,7 +110,7 @@ function Session({
         return [...others, conversationId].slice(-SESSION_RAIL_DISMISSED_LIMIT);
       });
     },
-    [conversationId, saved, sheet, setDismissedIds, setDocked],
+    [conversationId, sheet, setDismissedIds, setDocked],
   );
   const close = useCallback(
     (restoreFocus = true) => {
@@ -149,16 +164,17 @@ function Session({
         }
       />
       {open &&
-        slot != null &&
+        target != null &&
         createPortal(
           <SessionRail
             view={view}
+            files={files}
             conversationId={conversationId}
             agentId={agentId}
             sheet={sheet}
             onClose={close}
           />,
-          slot,
+          target,
         )}
     </>
   );

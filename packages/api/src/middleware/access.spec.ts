@@ -1,13 +1,17 @@
 import { Request, Response, NextFunction } from 'express';
 import {
+  ErrorTypes,
   Permissions,
+  ResourceType,
   PermissionTypes,
   EModelEndpoint,
   EndpointURLs,
 } from 'librechat-data-provider';
 import type { IRole, IUser } from '@librechat/data-schemas';
 import {
+  notFound,
   checkAccess,
+  accessDenied,
   checkAccessWithRequestCache,
   generateCheckAccess,
   skipAgentCheck,
@@ -525,6 +529,40 @@ describe('access middleware', () => {
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockRes.json).toHaveBeenCalledWith({
         message: 'Server error: Unknown error',
+      });
+    });
+  });
+
+  describe('accessDenied', () => {
+    it('names a refused agent with a code a failed chat can explain', () => {
+      expect(accessDenied(ResourceType.AGENT)).toEqual({
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
+      });
+    });
+
+    it('keeps the plain refusal for every other resource', () => {
+      expect(accessDenied(ResourceType.PROMPTGROUP)).toEqual({
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this promptGroup',
+      });
+    });
+  });
+
+  describe('notFound', () => {
+    it('names a missing agent with a code a failed chat can explain', () => {
+      expect(notFound(ResourceType.AGENT)).toEqual({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      });
+    });
+
+    it('keeps the plain body for every other resource', () => {
+      expect(notFound(ResourceType.PROMPTGROUP)).toEqual({
+        error: 'Not Found',
+        message: 'promptGroup not found',
       });
     });
   });

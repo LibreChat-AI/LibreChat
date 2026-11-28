@@ -226,8 +226,9 @@ interface:
   # hides them. When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
   # landingFooter: true
   # Which responses show the author's avatar and name above their content (default: always).
-  # 'whenDifferent' drops them when the header's model selector already shows that agent; a
-  # response from another agent keeps them. The name stays available to screen readers.
+  # 'whenDifferent' drops them when the header's model selector already shows that agent, model
+  # spec or model; a response from another agent or model spec keeps them. The name stays
+  # available to screen readers.
   # messageAuthor: always
   # Show the endpoint, agent or assistant icon on each sidebar chat history row (default: true).
   # Set to false when every chat uses the same agent and the icon is noise. A running or unread
@@ -430,8 +431,8 @@ interface:
   # Tools pinned to the prompt bar by default for all users.
   # Only seeds the initial state — once a user pins/unpins a tool, their choice is kept.
   # Valid tool keys: artifacts, execute_code, web_search, file_search, skills.
-  # Use 'mcp' (or a specific MCP server name) to pin the MCP servers dropdown.
-  # When omitted, tools start unpinned and the MCP dropdown keeps its default (pinned).
+  # Use 'mcp' (or a specific MCP server name) to pin an MCP Servers chip that opens the full server list.
+  # When omitted, tools and the MCP Servers chip start unpinned.
   # defaultPinnedTools:
   #   - 'artifacts'
   #   - 'execute_code'
@@ -628,6 +629,7 @@ registration:
 #   skillNameLookups: 8 # model spec skill name resolutions
 #   skillFileInspections: 4 # bundled skill file inspections before a skill is primed
 #   resumeAgentLoads: 4 # agent reads while building the resume snapshot of a paused run
+#   codeOutputDownloads: 4 # generated code output files downloaded at once before the tool result returns; 1 keeps them serial
 
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
@@ -940,6 +942,9 @@ endpoints:
   #   # (optional) Maximum explicit subagents per agent, for both the flat list and
   #   # graph definitions. Defaults to 10; hard cap 50.
   #   maxSubagents: 20
+  #   # (optional) A self-spawned copy of an agent keeps that agent's subagents and can
+  #   # delegate to them. Defaults to true; false leaves the copy with the agent's tools only.
+  #   subagentSelfNesting: true
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.
@@ -971,7 +976,7 @@ endpoints:
   #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
   #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
-  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
+  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents", "subagent_graphs"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
@@ -1074,6 +1079,22 @@ endpoints:
   #   # uses its own bound listener; override only for an internal TLS/front-door route.
   #   eventDriven:
   #     # selfUrl: 'https://librechat.internal'
+  #     # Idle polling: the background loops that look for work a crashed process or another replica
+  #     # left behind (agent delivery claims and maintenance, queued-turn recovery, code-environment
+  #     # reconciliation, the MCP authorization retry and the scheduled-chat erasure sweep) back off
+  #     # while they find nothing to do, each up to its own default ceiling of 15 seconds to 20
+  #     # minutes.
+  #     # maxIntervalMs (1000 to 3600000) replaces all of those ceilings with one, for example 900000
+  #     # on a single-instance deployment that wants the fewest idle database reads. A loop never
+  #     # waits less than its own interval, so a low value keeps every loop at its base cadence. A
+  #     # longer ceiling slows the pickup of work another process left behind. Work started in this
+  #     # process still pulls its loop in: agent delivery, queued-turn recovery and maintenance wake
+  #     # at once, while the code-environment reconciler, the MCP authorization retry and the erasure
+  #     # sweep look again within their own base interval. It takes effect on restart and, while
+  #     # set, replaces deliveryMaxIntervalMs, queuedTurnMaxIntervalMs and maintenanceMaxIntervalMs.
+  #     # completionWaitMaxIntervalMs keeps its own cap.
+  #     # idlePolling:
+  #     #   maxIntervalMs: 900000
   #   # (optional) Automatic conversational delivery for supported completed background tasks.
   #   # Enabled by default; set false to keep background tools and subagents poll-only.
   #   backgroundTasks:
@@ -1220,6 +1241,13 @@ endpoints:
   # openAI:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+  #   # (optional) Built-in model lists take the same entries as custom endpoints:
+  #   # `vision: false` gives agents on that model a text note in place of each image.
+  #   # `vision` on the endpoint itself covers every model without its own entry.
+  #   models:
+  #     - 'gpt-4o'
+  #     - name: 'gpt-3.5-turbo'
+  #       vision: false
   # google:
   #   # (optional) Override USD rates per million tokens for your billing tier.
   #   # Set all three rates to 0 for the Gemini Developer API free tier.
@@ -1392,7 +1420,17 @@ endpoints:
           - 'llama2-70b-4096'
           - 'mixtral-8x7b-32768'
           - 'gemma-7b-it'
+          # (optional) A model entry can declare its own `vision`, which overrides
+          # the endpoint's:
+          # - name: 'your-vision-model'
+          #   vision: true
         fetch: false
+      # (optional) These models cannot read images. An agent on one of them gets a
+      # short text note in place of each image, while vision agents in the same
+      # chain or handoff still get the image. Precedence, first declaration wins:
+      # the agent builder's "Text-only model" switch, the agent's model spec, the
+      # model's entry, then the endpoint.
+      vision: false
       titleConvo: true
       titleModel: 'mixtral-8x7b-32768'
       modelDisplayLabel: 'groq'
@@ -1523,6 +1561,9 @@ endpoints:
 #       label: "Llama 3 70B"
 #       description: "Fastest inference available - great for quick responses"
 #       group: "groq"  # String value matching your custom endpoint name from endpoints.custom
+#       # Text-only model: the spec's agent gets a short note in place of each image.
+#       # A spec's `vision` outranks the model entry's and the endpoint's.
+#       vision: false
 #       preset:
 #         endpoint: "groq"
 #         model: "llama3-70b-8192"
@@ -1647,7 +1688,7 @@ endpoints:
 #   # Keenable (search provider; keyless by default, a key only lifts rate limits)
 #   keenableApiKey: '${KEENABLE_API_KEY}'
 #   # Content scrapers
-#   firecrawlApiKey: '${FIRECRAWL_API_KEY}'
+#   firecrawlApiKey: '${FIRECRAWL_API_KEY}'  # Required by Firecrawl's hosted API; leave it unset for a self-hosted firecrawlApiUrl without authentication
 #   firecrawlApiUrl: '${FIRECRAWL_API_URL}'
 #   # Outbound search and scrape requests are validated at connect time against
 #   # their resolved IP and blocked from reaching private, loopback, link-local,

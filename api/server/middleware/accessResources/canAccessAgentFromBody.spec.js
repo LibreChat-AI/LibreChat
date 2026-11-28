@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const {
+  ErrorTypes,
   ResourceType,
   SystemRoles,
   PrincipalType,
@@ -128,6 +129,66 @@ describe('canAccessAgentFromBody middleware', () => {
       await middleware(req, res, next);
 
       expect(next).toHaveBeenCalled();
+    });
+
+    test('names a refused primary agent with the agent access code', async () => {
+      const privateAgent = await createAgent({
+        id: 'agent_private',
+        name: 'Private Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: otherUser._id,
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: otherUser._id,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: privateAgent._id,
+        permBits: 15,
+        grantedBy: otherUser._id,
+      });
+      req.body.agent_id = privateAgent.id;
+
+      const middleware = canAccessAgentFromBody({ requiredPermission: 1 });
+      await middleware(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
+      });
+    });
+
+    test.each([
+      { label: 'selected', setup: () => (req.body.agent_id = 'agent_deleted') },
+      {
+        label: 'enforced model spec',
+        setup: () => {
+          req.body.spec = 'retired-agent';
+          req.config = {
+            modelSpecs: {
+              enforce: true,
+              list: [{ name: 'retired-agent', preset: { agent_id: 'agent_retired' } }],
+            },
+          };
+        },
+      },
+    ])('names a missing $label agent with the agent not found code', async ({ setup }) => {
+      setup();
+
+      const middleware = canAccessAgentFromBody({ requiredPermission: 1 });
+      await middleware(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      });
     });
 
     test.each([
@@ -331,11 +392,11 @@ describe('canAccessAgentFromBody middleware', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(403);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: 'Insufficient permissions to access this agent',
-        }),
-      );
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
+      });
     });
 
     test('returns 404 when added agent does not exist', async () => {
@@ -350,6 +411,11 @@ describe('canAccessAgentFromBody middleware', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      });
     });
 
     test('proceeds when requester has ACL for the added agent', async () => {

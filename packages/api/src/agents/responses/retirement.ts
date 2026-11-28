@@ -31,7 +31,11 @@ const terminal = (record: StoredResponseRecord) =>
 /** Internal cleanup authority: may stop one owned response, never execute or disclose its output. */
 export function createResponseRetirement(
   deps: ResponseRetirementDependencies,
-): (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'> {
+): (
+  owner: ResponseOwner,
+  responseId: string,
+  confirmRestartOrphan?: (record: StoredResponseRecord) => Promise<boolean>,
+) => Promise<'stopped' | 'pending'> {
   const recover =
     deps.recoverTerminal ??
     createResponseCompletion({
@@ -155,7 +159,7 @@ export function createResponseRetirement(
     );
     return 'stopped';
   }
-  return async (owner, responseId) => {
+  return async (owner, responseId, confirmRestartOrphan) => {
     let record = await deps.storage.requestCancellation(
       owner,
       responseId,
@@ -195,7 +199,29 @@ export function createResponseRetirement(
       }
     }
     const job = await deps.jobs.getJob(responseId);
-    if (!job) return 'pending';
+    if (!job) {
+      // Only an authorized channel Stop may settle a restart orphan. A review, resume,
+      // or completion receipt owns its checkpoint. Unpublished fragments retain their TTL.
+      if (
+        !confirmRestartOrphan ||
+        (record.status !== 'in_progress' && record.status !== 'queued') ||
+        !record.requestKey.startsWith('channel:') ||
+        record.cancellationRequestedAt == null ||
+        record.review ||
+        record.resume ||
+        record.pendingTerminal ||
+        record.preparedTerminal ||
+        !(await confirmRestartOrphan(record))
+      )
+        return 'pending';
+      const response = {
+        ...buildPendingBackgroundResponse(record),
+        status: 'cancelled' as const,
+        completed_at: Math.floor((deps.now ?? Date.now)() / 1000),
+      };
+      const cancelled = await deps.storage.cancelOrphan(record, JSON.stringify(response));
+      return cancelled.ok ? 'stopped' : 'pending';
+    }
     if (
       record.generationCreatedAt == null ||
       job.createdAt !== record.generationCreatedAt ||

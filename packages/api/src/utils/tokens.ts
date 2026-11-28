@@ -150,7 +150,10 @@ const googleModels = {
   'gemini-3.7-flash': 1048576,
   'gemini-3.8-flash': 1048576,
   /** Shared across input, thinking and output; output is still capped by `maxOutputTokens`. */
+  'gemini-4': 1048576,
   'gemini-4-argon': 1048576,
+  'gemini-4-carbon': 1048576,
+  'gemini-4-neon': 1048576,
   'gemini-4-hydrogen': 1048576,
 };
 
@@ -704,7 +707,23 @@ export function getModelMaxTokens(
   if (context1mValue != null) {
     return context1mValue;
   }
-  return getModelTokenValue(modelName, maxTokensMap[endpoint as keyof typeof maxTokensMap]);
+  const modelContext = getModelTokenValue(modelName, maxTokensMap[endpoint]);
+  if (modelContext != null) {
+    return modelContext;
+  }
+
+  // A generation selector supplies context only, not a billable model or pricing key.
+  if (
+    [
+      EModelEndpoint.openAI,
+      EModelEndpoint.azureOpenAI,
+      EModelEndpoint.agents,
+      EModelEndpoint.custom,
+    ].includes(endpoint)
+  ) {
+    return getModelTokenValue(modelName, { 'gpt-6': 1050000 });
+  }
+  return undefined;
 }
 
 /**

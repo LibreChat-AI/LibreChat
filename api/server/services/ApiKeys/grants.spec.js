@@ -17,7 +17,7 @@ jest.mock('~/server/services/PermissionService', () => ({ getEffectivePermission
 
 const {
   getMCPRequestContext,
-  bindScheduledMCPInvocation,
+  bindRunGrantInvocation,
   createRemoteExecutionContext,
 } = require('@librechat/api');
 const { getAppConfig } = require('~/server/services/Config/app');
@@ -50,9 +50,7 @@ describe('API key grant wiring', () => {
       await expect(
         host.prepare({ req, executionContext: run('66f000000000000000000001') }),
       ).resolves.toBeUndefined();
-      expect(
-        bindScheduledMCPInvocation(getMCPRequestContext(req), 'agent_a', 'query'),
-      ).toBeUndefined();
+      expect(bindRunGrantInvocation(getMCPRequestContext(req), 'agent_a', 'query')).toBeUndefined();
     }
     expect(getAppConfig).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'owner', role: 'USER', failClosed: true }),
@@ -73,9 +71,7 @@ describe('API key grant wiring', () => {
       host.prepare({ req, executionContext: run('66f000000000000000000001') }),
     ).resolves.toBeUndefined();
     expect(getAgentApiKeyById).toHaveBeenCalledWith('66f000000000000000000001', 'owner');
-    expect(
-      bindScheduledMCPInvocation(getMCPRequestContext(req), 'agent_a', 'query'),
-    ).toBeUndefined();
+    expect(bindRunGrantInvocation(getMCPRequestContext(req), 'agent_a', 'query')).toBeUndefined();
   });
 
   it('reads no config for a run that no personal key started', async () => {

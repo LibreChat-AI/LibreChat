@@ -1,36 +1,42 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { useSetAtom } from 'jotai';
-import { Button, cn } from '@librechat/client';
 import { ChevronRight, Users } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
+import { Button, Shimmer, cn } from '@librechat/client';
 import type { PartMetadata, TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { Agent } from 'librechat-data-provider';
-import type { MessagePartMessage, MessagePartsHost, ToolCallChrome } from '../../react/host';
 import type { SubagentContentPreview } from '../../react/subagents/state';
+import type { ToolCallChrome } from '../../react/host';
 import {
   activeSubagentPanel,
   subagentProgressKey,
   useSubagentProgress,
 } from '../../react/subagents/state';
+import {
+  resolveSubagentAgentId,
+  resolvePendingSubagentAgentId,
+} from '../../react/subagents/identity';
+import { isSelfSpawn as isSelfSpawnType, useSubagentCaller } from '../../react/subagents/author';
 import { isLiveSubagentStatus, subagentStatusLabelKey } from '../../react/subagents/status';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
-import { isSelfSpawn as isSelfSpawnType } from '../../react/subagents/author';
 import { pickTailIndex, pickTailPart } from '../../react/subagents/tail';
 import { parseSubagentBackgroundHandle } from '../../core/parts/handle';
 import { lastVisibleContentIdx } from '../../core/parts/activityLabels';
-import { resolveSubagentAgentId } from '../../react/subagents/identity';
 import { useOpenSubagentPanel } from '../../react/subagents/surface';
 import { useParentSubagents } from '../../react/subagents/parents';
 import { useThreadInterest } from '../../react/subagents/follows';
-import { getSubagentPrompt } from '../../react/subagents/prompt';
+import { readSubagentArgs } from '../../react/subagents/prompt';
 import { PartsPreviewContext } from '../../react/parts/preview';
 import { FailedRevealContext, useFailedReveal } from './reveal';
 import { useToolCallIntent } from '../../react/parts/intent';
+import { useMessagesHost } from '../../react/messages/host';
 import { useBranchTailSelect } from '../../react/latest';
+import { useMessageContext } from '../../react/message';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
+import { NestedContentContext } from '../nested';
 import { FOLD_GLYPH_CLASS } from './rows';
+import PendingFace from './PendingFace';
 
 export interface SubagentCallProps {
   toolCallId: string;
@@ -56,15 +62,6 @@ export interface SubagentCallProps {
   subagentIdentity?: PartMetadata['subagentIdentity'];
   hideAttachments?: boolean;
 }
-
-/** App subscriptions arrive as values; render callbacks contain no card behavior. */
-export type SubagentCallContext = Pick<ToolCallChrome, 'localize' | 'renderAttachments'> &
-  Pick<MessagePartsHost, 'renderAgentIcon'> & {
-    message: Pick<MessagePartMessage, 'messageId' | 'conversationId' | 'partIndex'>;
-    isSharedConvo?: boolean;
-    shareId?: string;
-    agentsMap?: Record<string, Agent | undefined>;
-  };
 
 /** Trailing-edge refresh window for the live preview once the ticker has
  *  enough text to fill the row. Keeps long streaming lines from repainting
@@ -183,14 +180,14 @@ export default function SubagentCall({
   contentPreview,
   subagentIdentity,
   hideAttachments = false,
-  message,
-  isSharedConvo,
-  shareId,
-  localize,
-  agentsMap,
-  renderAgentIcon,
-  renderAttachments,
-}: SubagentCallProps & SubagentCallContext): ReactNode {
+}: SubagentCallProps): ReactNode {
+  const message = useMessageContext();
+  const host = useMessagePartsHost();
+  const { renderAgentIcon } = host;
+  const { isSharedConvo, shareId } = host.useShare();
+  const { localize, renderAttachments } = host.useToolCallChrome();
+  /** By id, as the message row resolves its own author; an outside host without agents has none. */
+  const agentsMap = useMessagesHost().useAgentsMap();
   const parentMessageId = message.messageId?.trim() ?? '';
   const partIndex = message.partIndex ?? 0;
   const progress = useSubagentProgress(subagentProgressKey(parentMessageId, toolCallId, partIndex));
@@ -204,7 +201,10 @@ export default function SubagentCall({
   const canOpenDurablePanel =
     isSharedConvo !== true && backgroundHandle != null && parentConversationId !== '';
 
-  const subagentType = progress?.subagentType ?? extractSubagentType(args);
+  /** Read once per change of the arguments: while the parent is still writing the call, they
+   *  change on every streamed delta. */
+  const call = useMemo(() => readSubagentArgs(args), [args]);
+  const subagentType = progress?.subagentType ?? call.subagentType ?? '';
   const isSelfSpawn = isSelfSpawnType(
     subagentType,
     progress?.subagentKind ?? subagentIdentity?.subagentKind,
@@ -214,9 +214,6 @@ export default function SubagentCall({
   const { byThreadId } = useParentSubagents();
   const indexedChild =
     backgroundHandle == null ? undefined : byThreadId.get(backgroundHandle.subagent_thread_id);
-  const subagentAgentId =
-    resolveSubagentAgentId(progress, subagentIdentity) ?? indexedChild?.agentId;
-  const subagentAgent = subagentAgentId ? agentsMap?.[subagentAgentId] : undefined;
   /**
    * Tri-state status resolution, aligned with `ToolCall.tsx`:
    *
@@ -253,6 +250,20 @@ export default function SubagentCall({
   const cancelled = isClosed ? runStepStatus === 'cancelled' : !isSubmitting && !finished;
   const running = !finished && !cancelled;
   const detachedStatusUnknown = backgroundHandle != null && progress == null && !isSubmitting;
+  const preparationText = useToolPreparation();
+  /** The parent is still writing the call: its brief, and then whom it goes to. */
+  const briefing = running && preparationText != null && !call.complete;
+  /** The call is written but the child has not reported anything yet. */
+  const starting = running && !briefing && progress == null && !detachedStatusUnknown;
+  /** Before the child reports who it runs as, only a live call that has not started reads the
+   *  requested type; a stored call without an identity keeps the generic face. */
+  const subagentAgentId =
+    resolveSubagentAgentId(progress, subagentIdentity) ??
+    indexedChild?.agentId ??
+    ((briefing || starting) && subagentIdentity == null && backgroundHandle == null
+      ? resolvePendingSubagentAgentId(call.subagentType, agentsMap)
+      : undefined);
+  const subagentAgent = subagentAgentId ? agentsMap?.[subagentAgentId] : undefined;
 
   /** The child's newest part: the row it is on right now. */
   const tailPart = useMemo(() => {
@@ -264,7 +275,7 @@ export default function SubagentCall({
   const preview = useThrottledRow(tailPart, running);
   const showPreview = running && preview != null;
 
-  const prompt = getSubagentPrompt(args);
+  const prompt = call.prompt;
 
   /** Base verb-only label ("Running agent" / "Ran agent"). The agent name
    *  is rendered separately as a muted sub-label so "agent" stays a
@@ -272,24 +283,35 @@ export default function SubagentCall({
   /** Model-authored live label (subagent carries `intent` natively); wins
    *  over the generic verb, never over error/cancellation framing. */
   const intent = useToolCallIntent(args);
-  const preparationText = useToolPreparation();
   const getHeaderText = () => {
     if (hasError) return localize('com_ui_subagent_errored');
     if (cancelled) return localize('com_ui_subagent_cancelled');
     if (detachedStatusUnknown) return localize('com_ui_subagent_activity');
-    if (running && preparationText != null) return preparationText;
     if (intent != null) return intent;
+    if (running && preparationText != null) return localize('com_ui_starting_one_subagent');
     if (running) return localize('com_ui_subagent_running');
     return localize('com_ui_subagent_complete');
   };
   const headerText = getHeaderText();
+  /** What the call is waiting on before the child has a row of its own to show. */
+  let pendingText: string | undefined;
+  if (briefing) {
+    pendingText = localize('com_ui_subagent_briefing');
+  } else if (starting) {
+    pendingText = localize('com_ui_subagent_starting');
+  }
   /** A named subagent leads with its own name and face, the way its turns read
    *  in main chat, and the verb or status follows it muted. Self-spawns keep
    *  the verb alone (the name would be the agent this card already sits
    *  under), as do agents the map cannot resolve. */
   const subagentNameLabel = !isSelfSpawn && subagentAgent?.name ? subagentAgent.name : '';
+  /** One line sweeps at a time: the generic title while nothing else is known, after that the
+   *  line saying what the call is waiting on. */
+  const titleSweeps = briefing && intent == null && subagentNameLabel === '';
+  const pendingFace = (briefing || starting) && subagentAgent == null;
 
-  const cardLabel = subagentNameLabel ? `${subagentNameLabel}: ${headerText}` : headerText;
+  const titleLabel = subagentNameLabel ? `${subagentNameLabel}: ${headerText}` : headerText;
+  const cardLabel = pendingText == null ? titleLabel : `${titleLabel}, ${pendingText}`;
 
   const canOpenDetails = useMemo(() => {
     const hasParentContext = parentConversationId !== '' && parentMessageId !== '';
@@ -317,6 +339,7 @@ export default function SubagentCall({
     persistedContent,
   ]);
 
+  const caller = useSubagentCaller();
   const panelSelection = useMemo(
     () => ({
       host: isSharedConvo === true ? ('share' as const) : ('conversation' as const),
@@ -335,6 +358,8 @@ export default function SubagentCall({
       initialProgress,
       isSubmitting,
       ...(runStepStatus == null ? {} : { runStepStatus }),
+      ...(caller == null ? {} : { caller }),
+      ...(briefing ? { briefing: true } : {}),
       ...(backgroundHandle != null && canOpenDurablePanel
         ? {
             durable: {
@@ -347,6 +372,8 @@ export default function SubagentCall({
     [
       attachments,
       backgroundHandle,
+      briefing,
+      caller,
       canOpenDurablePanel,
       contentPreview,
       initialProgress,
@@ -427,11 +454,14 @@ export default function SubagentCall({
                 'flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full',
                 running &&
                   !subagentAgent &&
+                  !pendingFace &&
                   'text-text-primary animate-pulse motion-reduce:animate-none',
               )}
               aria-hidden="true"
             >
-              {subagentAgent ? renderAgentIcon(subagentAgent) : <Users size={14} />}
+              {subagentAgent != null && renderAgentIcon(subagentAgent)}
+              {subagentAgent == null && pendingFace && <PendingFace />}
+              {subagentAgent == null && !pendingFace && <Users size={14} />}
             </div>
             {subagentNameLabel ? (
               <>
@@ -463,16 +493,18 @@ export default function SubagentCall({
                   className="min-w-0 truncate"
                   title={detachedStatusUnknown ? undefined : headerText}
                 >
-                  {detachedStatusUnknown && backgroundHandle != null ? (
+                  {detachedStatusUnknown && backgroundHandle != null && (
                     <DetachedTaskStatus
                       threadId={backgroundHandle.subagent_thread_id}
                       taskId={backgroundHandle.background_task_id}
                       fallback={headerText}
                       localize={localize}
                     />
-                  ) : (
-                    headerText
                   )}
+                  {!detachedStatusUnknown && titleSweeps && (
+                    <Shimmer className="max-w-full truncate align-top">{headerText}</Shimmer>
+                  )}
+                  {!detachedStatusUnknown && !titleSweeps && headerText}
                 </span>
                 <span className="flex-1" />
               </>
@@ -488,7 +520,11 @@ export default function SubagentCall({
 
           {!showPreview && running ? (
             <div className="text-text-secondary w-full truncate text-sm opacity-70">
-              {localize('com_ui_subagent_waiting')}
+              {pendingText == null && localize('com_ui_subagent_waiting')}
+              {pendingText != null && !titleSweeps && (
+                <Shimmer className="max-w-full truncate align-top">{pendingText}</Shimmer>
+              )}
+              {pendingText != null && titleSweeps && pendingText}
             </div>
           ) : null}
         </Button>
@@ -603,19 +639,6 @@ function useThrottledRow(row: PreviewRow | undefined, running: boolean): Preview
   return useTickerThrottle(row, SUBAGENT_TICKER_THROTTLE_MS, throttled);
 }
 
-function extractSubagentType(args: SubagentCallProps['args']): string {
-  if (typeof args === 'string') {
-    try {
-      const parsed = JSON.parse(args) as { subagent_type?: string };
-      return parsed?.subagent_type ?? 'agent';
-    } catch {
-      return 'agent';
-    }
-  }
-  const a = args as { subagent_type?: string } | undefined;
-  return a?.subagent_type ?? 'agent';
-}
-
 const PREVIEW_ROW_HEIGHT = 'h-8';
 /** No request to reveal a failure reaches a picture, and it claims no focus. */
 const NO_REVEAL = { tick: 0, claimFocus: null };
@@ -651,6 +674,8 @@ function SubagentPreview({
   messageId: string;
 }): ReactNode {
   const host = useMessagePartsHost();
+  const nested = useContext(NestedContentContext);
+  const draw = host.renderContentParts ?? nested;
   const content = useMemo(() => [part], [part]);
   const pictureHost = useMemo(() => ({ ...host, useToolArtifactClaim: useNoClaim }), [host]);
   return (
@@ -659,7 +684,7 @@ function SubagentPreview({
       aria-hidden="true"
       data-subagent-preview
       className={cn(
-        'pointer-events-none absolute inset-x-[calc(0.75rem+1px)] bottom-[calc(0.5rem+1px)] overflow-hidden',
+        'pointer-events-none absolute inset-x-[calc(0.75rem+1px)] bottom-[calc(0.25rem+1px)] overflow-hidden',
         PREVIEW_ROW_HEIGHT,
         PREVIEW_FADE,
       )}
@@ -671,7 +696,7 @@ function SubagentPreview({
         <PartsPreviewContext.Provider value={true}>
           <FailedRevealContext.Provider value={NO_REVEAL}>
             <MessagePartsHostProvider host={pictureHost}>
-              {host.renderContentParts({
+              {draw?.({
                 content,
                 messageId,
                 conversationId: null,

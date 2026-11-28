@@ -18,8 +18,9 @@ import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import Tokenizer, { getExactCountWork } from '~/utils/tokenizer';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
-import Tokenizer from '~/utils/tokenizer';
+import { describeEvent } from './events/turn';
 
 export const omitTitleOptions: Set<string> = new Set([
   'stream',
@@ -74,6 +75,7 @@ const BASE64_BYTES_PER_PDF_PAGE = 75_000;
 const PDF_TOKENS_PER_PAGE_CLAUDE = 2000;
 const PDF_TOKENS_PER_PAGE_OPENAI = 1500;
 const URL_DOCUMENT_FALLBACK_TOKENS = 2000;
+const BINARY_DOCUMENT_BYTES_PER_TOKEN = 4;
 
 type ContentBlock = {
   type?: string;
@@ -163,6 +165,73 @@ export function prependContextText(
   );
 }
 
+/**
+ * Appends context text to a formatted message: joined after its string content or its last
+ * text part, or added as a trailing text part when it has neither. Like `prependContextText`,
+ * array content is replaced, never edited in place.
+ */
+function appendContextText(
+  formattedMessage: FormattedMessageWithContent,
+  text: string,
+  separator = '\n\n',
+): void {
+  const { content } = formattedMessage;
+  if (typeof content === 'string') {
+    formattedMessage.content = content.length > 0 ? `${content}${separator}${text}` : text;
+    return;
+  }
+  if (!Array.isArray(content)) {
+    return;
+  }
+  let index = -1;
+  content.forEach((part, position) => {
+    if (part.type === ContentTypes.TEXT && typeof part.text === 'string') index = position;
+  });
+  if (index < 0) {
+    formattedMessage.content = [...content, { type: ContentTypes.TEXT, text }];
+    return;
+  }
+  formattedMessage.content = content.map((part, position) =>
+    position === index ? { ...part, text: `${part.text}${separator}${text}` } : part,
+  );
+}
+
+/** What a message needs from the caller once its own context was added to the model's copy. */
+export interface AddedContext {
+  /** The model's copy holds more than the stored text: a token count stored from the text
+   *  alone undercounts it, so the message is counted again from the model's copy. */
+  recount: boolean;
+  /** The model's copy holds text the memory agent must not read: the memory payload is built
+   *  from separate copies without it. */
+  memoryCopy: boolean;
+}
+
+const NONE: AddedContext = Object.freeze({ recount: false, memoryCopy: false });
+const EVENT: AddedContext = Object.freeze({ recount: true, memoryCopy: true });
+
+/**
+ * Appends what an outside event was about to the first message of the turn an event
+ * subscription started, after the subscription's prompt, as labelled data (`describeEvent`).
+ * Applied to that message on every turn that reads it, as quotes are, so the model keeps the
+ * event when the run continues or its owner replies later. The stored text stays the prompt,
+ * which is what the conversation shows.
+ *
+ * Returns what the caller must do about it: count the message again, since a count stored
+ * from the text leaves the event out, and give the memory agent copies without it, since
+ * outside text must not become a remembered fact about the user. Nothing for any other message.
+ */
+export function appendEvent(
+  formattedMessage: FormattedMessageWithContent,
+  trigger?: TMessage['trigger'] | null,
+): AddedContext {
+  const block = describeEvent(trigger);
+  if (block == null) {
+    return NONE;
+  }
+  appendContextText(formattedMessage, block);
+  return EVENT;
+}
+
 export function prependFileContext(
   formattedMessage: FormattedMessageWithContent,
   fileContext?: string | null,
@@ -237,6 +306,23 @@ function estimateImageBlockTokens(block: ContentBlock, isClaude: boolean): numbe
   return estimateImageDataTokens(base64Data, isClaude);
 }
 
+/**
+ * A base64 document that is neither a PDF nor an image reaches the model as its contents, not as
+ * base64: a textual one is counted by its decoded text, a binary one (Office formats) by its
+ * decoded size. Tokenizing the base64 itself would count about twice a text file's real tokens.
+ */
+function estimateBase64DocumentTokens(
+  data: string,
+  mime: string,
+  countTokens?: (text: string) => number,
+): number {
+  if (!mime.startsWith('text/')) {
+    return Math.ceil((data.length * 3) / 4 / BINARY_DOCUMENT_BYTES_PER_TOKEN);
+  }
+  const text = Buffer.from(data, 'base64').toString('utf8');
+  return countTokens != null ? countTokens(text) : Math.ceil(text.length / 4);
+}
+
 function estimateDocumentBlockTokens(
   block: ContentBlock,
   isClaude: boolean,
@@ -256,7 +342,7 @@ function estimateDocumentBlockTokens(
       if (mime.startsWith('image/')) {
         return estimateImageDataTokens(block.data, isClaude);
       }
-      return countTokens != null ? countTokens(block.data) : Math.ceil(block.data.length / 4);
+      return estimateBase64DocumentTokens(block.data, mime, countTokens);
     }
     return URL_DOCUMENT_FALLBACK_TOKENS;
   }
@@ -276,9 +362,7 @@ function estimateDocumentBlockTokens(
       if (mime.startsWith('image/')) {
         return estimateImageDataTokens(block.source.data, isClaude);
       }
-      return countTokens != null
-        ? countTokens(block.source.data)
-        : Math.ceil(block.source.data.length / 4);
+      return estimateBase64DocumentTokens(block.source.data, mime, countTokens);
     }
     if (block.source.type === 'url') {
       return URL_DOCUMENT_FALLBACK_TOKENS;
@@ -303,6 +387,14 @@ function estimateDocumentBlockTokens(
 }
 
 /**
+ * Audio and video priced by duration, inferred from the encoded size, with the margin the agents
+ * SDK's own counter adds, so the precomputed budget and the SDK's recount agree.
+ */
+function estimateTimedTokens(block: Record<string, unknown>): number {
+  return Math.ceil(estimateTimedMediaBlockTokens(block) * IMAGE_TOKEN_SAFETY_MARGIN);
+}
+
+/**
  * Google/Vertex native media blocks (`{ type: 'media', mimeType, data | fileUri }`), as built by
  * the file encoders and YouTube links. Mirrors the agents SDK's media accounting so these blocks
  * are not skipped by the precomputed context budget.
@@ -316,8 +408,7 @@ function estimateMediaBlockTokens(
   const data = typeof block.data === 'string' && block.data.length > 0 ? block.data : undefined;
 
   if (mime.startsWith('audio/') || mime.startsWith('video/')) {
-    const timed = estimateTimedMediaBlockTokens({ ...block, mimeType: mime });
-    return Math.ceil(timed * IMAGE_TOKEN_SAFETY_MARGIN);
+    return estimateTimedTokens({ ...block, mimeType: mime });
   }
   if (data == null) {
     return mime.startsWith('image/') ? 1024 : URL_DOCUMENT_FALLBACK_TOKENS;
@@ -343,7 +434,7 @@ function estimateMediaBlockTokens(
 
 /**
  * Single-pass token counter for formatted messages (plain objects with role/content/name).
- * Handles text, tool_call, image, and document content types in one iteration,
+ * Handles text, tool_call, image, document, audio and video content types in one iteration,
  * then applies Claude correction when applicable.
  */
 export function countFormattedMessageTokens(
@@ -392,6 +483,14 @@ export function countFormattedMessageTokens(
 
         if (type === 'media') {
           numTokens += estimateMediaBlockTokens(block, isClaude, countTokens);
+          continue;
+        }
+
+        /** OpenAI-compatible audio and video (OpenRouter, custom endpoints configured for media),
+         *  priced like `media`: the generic branch below skips a nested payload object and would
+         *  tokenize a bare data URL as text. */
+        if (type === ContentTypes.INPUT_AUDIO || type === ContentTypes.VIDEO_URL) {
+          numTokens += estimateTimedTokens(block);
           continue;
         }
 
@@ -458,9 +557,12 @@ export function countFormattedMessageTokens(
  * exact provider accounting, so it errs low rather than overstating the context.
  * Non-string outputs are skipped, matching {@link countFormattedMessageTokens}.
  *
- * `maxCountChars` bounds the tokenization this turn may cost — one call can request
- * several tools, so the budget spans all their results — and `countExact` returns
- * `undefined` for content it cannot count exactly. Either limit withdraws the whole
+ * `maxCountChars` bounds the tokenization this turn may cost (one call can request
+ * several tools, so the budget spans all their results). It is spent in UTF-8 bytes'
+ * worth of merge work ({@link getExactCountWork}), not characters: one long unbroken
+ * run costs the square of its byte length, so 200 KB of whitespace from a scraped page or
+ * a program's output cannot block the event loop for seconds under a budget sized
+ * for prose. `countExact` returns `undefined` for content it cannot count exactly. Either limit withdraws the whole
  * figure: a turn whose gauge is missing the retained result is better than one
  * whose exact figures absorbed a guess. The Claude framing correction is applied,
  * matching the counter that produced the snapshot.
@@ -482,7 +584,7 @@ export function countRetainedToolTokens({
     return 0;
   }
   let tokens = 0;
-  let charactersCounted = 0;
+  let workCounted = 0;
   for (const candidate of contentParts) {
     const part = candidate as ContentBlock | null | undefined;
     if (part == null || part.type !== ContentTypes.TOOL_CALL) {
@@ -495,8 +597,17 @@ export function countRetainedToolTokens({
     if (typeof output !== 'string' || output.length === 0) {
       continue;
     }
-    charactersCounted += output.length;
-    if (charactersCounted > maxCountChars) {
+    /** Work is never below length, so oversized output is refused before any scan,
+     *  and the scan itself stops at the remaining budget. */
+    const remaining = maxCountChars - workCounted;
+    if (output.length > remaining) {
+      return undefined;
+    }
+    workCounted += getExactCountWork(output, {
+      limit: remaining,
+      encoding: isClaude ? 'claude' : 'o200k_base',
+    });
+    if (workCounted > maxCountChars) {
       return undefined;
     }
     const counted = countExact(output);

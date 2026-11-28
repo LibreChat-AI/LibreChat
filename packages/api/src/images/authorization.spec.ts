@@ -749,25 +749,29 @@ describe('createImageAuthorizationMiddleware', () => {
         [`${VICTIM_ID}/secret.png`, privateBytes],
         [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}`, publicBytes],
         [`${VIEWER_ID}/profile.png`, ownerBytes],
-        [`${VIEWER_ID}/profile?draft.png`, ownerBytes],
         [`${VIEWER_ID}/profile#draft.png`, ownerBytes],
         [`${VIEWER_ID}/profile with spaces.png`, ownerBytes],
         [`${VIEWER_ID}/profile%2F.png`, ownerBytes],
-        [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}?private.png`, privateBytes],
-        [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}?manual=true`, privateBytes],
         ...assistantFilenames.map((filename) => [`${OWNER_ID}/${filename}`, publicBytes] as const),
-        [`${OWNER_ID}/company logo.png?manual=true`, privateBytes],
         [`${OWNER_ID}/company logo.png#private`, privateBytes],
         [`${OWNER_ID}/company%20logo.png`, privateBytes],
       ] as const;
-      for (const [filename, bytes] of files) {
+      const posixFiles = [
+        [`${VIEWER_ID}/profile?draft.png`, ownerBytes],
+        [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}?private.png`, privateBytes],
+        [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}?manual=true`, privateBytes],
+        [`${OWNER_ID}/company logo.png?manual=true`, privateBytes],
+      ] as const;
+      for (const [filename, bytes] of process.platform === 'win32'
+        ? files
+        : [...files, ...posixFiles]) {
         writeFileSync(join(imageRoot, filename), bytes);
         writeFileSync(join(imageRoot, `${filename}.gz`), gzipSync(bytes));
       }
     });
 
     afterAll(() => {
-      rmSync(imageRoot, { recursive: true, force: true });
+      rmSync(imageRoot, { recursive: true, force: true, maxRetries: 3 });
     });
 
     describe.each(['', '/chat'])('base path "%s"', (basePath) => {
@@ -843,7 +847,7 @@ describe('createImageAuthorizationMiddleware', () => {
 
       it.each([
         'profile.png?manual=true&ignored=%ZZ',
-        'profile%3Fdraft.png',
+        ...(process.platform === 'win32' ? [] : ['profile%3Fdraft.png']),
         'profile%23draft.png',
         'profile%20with%20spaces.png',
         'profile%252F.png',

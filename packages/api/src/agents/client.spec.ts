@@ -1,7 +1,8 @@
 import { Tokenizer as AiTokenizer } from 'ai-tokenizer';
 import { Providers, StandardGraph } from '@librechat/agents';
-import { HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage, HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
 import { ContentTypes, DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS } from 'librechat-data-provider';
+import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { TMessage } from 'librechat-data-provider';
 import type { LCTool } from '@librechat/agents';
 import type { FormattedMessageWithContent } from './client';
@@ -56,6 +57,175 @@ describe('countFormattedMessageTokens media blocks', () => {
   it('counts inline images and unknown media types', () => {
     expect(added({ type: 'media', mimeType: 'image/png', data: 'AAAA' })).toBeGreaterThan(0);
     expect(added({ type: 'media', mimeType: 'text/csv', data: 'AAAA' })).toBeGreaterThan(0);
+  });
+
+  /** The parts the audio and video encoders build for OpenRouter and custom endpoints. */
+  const base64 = (megabytes: number) => Buffer.alloc(megabytes * 1024 * 1024, 7).toString('base64');
+  const inputAudio = (data?: string) => ({
+    type: 'input_audio',
+    input_audio: { data, format: 'mp3' },
+  });
+  const videoUrl = (url: string) => ({ type: 'video_url', video_url: { url } });
+  const encodings: EncodingName[] = ['o200k_base', 'claude'];
+
+  it.each(encodings)('counts OpenAI-compatible audio like Gemini media with %s', (encoding) => {
+    const data = base64(2);
+    const audio = added(inputAudio(data), encoding);
+
+    expect(audio).toBe(added({ type: 'media', mimeType: 'audio/mpeg', data }, encoding));
+    expect(audio).toBeGreaterThan(4000);
+  });
+
+  it.each(encodings)('counts an OpenAI-compatible video like Gemini media with %s', (encoding) => {
+    const data = base64(10);
+    const video = added(videoUrl(`data:video/mp4;base64,${data}`), encoding);
+
+    expect(video).toBe(added({ type: 'media', mimeType: 'video/mp4', data }, encoding));
+    expect(video).toBeGreaterThan(10_000);
+  });
+
+  it('counts a remote video link and audio without data at the duration fallback', () => {
+    const remote = 'https://cdn.example.com/clip.mp4';
+
+    expect(added(videoUrl(remote))).toBe(
+      added({ type: 'media', mimeType: 'video/mp4', fileUri: remote }),
+    );
+    expect(added(inputAudio())).toBe(
+      added({ type: 'media', mimeType: 'audio/mpeg', fileUri: 'gs://bucket/call.mp3' }),
+    );
+    expect(added({ type: 'input_audio', input_audio: null })).toBe(added(inputAudio()));
+    expect(added({ type: 'video_url', video_url: {} })).toBe(added(videoUrl(remote)));
+  });
+
+  it.each(encodings)(
+    'adds what the run token counter adds for the same part with %s',
+    async (encoding) => {
+      const counter = await createCachedTokenCounter(encoding);
+      const runAdded = (block: { type: string }) =>
+        counter(new HumanMessage({ content: [text, block] })) -
+        counter(new HumanMessage({ content: [text] }));
+      const video = `data:video/mp4;base64,${base64(10)}`;
+      const blocks = [
+        inputAudio(base64(2)),
+        videoUrl(video),
+        { type: 'video_url', video_url: video },
+        videoUrl('https://cdn.example.com/clip.mp4'),
+      ];
+
+      for (const block of blocks) {
+        expect(added(block, encoding)).toBe(runAdded(block));
+      }
+    },
+  );
+
+  it('prunes an earlier OpenRouter recording that no longer fits the context window', async () => {
+    const recording = [{ type: 'text', text: 'Transcribe this call.' }, inputAudio(base64(2))];
+    const reply = 'The caller asks about an unpaid invoice.';
+    const question = 'Which invoice was it?';
+    const history = [
+      { role: 'user', content: recording },
+      { role: 'assistant', content: reply },
+      { role: 'user', content: question },
+    ];
+    const graph = new StandardGraph({
+      runId: 'pruned-openrouter-audio',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.OPENROUTER,
+          maxContextTokens: 3000,
+          summarizationEnabled: false,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+      indexTokenCountMap: Object.fromEntries(
+        history.map((message, index) => [
+          index,
+          countFormattedMessageTokens(message, 'o200k_base'),
+        ]),
+      ),
+    });
+    graph.overrideTestModel(['Invoice 42.']);
+    const sent: BaseMessage[] = [];
+    await graph.createAgentNode('primary').invoke(
+      {
+        messages: [
+          new HumanMessage({ content: recording }),
+          new AIMessage(reply),
+          new HumanMessage(question),
+        ],
+      },
+      {
+        configurable: { thread_id: graph.runId },
+        recursionLimit: 12,
+        callbacks: [{ handleChatModelStart: (_llm, batches) => sent.push(...batches.flat()) }],
+      },
+    );
+
+    const sentAudio = sent.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type === 'input_audio'),
+    );
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sentAudio).toBe(false);
+    expect(sent[sent.length - 1]?.content).toBe(question);
+  });
+
+  it('rejects an OpenRouter recording larger than the context window before invoking the model', async () => {
+    const content = [text, videoUrl(`data:video/mp4;base64,${base64(10)}`)];
+    const graph = new StandardGraph({
+      runId: 'oversized-openrouter-video',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.OPENROUTER,
+          maxContextTokens: 8000,
+          summarizationEnabled: false,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+      indexTokenCountMap: {
+        0: countFormattedMessageTokens({ role: 'user', content }, 'o200k_base'),
+      },
+    });
+    graph.overrideTestModel(['should not be called']);
+    await expect(
+      graph
+        .createAgentNode('primary')
+        .invoke(
+          { messages: [new HumanMessage({ content })] },
+          { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+        ),
+    ).rejects.toThrow('empty_messages');
+  });
+
+  it('counts a base64 text document by its decoded text, not its base64', () => {
+    const csv = 'id,name,amount\n'.concat('7,Zoë,12.50\n'.repeat(4000));
+    const block = {
+      type: 'file',
+      source_type: 'base64',
+      mime_type: 'text/csv',
+      data: Buffer.from(csv).toString('base64'),
+      metadata: { name: 'ledger_csv' },
+    };
+    const decoded = added({ type: 'text', text: csv });
+
+    expect(added(block)).toBe(decoded);
+  });
+
+  it('counts a base64 binary document by its decoded size', () => {
+    const bytes = 400_000;
+    const block = {
+      type: 'file',
+      source_type: 'base64',
+      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      data: Buffer.alloc(bytes, 7).toString('base64'),
+      metadata: { name: 'report_docx' },
+    };
+
+    expect(added(block)).toBe(Math.ceil((block.data.length * 3) / 4 / 4));
+    expect(added(block)).toBeGreaterThanOrEqual(bytes / 4);
   });
 
   it('rejects an oversized Google PDF before invoking the model', async () => {
@@ -343,8 +513,8 @@ describe('countRetainedToolTokens', () => {
     expect(
       countRetainedToolTokens({
         contentParts: [
-          toolPart('call_1', 'grep', 'a'.repeat(60)),
-          toolPart('call_2', 'read_file', 'b'.repeat(60)),
+          toolPart('call_1', 'grep', 'ab '.repeat(20)),
+          toolPart('call_2', 'read_file', 'cd '.repeat(20)),
         ],
         priorToolCallIds: new Set(),
         countExact: counted,
@@ -353,6 +523,80 @@ describe('countRetainedToolTokens', () => {
     ).toBeUndefined();
     /** It stops at the budget rather than counting the rest for nothing. */
     expect(counted).toHaveBeenCalledTimes(1);
+  });
+
+  it('charges a long unbroken run its quadratic merge work, not its length', () => {
+    /** 200 KB of whitespace is far under the 8 MiB character ceiling, yet merging it as
+     *  one piece blocks the event loop for ~25 s, so the budget must refuse it. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'web_search', `results${' '.repeat(200_000)}end`)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('charges a multi-byte run by its UTF-8 bytes', () => {
+    /** 16,000 astral letters are 64,000 bytes in one piece and take ~2 s to merge.
+     *  Charged per character they would fit the default ceiling; per byte they do not. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', '\u{1D400}'.repeat(16_000))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('charges an unbroken digit run quadratically for the Claude encoding only', () => {
+    /** o200k splits digits into threes; the Claude encoding merges the whole run. */
+    const output = '7'.repeat(200_000);
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        isClaude: true,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
+  });
+
+  it('refuses output longer than the remaining budget without scanning it', () => {
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', 'word '.repeat(100))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        maxCountChars: 100,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('still counts ordinary text up to the ceiling', () => {
+    const output = 'The quick brown fox jumps over the lazy dog. '.repeat(20_000);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
   });
 
   it('defaults the budget to the shipped ceiling', () => {

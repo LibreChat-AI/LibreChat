@@ -38,6 +38,7 @@ export interface ISharedLink {
   _id?: Types.ObjectId;
   conversationId: string;
   title?: string;
+  spec?: string;
   user?: string;
   messages?: Types.ObjectId[];
   shareId?: string;
@@ -56,6 +57,8 @@ export interface ISharedLink {
   snapshotFiles?: boolean;
   /** Per-share file snapshot referenced by the share-scoped file routes. */
   fileSnapshots?: SharedFileSnapshot[];
+  /** The key the link was created for, cleared once it no longer holds it; never selected. */
+  claim?: string;
 }
 
 export interface ShareServiceError extends Error {

@@ -3,7 +3,7 @@ import * as Ariakit from '@ariakit/react';
 import { Button } from '@librechat/client';
 import { VisuallyHidden } from '@ariakit/react';
 import { ChevronDown, FileText } from 'lucide-react';
-import { getCleanDomain } from '@librechat/chat/components';
+import { getCleanDomain, FaviconImage } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -27,22 +27,7 @@ interface SourceHovercardProps {
   fileRelevance?: number;
 }
 
-function getFaviconUrl(domain: string) {
-  return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
-}
-
-export { getCleanDomain };
-
-export function FaviconImage({ domain, className = '' }: { domain: string; className?: string }) {
-  return (
-    <img
-      src={getFaviconUrl(domain)}
-      alt={domain}
-      className={cn('size-4 shrink-0 rounded-full', className)}
-      loading="lazy"
-    />
-  );
-}
+export { getCleanDomain, FaviconImage };
 
 const hovercardClass = cn(
   'z-[999] w-[20rem] max-w-[calc(100vw-2rem)] rounded-xl border border-border-medium bg-surface-secondary p-3 text-text-primary shadow-lg',

@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.describe('Endpoints Presets suite', () => {
   test('Endpoints Suite', async ({ page }) => {
-    await page.goto('http://localhost:3080/', { timeout: 5000 });
+    await page.goto('/', { timeout: 5000 });
     await page.getByTestId('new-conversation-menu').click();
 
     // includes the icon + endpoint names in obj property

@@ -42,7 +42,7 @@ const SHOWCASE_TEXT = [
 
 test.describe('artifact trigger rows', () => {
   test(
-    'showcase artifacts share one tool row axis ' +
+    'authored artifact cards align in the transcript above the Mermaid row ' +
       '@scenario:artifact-triggers-share-one-tool-row-axis',
     async ({ page }) => {
       const conversationId = randomUUID();
@@ -65,65 +65,44 @@ test.describe('artifact trigger rows', () => {
         await page.goto(`/c/${conversationId}`, { timeout: 10000 });
 
         const messages = messagesView(page);
-        const rows = messages.locator('[data-artifact-trigger]');
-        await expect(rows).toHaveCount(4);
-
-        for (let index = 0; index < (await rows.count()); index++) {
-          const row = rows.nth(index);
-          await row.scrollIntoViewIfNeeded();
-          await expect(row).toBeVisible();
-        }
-
-        const boxes = await rows.evaluateAll((elements) =>
-          elements.map((element) => {
-            const box = element.getBoundingClientRect();
-            return { x: box.x, y: box.y + window.scrollY };
-          }),
-        );
-        expect(boxes).toHaveLength(4);
-        for (let index = 1; index < boxes.length; index++) {
-          expect(boxes[index].y).toBeGreaterThan(boxes[index - 1].y);
-          expect(Math.abs(boxes[index].x - boxes[0].x)).toBeLessThanOrEqual(1);
-        }
-
-        const expectedRows = [
+        const cards = messages.getByTestId('authored-artifact-card');
+        const expectedCards = [
           ['dashboard.html', 'HTML'],
           ['ingest.py', 'python'],
           ['schema.sql', 'sql'],
           ['findings.md', 'Markdown'],
         ] as const;
-        for (const [title, format] of expectedRows) {
-          const row = rows.filter({ hasText: title });
-          await expect(row).toHaveCount(1);
-          await expect(row.getByText(format, { exact: true })).toBeVisible();
+        await expect(cards).toHaveCount(expectedCards.length);
+        for (const [index, [title, format]] of expectedCards.entries()) {
+          const card = cards.nth(index);
+          await card.scrollIntoViewIfNeeded();
+          await expect(card.getByText(title, { exact: true })).toBeVisible();
+          await expect(card.getByText(format, { exact: true })).toBeVisible();
+          await expect(card.getByRole('status')).toHaveText('Ready');
         }
 
-        const openMermaidButton = messages.getByRole('button', {
-          name: 'Open as artifact',
-          exact: true,
-        });
-        await openMermaidButton.click();
-
-        const mermaidRow = messages.locator('[data-artifact-trigger^="mermaid-artifact-"]');
-        await expect(mermaidRow).toHaveCount(1);
-        await expect(mermaidRow).toBeVisible();
-        await expect(rows).toHaveCount(5);
-        await expect(rows.nth(4)).toHaveAttribute('data-artifact-trigger', /^mermaid-artifact-/);
-
-        /* Opening an artifact narrows the chat column, so the axis is only
-         * meaningful when every row is measured in the same layout state. */
-        const finalBoxes = await rows.evaluateAll((elements) =>
+        const boxes = await cards.evaluateAll((elements) =>
           elements.map((element) => {
             const box = element.getBoundingClientRect();
-            return { x: box.x, y: box.y + window.scrollY };
+            return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
           }),
         );
-        expect(finalBoxes).toHaveLength(5);
-        for (let index = 1; index < finalBoxes.length; index++) {
-          expect(finalBoxes[index].y).toBeGreaterThan(finalBoxes[index - 1].y);
-          expect(Math.abs(finalBoxes[index].x - finalBoxes[0].x)).toBeLessThanOrEqual(1);
+        expect(boxes).toHaveLength(expectedCards.length);
+        for (let index = 1; index < boxes.length; index++) {
+          expect(boxes[index].top).toBeGreaterThanOrEqual(boxes[index - 1].bottom);
+          expect(Math.abs(boxes[index].left - boxes[0].left)).toBeLessThanOrEqual(1);
+          expect(Math.abs(boxes[index].right - boxes[0].right)).toBeLessThanOrEqual(1);
         }
+
+        await messages.getByRole('button', { name: 'Open as artifact', exact: true }).click();
+        const mermaidRow = messages.locator('[data-artifact-trigger^="mermaid-artifact-"]');
         await expect(mermaidRow.getByText('Diagram', { exact: true })).toBeVisible();
+        const exhibits = cards.or(mermaidRow);
+        await expect(exhibits).toHaveCount(expectedCards.length + 1);
+        await expect(exhibits.last()).toHaveAttribute(
+          'data-artifact-trigger',
+          /^mermaid-artifact-/,
+        );
       } finally {
         await deleteMessagesByConversation([conversationId]);
         await deleteConversations([conversationId]);
@@ -132,7 +111,7 @@ test.describe('artifact trigger rows', () => {
   );
 
   test(
-    'artifact rows announce preview or source honestly ' +
+    'artifact actions announce preview or source honestly ' +
       '@scenario:artifact-row-announces-preview-or-source',
     async ({ page }) => {
       const conversationId = randomUUID();
@@ -155,25 +134,23 @@ test.describe('artifact trigger rows', () => {
         await page.goto(`/c/${conversationId}`, { timeout: 10000 });
 
         const messages = messagesView(page);
-        const rows = messages.locator('[data-artifact-trigger]');
-        await expect(rows).toHaveCount(4);
-
-        const dashboard = rows.filter({ hasText: 'dashboard.html' });
-        await expect(dashboard).toHaveAccessibleName(
-          /dashboard\.html.*HTML.*Opens as a rendered preview/,
+        const open = (title: string) =>
+          messages.getByRole('button', { name: `Open artifact: ${title}.`, exact: false });
+        await expect(open('dashboard.html')).toHaveAccessibleName(
+          'Open artifact: dashboard.html. Opens as a rendered preview',
+        );
+        await expect(open('findings.md')).toHaveAccessibleName(
+          'Open artifact: findings.md. Opens as a rendered preview',
         );
 
-        const ingest = rows.filter({ hasText: 'ingest.py' });
-        await expect(ingest).toHaveAccessibleName(/ingest\.py.*python.*Opens as source/);
-
-        const findings = rows.filter({ hasText: 'findings.md' });
-        await expect(findings).toHaveAccessibleName(
-          /findings\.md.*Markdown.*Opens as a rendered preview/,
-        );
-
+        const ingest = open('ingest.py');
+        await expect(ingest).toHaveAccessibleName('Open artifact: ingest.py. Opens as source');
         await ingest.click();
-        await expect(ingest).toHaveAttribute('aria-expanded', 'true');
-        await expect(ingest).toHaveAccessibleName(/Click to close/);
+        const close = messages.getByRole('button', {
+          name: 'Close artifact: ingest.py. Opens as source',
+          exact: true,
+        });
+        await expect(close).toHaveAttribute('aria-expanded', 'true');
 
         const panel = page.locator('#artifact-viewer');
         await expect(panel).toBeVisible();

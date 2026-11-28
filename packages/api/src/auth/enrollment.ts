@@ -26,6 +26,7 @@ import {
   verifyTwoFactorLoginChallengeToken,
 } from './twoFactor';
 import { getAuthorizingCredential } from './gates';
+import { getRefreshGraceMs } from './localRefresh';
 import { sanitizeUserForResponse } from './user';
 import { clearCloudFrontCookies } from '~/cdn';
 
@@ -82,7 +83,7 @@ export interface EnrollmentControllerDependencies
   }) => Promise<boolean>;
   findSession: (
     query: { userId: string; refreshToken: string },
-    options: { lean: false },
+    options: { lean: false; graceMs?: number },
   ) => Promise<RotatableSession | null>;
   deleteSession: (query: { sessionId: string }) => Promise<unknown>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
@@ -364,10 +365,18 @@ export function createEnrollmentControllers(
       }
 
       const refreshToken = req.cookies?.refreshToken;
-      /** Neither lookup needs the other's result, so they start together. */
+      /**
+       * Neither lookup needs the other's result, so they start together. The cookie may carry a
+       * token another tab's refresh just replaced, which still names the session to end.
+       */
       const [user, session] = await Promise.all([
         deps.getUserById(userId, CANCEL_ENROLLMENT_PROJECTION),
-        refreshToken ? deps.findSession({ userId, refreshToken }, { lean: false }) : null,
+        refreshToken
+          ? deps.findSession(
+              { userId, refreshToken },
+              { lean: false, graceMs: getRefreshGraceMs() },
+            )
+          : null,
       ]);
       /** Cleared before any fallible write, so a failure cannot leave the credential in the browser. */
       clearSessionCookies(res, user ?? {}, userId, deps);

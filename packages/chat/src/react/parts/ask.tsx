@@ -32,6 +32,20 @@ export const releasedComposerTextAtom: PrimitiveAtom<Record<string, ReleasedComp
   Record<string, ReleasedComposerStash>
 >({});
 
+/** What the live pause shares with the composer. Omitted outside a live chat. */
+export type AskCardMode = {
+  popoverVisible: boolean;
+  collapsed: boolean;
+  expand: () => void;
+  liveAsk: { actionId: string } | null;
+  checked: number[];
+  toggleChecked: (index: number) => void;
+  submitOption: (index: number) => void;
+  submitAnswer: (values: string[]) => void;
+  answerText: string;
+  setAnswerText: (value: string) => void;
+};
+
 /** Submission lifecycle shared by composer and message-content surfaces. */
 export type AskAnswerStatus = 'idle' | 'submitting' | 'submitted' | 'expired' | 'error';
 export const askSubmitStatusAtom: PrimitiveAtom<Record<string, AskAnswerStatus>> = atom<

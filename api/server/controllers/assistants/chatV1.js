@@ -20,6 +20,7 @@ const {
   resolveAssistantProjectTurn,
   joinChatProjectInstructions,
   applyForcedTemporaryRequest,
+  createRecoveryClaim,
   getAssistantRun,
 } = require('@librechat/api');
 const {
@@ -39,6 +40,7 @@ const {
   initThread,
   recordUsage,
   saveUserMessage,
+  saveCutOffReply,
   checkMessageGaps,
   addThreadMetadata,
   saveAssistantMessage,
@@ -63,7 +65,7 @@ const {
   getFiles,
   getChatProject,
 } = require('~/models');
-const { logViolation, getLogStores } = require('~/cache');
+const { logViolation, getLogStores, distributedLock } = require('~/cache');
 const { getOpenAIClient } = require('./helpers');
 
 /**
@@ -137,6 +139,11 @@ const chatV1 = async (req, res) => {
   /** @type {Run | undefined} - The completed run, undefined if incomplete */
   let completedRun;
   let contentRejected = false;
+  const claim = createRecoveryClaim({
+    cache,
+    lock: distributedLock,
+    completedRun: () => completedRun,
+  });
   const balanceReservations = createBalanceReservations();
 
   const handleError = assistantRun.guardErrors(res, async (error) => {
@@ -187,12 +194,10 @@ const chatV1 = async (req, res) => {
     await sleep(2000);
 
     try {
-      const status = await cache.get(cacheKey);
-      if (status === 'cancelled') {
-        logger.debug('[/assistants/chat/] Run already cancelled');
+      if (!(await claim({ key: cacheKey, run_id, error }))) {
+        logger.debug('[/assistants/chat/] Run already stopped or recovered');
         return res.end();
       }
-      await cache.delete(cacheKey);
       const cancelledRun = await openai.beta.threads.runs.cancel(run_id, { thread_id });
       logger.debug('[/assistants/chat/] Cancelled run:', cancelledRun);
     } catch (error) {
@@ -729,7 +734,20 @@ const chatV1 = async (req, res) => {
     });
 
     if (response.run.status === RunStatus.CANCELLED) {
-      logger.debug('[/assistants/chat/] Run cancelled, handled by `abortRun`');
+      logger.debug('[/assistants/chat/] Run cancelled, read back by `abortRun`');
+      await saveCutOffReply({
+        openai,
+        run: response,
+        thread_id,
+        conversationId,
+        messageId: responseMessageId,
+        parentMessageId: userMessageId,
+        userMessage: userMessagePromise,
+        assistant_id,
+        endpoint,
+        spec: endpointOption.spec,
+        iconURL: endpointOption.iconURL,
+      });
       return res.end();
     }
 

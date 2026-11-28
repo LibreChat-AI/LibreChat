@@ -4,15 +4,12 @@
 import React, { Profiler, useState } from 'react';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
-
-import QuoteButton from '../QuoteButton';
-import { mainTextareaId } from '../../../core/composer';
 import { pendingQuotesByConvoId } from '../../../react/composer';
+import { initEnglish } from '../../../__fixtures__/i18n';
+import { mainTextareaId } from '../../../core/composer';
+import QuoteButton from '../QuoteButton';
+
+beforeAll(initEnglish);
 
 const CONVO_ID = 'convo-1';
 const SELECTED_TEXT = 'Selected assistant text';
@@ -402,6 +399,7 @@ describe('QuoteButton lifecycle', () => {
     fireEvent.keyDown(document, { key: 'Shift' });
     fireEvent.keyUp(document, { key: 'Shift' });
     expect(button).toBeVisible();
+    expect(button).toHaveAccessibleName('Add to chat');
     expect(button).toHaveAttribute('data-touch', 'false');
     fireEvent.click(button, { detail: 0 });
     expect(screen.getByTestId('quotes')).toHaveTextContent(JSON.stringify([SELECTED_TEXT]));

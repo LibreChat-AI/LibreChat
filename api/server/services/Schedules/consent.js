@@ -1,3 +1,5 @@
+const mongoose = require('mongoose');
+const { createScheduleMCPConsentStorage } = require('@librechat/data-schemas');
 const {
   getAgentCheckpointer,
   GenerationJobManager,
@@ -11,7 +13,12 @@ const { resolveAgentFireAccess } = require('./access');
 const methods = require('~/models');
 
 module.exports = createScheduleMCPRuntimeHost({
-  methods,
+  storage: createScheduleMCPConsentStorage(mongoose),
+  methods: {
+    getScheduleById: methods.getScheduleById,
+    getScheduleRunMCP: methods.getScheduleRunMCP,
+    getScheduleConversationMCP: methods.getScheduleConversationMCP,
+  },
   getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   findUser: (id) => methods.findUser({ _id: id }),
   getRoleByName: methods.getRoleByName,
@@ -33,6 +40,7 @@ module.exports = createScheduleMCPRuntimeHost({
       }),
     getNodes: methods.getAgentGraphNodes,
     getModelsConfig: (user) => getModelsConfig({ user }),
+    ensureConfigServers: (config) => getMCPServersRegistry().ensureConfigServers(config),
     getServers: (user, config) =>
       getMCPServersRegistry().getAllServerConfigs(user.id, config, user.role),
   },

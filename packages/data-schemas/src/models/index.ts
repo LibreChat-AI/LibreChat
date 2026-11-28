@@ -13,8 +13,10 @@ import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
+import { createAgentEventSubscriptionModel } from './subscription';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillUploadIntentModel } from './skillUploadIntent';
+import { createAgentEventConnectionModel } from './connection';
 import { createSubagentContentModel } from './subagentContent';
 import { createChannelIdentityModel } from './channelIdentity';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
@@ -127,6 +129,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentTriggerUserPurge: ReturnType<typeof createAgentTriggerUserPurgeModel>;
   AgentQueuedTurn: ReturnType<typeof createAgentQueuedTurnModel>;
   AgentQueuedTurnSequence: ReturnType<typeof createAgentQueuedTurnSequenceModel>;
+  AgentEventConnection: ReturnType<typeof createAgentEventConnectionModel>;
+  AgentEventSubscription: ReturnType<typeof createAgentEventSubscriptionModel>;
   Schedule: ReturnType<typeof createScheduleModel>;
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
@@ -193,6 +197,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentTriggerUserPurge: createAgentTriggerUserPurgeModel(mongoose),
     AgentQueuedTurn: createAgentQueuedTurnModel(mongoose),
     AgentQueuedTurnSequence: createAgentQueuedTurnSequenceModel(mongoose),
+    AgentEventConnection: createAgentEventConnectionModel(mongoose),
+    AgentEventSubscription: createAgentEventSubscriptionModel(mongoose),
     Schedule: createScheduleModel(mongoose),
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),

@@ -121,10 +121,10 @@ function mergeModelSpecPreset(
   return { parsedBody: merged, appliedPrivateFields };
 }
 
-export function findModelSpecByName(
-  modelSpecs: Pick<TSpecsConfig, 'list'> | undefined,
+export function findModelSpecByName<Spec extends { name?: string }>(
+  modelSpecs: { list?: readonly Spec[] } | undefined,
   spec: string | null | undefined,
-): TModelSpec | undefined {
+): Spec | undefined {
   if (!spec) {
     return undefined;
   }

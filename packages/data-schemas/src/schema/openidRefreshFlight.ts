@@ -33,6 +33,14 @@ const openidRefreshFlightSchema: Schema<IOpenIDRefreshFlight> = new Schema<IOpen
   revocationRequestedAt: {
     type: Date,
   },
+  usable: {
+    ownerId: {
+      type: String,
+    },
+    until: {
+      type: Date,
+    },
+  },
   createdAt: {
     type: Date,
     required: true,

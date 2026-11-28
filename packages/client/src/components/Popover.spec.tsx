@@ -46,6 +46,8 @@ describe('Popover', () => {
       'border-border-light',
       'rounded-theme-popover',
       'motion-reduce:animate-none',
+      'motion-safe:data-[state=open]:animate-in',
+      'motion-safe:data-[state=closed]:animate-out',
       'custom-panel',
     );
   });

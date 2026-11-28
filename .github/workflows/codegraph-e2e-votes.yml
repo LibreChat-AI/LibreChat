@@ -86,8 +86,8 @@ jobs:
     # ~7.7 s per test (17 min for a tenth of 1,321). VOTE_TEST_MINUTES gives the tests 28 min
     # (2.1x the plan); the job adds setup (about 2.5 min with npm ci, 70 s of it) and margin.
     timeout-minutes: 40
-    # Separate runners isolate each shard's user, MongoDB and fixture state. Keep workers: 1
-    # in Playwright; shared-user cleanup is not worker-safe.
+    # Separate runners isolate each shard's MongoDB and fixture state. Within a shard, every
+    # Playwright worker signs in as its own user (e2e/README.md, "--workers").
     strategy:
       fail-fast: false
       matrix:

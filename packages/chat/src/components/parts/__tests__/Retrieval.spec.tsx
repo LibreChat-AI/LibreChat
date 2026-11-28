@@ -10,24 +10,10 @@ import type { FilesHost } from '../../../react/files';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { FilesHostProvider } from '../../../react/files';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import RetrievalCall from '../Retrieval';
 
-const TRANSLATIONS: Record<string, string> = {
-  com_ui_preview: 'Preview',
-  com_ui_relevance: 'Relevance',
-  com_file_pages: 'Pages: {{pages}}',
-  com_ui_retrieved_files: 'Searched your files',
-  com_ui_searching_files: 'Searching your files',
-};
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, string>) =>
-    Object.entries(values ?? {}).reduce(
-      (text, [name, value]) => text.replace(`{{${name}}}`, value),
-      TRANSLATIONS[key] ?? key,
-    ),
-}));
+beforeAll(initEnglish);
 
 const EXCERPT = 'Revenue grew twelve percent.';
 const OUTPUT = ['File: quarterly-report.pdf', 'Relevance: 0.92', `Content: ${EXCERPT}`].join('\n');
@@ -78,18 +64,6 @@ function renderRetrieval({ files, onPreview, props }: Options = {}) {
         isSubmitting={false}
         output={OUTPUT}
         attachments={attachments}
-        renderProgress={(progress) => (
-          <button
-            type="button"
-            aria-expanded={progress.isExpanded}
-            disabled={progress.onClick == null}
-            onClick={progress.onClick}
-          >
-            {progress.finishedText}
-          </button>
-        )}
-        renderOutput={(text) => <p>{text}</p>}
-        renderIcon={() => null}
         {...props}
       />
     </MessagePartsHostProvider>
@@ -99,6 +73,25 @@ function renderRetrieval({ files, onPreview, props }: Options = {}) {
   }
   return render(<FilesHostProvider host={files}>{row}</FilesHostProvider>);
 }
+
+jest.mock('../ProgressText', () => ({
+  __esModule: true,
+  default: (progress: { isExpanded: boolean; onClick?: () => void; finishedText: string }) => (
+    <button
+      type="button"
+      aria-expanded={progress.isExpanded}
+      disabled={progress.onClick == null}
+      onClick={progress.onClick}
+    >
+      {progress.finishedText}
+    </button>
+  ),
+}));
+
+jest.mock('../OutputRenderer', () => ({
+  __esModule: true,
+  default: ({ text }: { text: string }) => <p>{text}</p>,
+}));
 
 describe('RetrievalCall', () => {
   it('lists the matched files from the attachment sources once opened', () => {

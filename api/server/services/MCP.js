@@ -25,6 +25,7 @@ const {
   sanitizeGeminiSchema,
   processMCPEnv,
   createAgentMCPTool,
+  reuseMCPAdmission,
   preProcessGraphTokens,
   createMCPReauthenticationPrompt,
   createMCPInitializationOAuthPrompts,
@@ -57,8 +58,8 @@ const {
   resolveMCPClientCapabilityProfile,
   getMCPConnectionPoolKey,
   getMCPUserConnectionPoolKey,
-  bindScheduledMCPInvocation,
-  ScheduledMCPPolicyError,
+  bindRunGrantInvocation,
+  RunGrantPolicyError,
 } = require('@librechat/api');
 const {
   Time,
@@ -962,6 +963,7 @@ async function createMCPToolsImpl({
       recoveryPolicy,
       availableTools: result.availableTools,
       serverName,
+      domainAdmitted: true,
       /** Model-facing key: matches the normalized `availableTools` keys and
        *  the instance name `createToolInstance` will assign. */
       toolKey: `${keyToolNames.get(tool.name) ?? tool.name}${Constants.mcp_delimiter}${keyServerName}`,
@@ -1005,6 +1007,7 @@ async function createMCPToolsImpl({
  * @param {string} [params.serverName] - Resolved raw MCP server name from tool loading.
  * @param {(availableTools: LCAvailableTools) => void} [params.onAvailableTools]
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
+ * @param {boolean} [params.domainAdmitted] - The caller already admitted this server's domain for this call.
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
 function createMCPTool(params) {
@@ -1037,6 +1040,7 @@ async function createMCPToolImpl({
   jobCreatedAt,
   unattended,
   recoveryPolicy,
+  domainAdmitted = false,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** `loadTools` already resolved the server for this key; parsing is the fallback. */
@@ -1096,15 +1100,17 @@ async function createMCPToolImpl({
     recoveryPolicy ??= appConfig?.mcpSettings?.catalogRecovery;
     const allowedDomains = appConfig?.mcpSettings?.allowedDomains;
     const allowedAddresses = appConfig?.mcpSettings?.allowedAddresses;
-    const isDomainAllowed = await isEarlyDomainAllowed({
-      serverConfig,
-      user,
-      requestBody,
-      userMCPAuthMap,
-      serverName,
-      allowedDomains,
-      allowedAddresses,
-    });
+    const isDomainAllowed = await reuseMCPAdmission(domainAdmitted, () =>
+      isEarlyDomainAllowed({
+        serverConfig,
+        user,
+        requestBody,
+        userMCPAuthMap,
+        serverName,
+        allowedDomains,
+        allowedAddresses,
+      }),
+    );
     if (!isDomainAllowed) {
       logger.warn('[MCP] Domain no longer allowed; skipping tool creation');
       return undefined;
@@ -1208,7 +1214,7 @@ async function createMCPToolImpl({
       agentId,
       toolName,
     ),
-    scheduledMCPInvocation: bindScheduledMCPInvocation(requestScopedConnections, agentId, toolName),
+    scheduledMCPInvocation: bindRunGrantInvocation(requestScopedConnections, agentId, toolName),
     res,
     mcpPermissionContext,
     user,
@@ -1452,7 +1458,7 @@ function createToolInstance({
       /** Carries the actionable re-auth message; the substring heuristic below would misreport it as an OAuth configuration problem */
       if (
         error instanceof ScheduledMCPBearerError ||
-        error instanceof ScheduledMCPPolicyError ||
+        error instanceof RunGrantPolicyError ||
         error instanceof OpenIDReauthRequiredError ||
         error instanceof MCPAuthenticationRefreshError ||
         error instanceof MCPAuthenticationRejectedError

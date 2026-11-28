@@ -6,6 +6,17 @@ const sessionSchema: Schema<ISession> = new Schema({
     type: String,
     required: true,
   },
+  /** The tokens the latest rotations replaced, oldest first, which `findSession` can match briefly. */
+  previousRefreshTokens: {
+    type: [
+      {
+        _id: false,
+        hash: { type: String, required: true },
+        rotatedAt: { type: Date, required: true },
+      },
+    ],
+    default: undefined,
+  },
   expiration: {
     type: Date,
     required: true,

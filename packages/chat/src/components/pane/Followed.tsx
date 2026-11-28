@@ -88,7 +88,10 @@ export function ContractThread({
 }: {
   contract: ChatContract;
   /** The conversation as read so far: its rows, and whether older ones are still to be read. */
-  followed: FollowedChat;
+  followed: Pick<
+    FollowedChat,
+    'messages' | 'hasEarlier' | 'isLoadingEarlier' | 'isEarlierError' | 'loadEarlier'
+  >;
   slots?: ChatScreenMessagesSlots;
   userAuthor?: TMessageAuthor;
   /** Whether this is a conversation of the reader's own, whose replies they catch up with here. */

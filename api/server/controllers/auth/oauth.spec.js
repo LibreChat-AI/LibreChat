@@ -163,10 +163,10 @@ describe('createOAuthHandler', () => {
 
     await handler(req, res, next);
 
+    /** A sign-in replaces no refresh token; naming its own would let the first refresh rejoin it. */
     expect(mockSendOpenIDAuthResponse).toHaveBeenCalledWith({
       tokenset: req.user.tokenset,
       user: req.user,
-      existingRefreshToken: 'openid-refresh-token',
       openidSubject: undefined,
       openidIssuer: undefined,
       discardSessionTokens: true,

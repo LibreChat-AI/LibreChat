@@ -32,6 +32,7 @@ jest.mock('./validation', () => ({
 }));
 
 import { discoverConnectedAgents, resolveSubagentGraphs } from './discovery';
+import { getResumeAgentSnapshot } from './hitl/inspection';
 
 const makeReq = (userId = 'u1', role = 'USER'): ServerRequest =>
   ({
@@ -131,6 +132,30 @@ describe('discoverConnectedAgents', () => {
     expect(result.edges).toHaveLength(2);
     expect(onAgentInitialized).toHaveBeenCalledTimes(2);
     expect(onAgentInitialized.mock.calls.map((c) => c[0])).toEqual(['B', 'C']);
+  });
+
+  it("does not give a saved handoff agent the primary conversation's model spec", async () => {
+    const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
+    await discoverConnectedAgents(
+      {
+        req: makeReq(),
+        res: makeRes(),
+        primaryConfig,
+        endpointOption: { endpoint: EModelEndpoint.agents, spec: 'primary-spec' },
+        allowedProviders: new Set(),
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
+        loadTools: jest.fn(),
+      },
+      {
+        getAgent: jest.fn(async () => makeAgent('B', [])),
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: {} as never,
+      },
+    );
+
+    expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+    expect(mockInitializeAgent.mock.calls[0][0].modelSpec).toBeUndefined();
   });
 
   it('validates each referenced agent through the endpoint model loader', async () => {
@@ -1550,6 +1575,65 @@ describe('resolveSubagentGraphs', () => {
     );
   });
 
+  it('admits the same 50 graph members behind a discovered handoff as resume preflight', async () => {
+    const edges: GraphEdge[] = [{ from: 'primary', to: 'handoff', edgeType: 'handoff' }];
+    const primaryConfig: GraphSubagentHostConfig = makeConfig('primary', edges);
+    const ids = Array.from({ length: MAX_SUBAGENT_GRAPH_NODES }, (_, index) => `member-${index}`);
+    primaryConfig.subagents = {
+      enabled: false,
+      graphsEnabled: true,
+      graphs: [0, 25].map((start) => {
+        const members = ids.slice(start, start + 25);
+        return {
+          type: `team-${start}`,
+          name: 'Team',
+          description: 'Work',
+          agent_ids: members,
+          entry_agent_id: members[0],
+          result_agent_id: members[members.length - 1],
+          edges: members
+            .slice(1)
+            .map((id, index) => ({ from: members[index], to: id, edgeType: 'direct' as const })),
+        };
+      }),
+    };
+    const getAgent = jest.fn(async ({ id }: { id: string }) => makeAgent(id));
+    const params = {
+      req: makeReq(),
+      res: makeRes(),
+      primaryConfig,
+      allowedProviders: new Set<string>(),
+      getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
+      loadTools: jest.fn(),
+    };
+    const deps = {
+      getAgent,
+      checkPermission: jest.fn().mockResolvedValue(true),
+      logViolation: jest.fn(),
+      db: {} as never,
+    };
+    const discovered = await discoverConnectedAgents(params, deps);
+    const rootConfigs = [primaryConfig, ...discovered.agentConfigs.values()];
+    await resolveSubagentGraphs({ ...params, rootConfigs }, deps);
+    expect(rootConfigs.map(({ id }) => id)).toEqual(['primary', 'handoff']);
+    expect(primaryConfig.subagentGraphConfigs).toHaveLength(2);
+    expect(
+      primaryConfig.subagentGraphConfigs?.flatMap(({ memberConfigs }) =>
+        memberConfigs.map(({ id }) => id),
+      ),
+    ).toEqual(ids);
+    expect(getAgent).toHaveBeenCalledTimes(MAX_SUBAGENT_GRAPH_NODES + 1);
+    getAgent.mockClear();
+    const snapshots = await getResumeAgentSnapshot({
+      primaryAgent: { ...makeAgent('primary', edges), subagents: primaryConfig.subagents },
+      capabilities: ['subagent_graphs'],
+      getAgent,
+      canAccessAgent: async () => true,
+    });
+    expect(new Set(snapshots.map(({ id }) => id))).toEqual(new Set(['primary', 'handoff', ...ids]));
+    expect(getAgent).toHaveBeenCalledTimes(MAX_SUBAGENT_GRAPH_NODES + 1);
+  });
+
   it('resolves a complete graph team while reusing the primary config', async () => {
     const primaryConfig = makeConfig('A') as GraphSubagentHostConfig;
     primaryConfig.userMCPAuthMap = { primary: { token: 'primary-token' } };
@@ -1982,6 +2066,22 @@ describe('model spec handoffs', () => {
       expect.objectContaining({
         accessibleSkillIds: [skillId],
         agent: expect.objectContaining({ skills: [skillId.toString()] }),
+      }),
+      expect.anything(),
+    );
+  });
+  test('initializes the target under its own spec, not the primary conversation one', async () => {
+    const options = params();
+    const preset = options.req.config?.modelSpecs?.list?.[0];
+    if (!preset) throw new Error('Missing test preset');
+    preset.vision = false;
+    await discoverConnectedAgents(
+      { ...options, endpointOption: { endpoint: EModelEndpoint.agents, spec: 'primary-spec' } },
+      deps(),
+    );
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelSpec: expect.objectContaining({ name: 'specialist', vision: false }),
       }),
       expect.anything(),
     );

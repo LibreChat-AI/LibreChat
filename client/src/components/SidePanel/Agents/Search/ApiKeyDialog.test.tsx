@@ -263,6 +263,14 @@ describe('ApiKeyDialog', () => {
     expect(screen.getByPlaceholderText('com_ui_web_search_cohere_key')).toBeInTheDocument();
   });
 
+  it('marks the Firecrawl key optional for a self-hosted URL', () => {
+    mockUseGetStartupConfig.mockReturnValue({ data: {} });
+    render(<ApiKeyDialog {...defaultProps} />);
+
+    expect(screen.getByPlaceholderText('com_ui_web_search_firecrawl_url')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('com_ui_web_search_firecrawl_key')).toBeInTheDocument();
+  });
+
   it('restores per-user provider and scraper selections', () => {
     mockUseGetStartupConfig.mockReturnValue({ data: {} });
     render(

@@ -4,6 +4,7 @@ import type { NavLink } from '~/common';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
+import Credits from '~/components/Balance/Credits';
 import { useLocalize } from '~/hooks';
 import Switcher from './Switcher';
 import NewChat from './NewChat';
@@ -81,6 +82,7 @@ function Header({
         routeActiveId={routeActiveId}
       />
       <NewChat onNewChat={onNewChat} switchToHistory={switchToHistory} />
+      <Credits mobile />
       <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
         <AccountSettings collapsed />
       </Suspense>

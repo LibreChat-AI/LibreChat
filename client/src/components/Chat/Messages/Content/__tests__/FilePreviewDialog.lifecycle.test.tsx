@@ -64,8 +64,24 @@ jest.mock('@librechat/client', () => ({
   Button: ({ children, onClick }: React.PropsWithChildren<{ onClick: () => void }>) => (
     <button onClick={onClick}>{children}</button>
   ),
+  Radio: jest.requireActual('@librechat/client').Radio,
   Shimmer: jest.requireActual('@librechat/client').Shimmer,
 }));
+
+const pdf = () => new Blob(['%PDF-1.7\n%original bytes']);
+
+/** jsdom's Blob has no `text()`; browsers do, and the PDF signature check reads it. */
+const hasBlobText = typeof Blob.prototype.text === 'function';
+if (!hasBlobText) {
+  Blob.prototype.text = function text(this: Blob) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(this);
+    });
+  };
+}
 
 const props = {
   open: true,
@@ -83,7 +99,7 @@ describe('FilePreviewDialog lifecycle', () => {
     URL.createObjectURL = jest.fn(() => 'blob:display');
     URL.revokeObjectURL = revoke;
     try {
-      mockOwnedPreview.mockResolvedValue({ data: new Blob(['pdf']) });
+      mockOwnedPreview.mockResolvedValue({ data: pdf() });
       const view = render(<FilePreviewDialog {...props} />);
       await waitFor(() =>
         expect(screen.getByTitle('com_ui_preview: report.pdf')).toHaveAttribute(
@@ -91,6 +107,7 @@ describe('FilePreviewDialog lifecycle', () => {
           'blob:display',
         ),
       );
+      expect(screen.queryByRole('radiogroup')).toBeNull();
       view.unmount();
       expect(revoke).toHaveBeenCalledWith('blob:display');
     } finally {
@@ -99,8 +116,16 @@ describe('FilePreviewDialog lifecycle', () => {
     }
   });
 
+  const { createObjectURL, revokeObjectURL } = URL;
+  afterAll(() => {
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
+    URL.createObjectURL = jest.fn(() => 'blob:display');
+    URL.revokeObjectURL = jest.fn();
     mockFileMap = {};
     mockShareId = undefined;
     mockPreview = { file_id: 'f1', status: 'ready', text: 'extracted document' };
@@ -110,32 +135,123 @@ describe('FilePreviewDialog lifecycle', () => {
     mockDownload.mockResolvedValue({ data: 'blob:original' });
   });
 
-  it('renders extracted text and downloads the original object', async () => {
+  it('opens a text-delivered PDF on its original and switches to the extracted text', async () => {
+    mockOwnedPreview.mockResolvedValue({ data: pdf() });
     render(<FilePreviewDialog {...props} deliveryPath="text" />);
+    expect(await screen.findByTitle('com_ui_preview: report.pdf')).toHaveAttribute(
+      'src',
+      'blob:display',
+    );
+    expect(screen.queryByText('extracted document')).toBeNull();
+    expect(mockUseFilePreview).toHaveBeenLastCalledWith('f1', { enabled: false }, undefined);
+    expect(screen.getByRole('radio', { name: 'com_ui_preview_original' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    fireEvent.click(screen.getByRole('radio', { name: 'com_ui_preview_extracted_text' }));
     expect(screen.getByText('extracted document')).toBeInTheDocument();
-    expect(mockOwnedPreview).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_download report.pdf' }));
+    expect(screen.queryByTitle('com_ui_preview: report.pdf')).toBeNull();
+    expect(mockUseFilePreview).toHaveBeenLastCalledWith('f1', { enabled: true }, undefined);
+
+    fireEvent.click(screen.getByRole('radio', { name: 'com_ui_preview_original' }));
+    expect(screen.getByTitle('com_ui_preview: report.pdf')).toBeInTheDocument();
+    // Switching views reuses the loaded original instead of fetching it again.
+    expect(mockOwnedPreview).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_download_original report.pdf' }));
     await waitFor(() =>
       expect(mockTriggerDownload).toHaveBeenCalledWith('blob:original', 'report.pdf'),
     );
   });
 
+  it('reopens on the original after the extracted text was chosen', async () => {
+    mockOwnedPreview.mockResolvedValue({ data: pdf() });
+    const view = render(<FilePreviewDialog {...props} deliveryPath="text" />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'com_ui_preview_extracted_text' }));
+    expect(screen.getByText('extracted document')).toBeInTheDocument();
+    view.rerender(<FilePreviewDialog {...props} deliveryPath="text" open={false} />);
+    view.rerender(<FilePreviewDialog {...props} deliveryPath="text" />);
+    expect(await screen.findByTitle('com_ui_preview: report.pdf')).toBeInTheDocument();
+    expect(screen.queryByText('extracted document')).toBeNull();
+  });
+
+  it.each([
+    ['is missing', () => mockOwnedPreview.mockRejectedValue(new Error('404'))],
+    ['returns no bytes', () => mockOwnedPreview.mockResolvedValue({})],
+    [
+      'is not a PDF',
+      () => mockOwnedPreview.mockResolvedValue({ data: new Blob(['plain extracted text']) }),
+    ],
+  ])('falls back to the extracted text when the original %s', async (_case, arrange) => {
+    arrange();
+    render(<FilePreviewDialog {...props} deliveryPath="text" />);
+    expect(await screen.findByText('extracted document')).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(screen.queryByTitle('com_ui_preview: report.pdf')).toBeNull();
+    expect(screen.queryByText('com_ui_preview_unavailable')).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_download report.pdf' })).toBeInTheDocument();
+  });
+
+  it('shows only the extracted text when no original is stored', () => {
+    render(<FilePreviewDialog {...props} fileSource="text" deliveryPath="text" />);
+    expect(screen.getByText('extracted document')).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(mockOwnedPreview).not.toHaveBeenCalled();
+  });
+
+  it('keeps non-PDF text-delivered documents on the extracted text', async () => {
+    const docx = {
+      ...props,
+      fileName: 'report.docx',
+      fileType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    render(<FilePreviewDialog {...docx} deliveryPath="text" />);
+    expect(screen.getByText('extracted document')).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(mockOwnedPreview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_download report.docx' }));
+    await waitFor(() =>
+      expect(mockTriggerDownload).toHaveBeenCalledWith('blob:original', 'report.docx'),
+    );
+  });
+
   it('handles pending, polling failure, retry, and empty success', () => {
     mockPreview = { file_id: 'f1', status: 'pending' };
-    const view = render(<FilePreviewDialog {...props} deliveryPath="text" />);
+    const textOnly = { ...props, fileSource: 'text', deliveryPath: 'text' as const };
+    const view = render(<FilePreviewDialog {...textOnly} />);
     expect(screen.getByText('com_ui_loading')).toBeInTheDocument();
     mockPreviewError = true;
-    view.rerender(<FilePreviewDialog {...props} deliveryPath="text" />);
+    view.rerender(<FilePreviewDialog {...textOnly} />);
     expect(screen.queryByText('com_ui_loading')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
     expect(mockRetry).toHaveBeenCalledTimes(1);
     mockPreviewError = false;
     mockPreview = { file_id: 'f1', status: 'ready', text: '' };
-    view.rerender(<FilePreviewDialog {...props} deliveryPath="text" />);
+    view.rerender(<FilePreviewDialog {...textOnly} />);
     expect(screen.queryByText('com_ui_preview_unavailable')).toBeNull();
   });
 
-  it('recovers late metadata while open and discards the obsolete binary response', async () => {
+  it('recovers late metadata while open and discards the obsolete text response', async () => {
+    let resolve!: (value: { data: Blob }) => void;
+    mockOwnedPreview.mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const textProps = { ...props, fileName: 'notes.txt', fileType: 'text/plain' };
+    const view = render(<FilePreviewDialog {...textProps} />);
+    mockFileMap = { f1: { llmDeliveryPath: 'text' } };
+    view.rerender(<FilePreviewDialog {...textProps} />);
+    expect(screen.getByText('extracted document')).toBeInTheDocument();
+    await act(async () => {
+      resolve({ data: { text: async () => 'obsolete bytes' } as Blob });
+    });
+    expect(screen.queryByText('obsolete bytes')).toBeNull();
+    expect(screen.getByText('extracted document')).toBeInTheDocument();
+  });
+
+  it('keeps loading a PDF original when late metadata routes it to text', async () => {
     let resolve!: (value: { data: Blob }) => void;
     mockOwnedPreview.mockReturnValue(
       new Promise((done) => {
@@ -145,11 +261,12 @@ describe('FilePreviewDialog lifecycle', () => {
     const view = render(<FilePreviewDialog {...props} />);
     mockFileMap = { f1: { llmDeliveryPath: 'text' } };
     view.rerender(<FilePreviewDialog {...props} />);
-    expect(screen.getByText('extracted document')).toBeInTheDocument();
     await act(async () => {
-      resolve({ data: new Blob(['obsolete']) });
+      resolve({ data: pdf() });
     });
-    expect(screen.queryByTitle('com_ui_preview: report.pdf')).toBeNull();
+    expect(await screen.findByTitle('com_ui_preview: report.pdf')).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup')).toBeInTheDocument();
+    expect(mockOwnedPreview).toHaveBeenCalledTimes(1);
   });
 
   it('handles a deduplicated response after closing and reopening', async () => {
@@ -174,12 +291,16 @@ describe('FilePreviewDialog lifecycle', () => {
   it('uses only shared metadata and the shared authorization scope', async () => {
     mockShareId = 'public-share';
     mockFileMap = { f1: { llmDeliveryPath: 'text' } };
+    mockSharedPreview.mockResolvedValue({ data: pdf() });
     const view = render(<FilePreviewDialog {...props} />);
-    await waitFor(() => expect(mockSharedPreview).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTitle('com_ui_preview: report.pdf')).toBeInTheDocument();
+    expect(mockSharedPreview).toHaveBeenCalledTimes(1);
     expect(mockOwnedPreview).not.toHaveBeenCalled();
-    expect(screen.queryByText('extracted document')).toBeNull();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
     view.rerender(<FilePreviewDialog {...props} deliveryPath="text" />);
+    fireEvent.click(screen.getByRole('radio', { name: 'com_ui_preview_extracted_text' }));
     expect(mockUseFilePreview).toHaveBeenLastCalledWith('f1', { enabled: true }, 'public-share');
     expect(screen.getByText('extracted document')).toBeInTheDocument();
+    expect(mockOwnedPreview).not.toHaveBeenCalled();
   });
 });

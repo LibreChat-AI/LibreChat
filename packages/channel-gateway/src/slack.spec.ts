@@ -318,7 +318,7 @@ describe('SlackClient', () => {
     expect(transport).toHaveBeenCalledTimes(1);
   });
 
-  test.each(['invalid_blocks', 'invalid_attachments'])(
+  test.each(['invalid_blocks', 'invalid_attachments', 'msg_blocks_too_long'])(
     'uses text fallback only after explicit %s rejection',
     async (error) => {
       const transport = jest
@@ -341,6 +341,7 @@ describe('SlackClient', () => {
   test.each([
     () => Promise.reject(new Error('network failure')),
     () => Promise.resolve(new Response('invalid_blocks')),
+    () => Promise.resolve(new Response('msg_blocks_too_long')),
     () => Promise.resolve(success({ ok: false, error: 'internal_error' })),
     () => Promise.resolve(success({ ok: false, error: 'not_in_channel' })),
   ])('never uses rich fallback on ambiguous or unrelated failure %#', async (implementation) => {

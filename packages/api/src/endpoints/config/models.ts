@@ -9,8 +9,8 @@ import {
 import type { TModelsConfig, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/types';
+import type { CatalogDiscoveryOptions, FetchModelsParams } from '~/endpoints/models';
 import type { ServedCustomEndpoint } from '~/endpoints/custom/config';
-import type { FetchModelsParams } from '~/endpoints/models';
 import type { GetAppConfigOptions } from '~/app/service';
 import { isServedCustomEndpoint, resolveServedCustomEndpoints } from '~/endpoints/custom/config';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
@@ -47,7 +47,14 @@ export function configuredModelList(
   if (!Array.isArray(models)) {
     return undefined;
   }
-  return models.filter((model): model is string => typeof model === 'string');
+  const names: string[] = [];
+  for (const model of models) {
+    const name = typeof model === 'string' ? model : model?.name;
+    if (typeof name === 'string') {
+      names.push(name);
+    }
+  }
+  return names;
 }
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
@@ -92,7 +99,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   return async function loadConfigModels(
     req: ServerRequest,
     requestedEndpoint?: string,
+    options?: CatalogDiscoveryOptions,
   ): Promise<TModelsConfig> {
+    if (options?.strictDiscovery && requestedEndpoint == null) {
+      throw new Error('Strict model discovery requires an endpoint');
+    }
     const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     if (!appConfig) {
       return {};
@@ -254,6 +265,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             direct: endpoint.directEndpoint,
             userIdQuery: models.userIdQuery,
             tokenKey,
+            ...options,
           });
         }
         uniqueKeyToEndpointsMap[uniqueKey] = uniqueKeyToEndpointsMap[uniqueKey] || [];
@@ -300,6 +312,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
                 skipCache: true,
                 /** Fetched with the user's key/URL — always user-scoped */
                 tokenKey: getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId),
+                ...options,
               });
             })();
           uniqueKeyToEndpointsMap[userFetchKey] = uniqueKeyToEndpointsMap[userFetchKey] || [];
@@ -308,6 +321,9 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
         }
       }
 
+      if (options?.strictDiscovery && models?.fetch) {
+        throw new Error('Model discovery credentials unavailable');
+      }
       if (Array.isArray(models?.default)) {
         modelsConfig[name] = models.default.map((model) =>
           typeof model === 'string' ? model : model.name,
@@ -323,19 +339,25 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       const settled = settledResults[i];
       const associatedNames = uniqueKeyToEndpointsMap[currentKey];
       if (settled.status === 'rejected') {
+        if (options?.strictDiscovery) {
+          throw settled.reason;
+        }
         logger.warn(
           `[loadConfigModels] Model fetch failed for "${associatedNames.join('", "')}":`,
           getSafeErrorMetadata(settled.reason),
         );
       }
       const modelData = settled.status === 'fulfilled' ? settled.value : [];
+      if (options?.strictDiscovery && !Array.isArray(modelData)) {
+        throw new Error('Model discovery returned no catalog');
+      }
 
       for (const name of associatedNames) {
         const endpoint = endpointsMap[name];
         const defaults = (endpoint.models?.default ?? []).map((m) =>
           typeof m === 'string' ? m : m.name,
         );
-        modelsConfig[name] = !modelData?.length ? defaults : modelData;
+        modelsConfig[name] = options?.strictDiscovery || modelData?.length ? modelData : defaults;
       }
 
       /** A shared fetch caches token config under one endpoint's tokenKey;

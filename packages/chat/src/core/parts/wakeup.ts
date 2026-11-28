@@ -90,47 +90,73 @@ const backgroundWakeupTask = (payload: unknown): WakeupTask | null => {
   };
 };
 
+/** The event type of a stored trigger, by the card its turn renders as. */
+const KINDS: ReadonlyMap<string, WakeupDisplay['kind']> = new Map([
+  ['subagent.completion', 'subagent'],
+  ['background-tool.completion', 'background_tool'],
+]);
+
+const within = (text?: string | null): text is string =>
+  text != null && text.length > 0 && text.length <= MAX_WAKEUP_TEXT_CHARS;
+
+/** The card for a wake-up of this kind, from the payload line that follows its header. */
+function toDisplay(kind: WakeupDisplay['kind'], body: string): WakeupDisplay | null {
+  const payload = parsePayloadLine(body);
+  if (kind === 'subagent') {
+    const task = subagentWakeupTask(payload);
+    return task == null ? null : { kind, tasks: [task] };
+  }
+  if (!Array.isArray(payload) || payload.length === 0) {
+    return null;
+  }
+  const tasks = payload.map(backgroundWakeupTask);
+  return tasks.some((task) => task == null) ? null : { kind, tasks: tasks as WakeupTask[] };
+}
+
 /**
  * Detects a host-authored wake-up continuation message (a detached subagent or
- * background tool task settling and resuming the parent run) so the UI can
- * render a task card instead of the model-facing prompt JSON. The strict
- * header + payload shape check is intentional: ordinary user text quoting one
- * of these prompts mid-message must never collapse into a card.
+ * background tool task settling and resuming the parent run) by its text, so the UI can
+ * render a task card instead of the model-facing prompt JSON. Only for a message stored
+ * before the server recorded what started the turn: `parseWakeupMessage` reads that record
+ * where there is one. The strict header + payload shape check is intentional: ordinary
+ * user text quoting one of these prompts mid-message must never collapse into a card.
  */
 export function parseWakeupText(text?: string | null): WakeupDisplay | null {
-  if (!text || text.length > MAX_WAKEUP_TEXT_CHARS) {
+  if (!within(text)) {
     return null;
   }
 
   const subagentHeader = SUBAGENT_WAKEUP_HEADER.exec(text);
   if (subagentHeader != null) {
-    const task = subagentWakeupTask(parsePayloadLine(text.slice(subagentHeader[0].length)));
-    if (task == null || task.status !== subagentHeader[1]) {
-      return null;
-    }
-    return { kind: 'subagent', tasks: [task] };
+    const display = toDisplay('subagent', text.slice(subagentHeader[0].length));
+    return display?.tasks[0].status === subagentHeader[1] ? display : null;
   }
 
   const backgroundHeader = BACKGROUND_WAKEUP_HEADER.exec(text);
-  if (backgroundHeader == null) {
-    return null;
-  }
-  const payload = parsePayloadLine(text.slice(backgroundHeader[0].length));
-  if (!Array.isArray(payload) || payload.length === 0) {
-    return null;
-  }
-  const tasks = payload.map(backgroundWakeupTask);
-  if (tasks.some((task) => task == null)) {
-    return null;
-  }
-  return { kind: 'background_tool', tasks: tasks as WakeupTask[] };
+  return backgroundHeader == null
+    ? null
+    : toDisplay('background_tool', text.slice(backgroundHeader[0].length));
 }
 
-/** User-submitted lookalikes are ordinary prompts. Older host wake-ups may omit
- *  provenance, so retain their existing strict header/payload compatibility. */
+/**
+ * The task card a wake-up turn renders as, or null for any other message.
+ *
+ * What started the turn decides: the server records it on the turn's first message, so a
+ * turn a task's completion started is a wake-up whatever its header says, and a turn
+ * anything else started is not one whatever its text says. The first line is the prompt
+ * the model reads and the second the payload the card is drawn from. A message with no such
+ * record was stored before there was one, and is matched by its header as it always was.
+ * User-submitted lookalikes are ordinary prompts either way.
+ */
 export function parseWakeupMessage(
-  message: Pick<TMessage, 'text' | 'isCreatedByUser' | 'isUserSubmitted'> | undefined,
+  message: Pick<TMessage, 'text' | 'isCreatedByUser' | 'isUserSubmitted' | 'trigger'> | undefined,
 ): WakeupDisplay | null {
   if (message?.isCreatedByUser !== true || message.isUserSubmitted === true) return null;
-  return parseWakeupText(message.text);
+  const type = message.trigger?.event?.type;
+  if (type == null) return parseWakeupText(message.text);
+  const kind = KINDS.get(type);
+  const text = message.text;
+  if (kind == null || !within(text)) return null;
+  const end = text.indexOf('\n');
+  return end < 0 ? null : toDisplay(kind, text.slice(end + 1));
 }

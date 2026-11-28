@@ -10,6 +10,7 @@ import type { Logger } from './types';
 export type SlackBlocks = (Block | KnownBlock)[];
 export type SlackView = View;
 export type SlackWriteOutcome = 'permanent' | 'retryable' | 'unknown';
+type SlackPresentationRejection = 'invalid_blocks' | 'invalid_attachments' | 'msg_blocks_too_long';
 export interface SlackMessage {
   channel: string;
   text: string;
@@ -34,7 +35,7 @@ export class SlackWriteError extends Error {
   constructor(
     readonly outcome: SlackWriteOutcome,
     readonly retryAfterMs = 0,
-    readonly code: 'invalid_blocks' | 'invalid_attachments' | '' = '',
+    readonly code: SlackPresentationRejection | '' = '',
   ) {
     super(`Slack write ${outcome}`);
     this.name = 'SlackWriteError';
@@ -65,6 +66,7 @@ const diagnosticCodes = new Set([
   'invalid_json',
   'invalid_blocks',
   'invalid_attachments',
+  'msg_blocks_too_long',
   'missing_scope',
   'not_allowed',
   'channel_not_found',
@@ -87,8 +89,6 @@ const permanentRejections = new Set([
   'invalid_arg_name',
   'invalid_post_type',
   'invalid_json',
-  'invalid_blocks',
-  'invalid_attachments',
   'missing_scope',
   'not_allowed',
   'channel_not_found',
@@ -233,34 +233,36 @@ export class SlackClient {
             (method === 'reactions.remove' && error.data.error === 'no_reaction'))
         )
           return { ok: true };
+        const platformCode =
+          validEnvelope && error instanceof WebAPIPlatformError ? error.data.error : undefined;
+        const code =
+          platformCode === 'invalid_blocks' ||
+          platformCode === 'invalid_attachments' ||
+          (method === 'chat.postMessage' &&
+            status === 200 &&
+            platformCode === 'msg_blocks_too_long')
+            ? platformCode
+            : '';
         const uncertain: SlackWriteOutcome = !once && updates.has(method) ? 'retryable' : 'unknown';
         let outcome: SlackWriteOutcome = uncertain;
         if (
           status === 429 ||
           error instanceof WebAPIRateLimitedError ||
-          (error instanceof WebAPIPlatformError &&
-            validEnvelope &&
-            error.data.error === 'ratelimited')
+          platformCode === 'ratelimited'
         ) {
           outcome = 'retryable';
           if (error instanceof WebAPIRateLimitedError) retryAfterMs = error.retryAfter * 1000;
-        } else if (error instanceof WebAPIPlatformError && validEnvelope) {
-          outcome = permanentRejections.has(error.data.error) ? 'permanent' : uncertain;
+        } else if (platformCode != null) {
+          outcome = code || permanentRejections.has(platformCode) ? 'permanent' : uncertain;
         } else if (permanentHttpRejections.has(status)) {
           outcome = 'permanent';
         }
-        const code =
-          validEnvelope &&
-          error instanceof WebAPIPlatformError &&
-          (error.data.error === 'invalid_blocks' || error.data.error === 'invalid_attachments')
-            ? error.data.error
-            : '';
         const failure = new SlackWriteError(outcome, retryAfterMs, code);
         const operation = methods.has(method) ? method : 'unknown';
         let reason = status ? 'http_error' : 'transport_error';
         if (boundedSignal.aborted) reason = 'cancelled';
-        if (error instanceof WebAPIPlatformError && validEnvelope)
-          reason = diagnosticCodes.has(error.data.error) ? error.data.error : 'platform_error';
+        if (platformCode != null)
+          reason = diagnosticCodes.has(platformCode) ? platformCode : 'platform_error';
         this.logger?.warn(`slack_api_call_failed:${operation}:${status}:${reason}`);
         const wait = retryAfterMs || 200 * 2 ** attempt;
         if (
@@ -312,7 +314,8 @@ export class SlackClient {
       if (
         !message.blocks?.length ||
         !(error instanceof SlackWriteError) ||
-        (error.code !== 'invalid_blocks' && error.code !== 'invalid_attachments')
+        error.outcome !== 'permanent' ||
+        !error.code
       )
         throw error;
       return this.postMessage(token, { ...message, blocks: [] }, signal);

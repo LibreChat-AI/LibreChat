@@ -48,7 +48,8 @@ export type SubagentTaskContent = {
   isError: boolean;
   /** The task predates content recovery, so there is nothing to retry. */
   isUnavailable: boolean;
-  refetch: () => void;
+  /** Reads the content again, settling once that read has. */
+  refetch: () => Promise<void>;
 };
 
 /** A child thread's durable view, read through the parent conversation. */
@@ -213,7 +214,7 @@ const idleControl: SubagentRetainedControl = {
 const idleContent: SubagentTaskContent = {
   isError: false,
   isUnavailable: false,
-  refetch: () => undefined,
+  refetch: () => Promise.resolve(),
 };
 
 const idleThread: SubagentThreadRead = {

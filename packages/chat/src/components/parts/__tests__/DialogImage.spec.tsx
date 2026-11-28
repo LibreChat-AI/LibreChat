@@ -3,17 +3,19 @@
  */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import DialogImage from '../DialogImage';
 
 jest.mock('@librechat/client', () => {
   const actual = jest.requireActual<typeof import('@librechat/client')>('@librechat/client');
   return {
     ...actual,
-    useLocalize: () => (key: string) => key,
     useRemScale: () => 1,
     useMediaQuery: () => false,
   };
 });
+
+beforeAll(initEnglish);
 
 /** The lightbox is a raw Radix dialog at z-250, not an OGDialog, so a tooltip left on the
  *  stylesheet default (150) would paint behind its overlay. */
@@ -25,7 +27,7 @@ describe('DialogImage tooltips', () => {
       <DialogImage isOpen onOpenChange={jest.fn()} src="/media.png" downloadImage={jest.fn()} />,
     );
 
-    const close = screen.getByRole('button', { name: 'com_ui_close' });
+    const close = screen.getByRole('button', { name: 'Close' });
     fireEvent.mouseEnter(close);
     fireEvent.mouseMove(close);
 
@@ -38,7 +40,7 @@ describe('DialogImage tooltips', () => {
       <DialogImage isOpen onOpenChange={jest.fn()} src="/media.png" downloadImage={jest.fn()} />,
     );
 
-    const download = screen.getByRole('button', { name: 'com_ui_download' });
+    const download = screen.getByRole('button', { name: 'Download' });
     fireEvent.mouseEnter(download);
     fireEvent.mouseMove(download);
 

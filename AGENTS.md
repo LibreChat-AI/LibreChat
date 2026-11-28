@@ -137,7 +137,7 @@ message?: string } }`. Keep an existing domain-specific result shape when changi
   `packages/api/src/utils/errors.ts` documents when redacted error text is appropriate.
 - Localization is a UI responsibility, not a database-method return shape. When a failure reaches
   a user-facing surface, expose a safe, stable code the UI can map to localized, actionable copy
-  and a fallback. See `client/src/components/Messages/Content/Error/registry.ts` and
+  and a fallback. See `packages/chat/src/components/errors/registry.ts` and
   `client/src/components/Chat/Trace/Viewer.tsx`. Keep any intentionally disclosed provider detail
   behind its existing protection policy rather than treating arbitrary upstream text as safe.
 
@@ -202,6 +202,13 @@ meaning stays clear.** Let scope and types supply context: use `provider` rather
 instead of stacking nouns; do not substitute cryptic abbreviations or sacrifice clarity to save
 tokens. Use short, single-word file names when possible; group related modules in a single-word
 directory.
+
+Two modules in one directory must not have names that differ only by case or extension, such as
+`Files.tsx` beside `files.ts`, or `Live.tsx` beside `live.ts`. On macOS and Windows the file system
+ignores case, so `import './Files'` resolves to `files.ts` and the build fails there, while Linux CI
+passes. The same applies to a file and a directory, such as `Row.tsx` beside `row/`. When a
+component needs helpers, give the helpers a different word (`rows.ts`), not a different case. The
+`casing` static check rejects an added or renamed path that collides this way.
 
 Prefer flat early returns, pure functions, and explicit types. Avoid `any`, broad `unknown`/casts,
 duplicated types, and dynamic imports. Extract genuinely repeated logic instead of copying it;

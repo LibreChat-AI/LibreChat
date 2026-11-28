@@ -1,4 +1,5 @@
 import {
+  logger,
   webSearchAuth,
   webSearchKeys,
   webSearchUrlApiKeys,
@@ -84,6 +85,25 @@ const SCRAPER_PROVIDER_VALUES = new Set<string>(Object.values(ScraperProviders))
 const RERANKER_VALUES = new Set<string>(Object.values(RerankerTypes));
 const DEFAULT_JINA_API_URL = 'https://api.jina.ai/v1/rerank';
 
+/**
+ * Required keys a service may go without at a URL of its own, each with that
+ * URL field and the host of the provider's hosted API, which always needs the
+ * key. A self-hosted Firecrawl runs without authentication unless it is set up
+ * with one, and the search library then sends no Authorization header.
+ */
+const OWN_URL_KEYS: ReadonlyMap<TWebSearchKeys, { url: TWebSearchKeys; host: string }> = new Map([
+  ['firecrawlApiKey', { url: 'firecrawlApiUrl', host: 'api.firecrawl.dev' }],
+]);
+
+/** A required key the deployment holds none of, which the service may go without at its own URL. */
+interface KeylessKey {
+  key: TWebSearchKeys;
+  url: TWebSearchKeys;
+  host: string;
+  /** How the deployment left the key out; see {@link getAbsentKey}. */
+  absent: 'unset' | 'user';
+}
+
 function isUserProvidedEnabled(field: string): boolean {
   return process.env[field] === AuthType.USER_PROVIDED;
 }
@@ -152,6 +172,54 @@ function getCredentialSource(value?: string): CredentialSource | undefined {
     return undefined;
   }
   return { kind: 'config', value: resolved };
+}
+
+/**
+ * How a deployment that holds no key left it out: `unset` when config has none
+ * (no value, a blank one, or a `${VAR}` reference to an unset or blank
+ * variable), `user` when the variable is `user_provided`, which asks each user
+ * for one. A key the deployment holds, or one it cannot read, is neither.
+ */
+function getAbsentKey(value?: string): 'unset' | 'user' | undefined {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return 'unset';
+  }
+  const field = extractVariableName(value);
+  if (field == null) {
+    return undefined;
+  }
+  const envValue = process.env[field]?.trim();
+  if (!envValue) {
+    return 'unset';
+  }
+  return envValue === AuthType.USER_PROVIDED ? 'user' : undefined;
+}
+
+/** The required key a service may go without at its own URL, when the deployment holds none. */
+function getKeylessKey(
+  requiredKeys: TWebSearchKeys[],
+  config: TCustomConfig['webSearch'] | undefined,
+): KeylessKey | undefined {
+  for (const key of requiredKeys) {
+    const own = OWN_URL_KEYS.get(key);
+    if (own == null) {
+      continue;
+    }
+    const absent = getAbsentKey(config?.[key]);
+    if (absent != null) {
+      return { key, ...own, absent };
+    }
+  }
+  return undefined;
+}
+
+/** Whether a URL points at `host`, a provider's hosted API. */
+function isHostedUrl(url: string, host: string): boolean {
+  try {
+    return new URL(url).hostname === host;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -263,19 +331,25 @@ async function isCredentialUsable(
   return isOptIn && apiKey.origin === 'env';
 }
 
-/** A service's configured credentials, required first, or undefined when a required one is unset. */
+/**
+ * A service's configured credentials, required first, or the first required key
+ * that is unset. `keyless` is a required key the deployment left out that the
+ * service may go without, decided once its URL is resolved.
+ */
 function getServiceCredentials(
   requiredKeys: TWebSearchKeys[],
   optionalKeys: TWebSearchKeys[],
   config: TCustomConfig['webSearch'] | undefined,
-): ServiceCredential[] | undefined {
+  keyless?: TWebSearchKeys,
+): ServiceCredential[] | TWebSearchKeys {
   const credentials: ServiceCredential[] = [];
   for (const key of requiredKeys) {
     const source = getCredentialSource(config?.[key]);
-    if (!source) {
-      return undefined;
+    if (source) {
+      credentials.push({ key, required: true, source });
+    } else if (key !== keyless) {
+      return key;
     }
-    credentials.push({ key, required: true, source });
   }
   for (const key of optionalKeys) {
     const source = getCredentialSource(config?.[key]);
@@ -302,6 +376,32 @@ function resolveCredentials(
     resolved.set(key, { key, required, origin, value, field: source.field });
   }
   return resolved;
+}
+
+/**
+ * Lets a service that resolved no key run at the URL it accepted when that URL
+ * is its own rather than the provider's hosted API, sending no key there. A
+ * deployment that asks each user for the key still needs one at a URL of its
+ * own; at a URL the user saved, leaving the key out is the user's choice.
+ * Otherwise names the setting that kept the service off: the URL when one was
+ * set and rejected, else the key.
+ */
+function allowKeyless(
+  { key, url: urlKey, host, absent }: KeylessKey,
+  resolved: ReadonlyMap<TWebSearchKeys, ResolvedCredential>,
+  authResult: WebSearchAuthValues,
+): Pick<WebSearchAuthGap, 'field' | 'variable' | 'reason'> | undefined {
+  const url = authResult[urlKey];
+  const source = resolved.get(urlKey);
+  if (url && !isHostedUrl(url, host) && (absent === 'unset' || source?.origin === 'user')) {
+    /** An empty key, unlike a missing one, keeps the search library from reading its environment key. */
+    authResult[key] = '';
+    return undefined;
+  }
+  if (url == null && source?.value) {
+    return { field: urlKey, variable: source.field, reason: 'rejected' };
+  }
+  return { field: key, variable: resolved.get(key)?.field, reason: 'missing' };
 }
 
 function mapWebSearchSelection(key: string, value: string): [string, string] | undefined {
@@ -367,6 +467,21 @@ export type WebSearchAuthValues = Omit<Partial<TWebSearchConfig>, 'keenableScrap
 };
 
 /**
+ * A setting that kept a web search category from authenticating. It names the
+ * service, the setting and its environment variable, never a value.
+ * - `missing`: no usable value is configured, or the referenced variable is unset and the user saved none.
+ * - `rejected`: a value is set but may not be used, such as a blocked URL or a key bound to another URL.
+ * - `unavailable`: the user's saved values could not be read.
+ */
+export interface WebSearchAuthGap {
+  category: TWebSearchCategories;
+  service?: string;
+  field?: TWebSearchKeys;
+  variable?: string;
+  reason: 'missing' | 'rejected' | 'unavailable';
+}
+
+/**
  * Type for web search authentication result
  */
 export interface WebSearchAuthResult {
@@ -376,6 +491,25 @@ export interface WebSearchAuthResult {
   authTypes: [TWebSearchCategories, AuthType][];
   /** Original authentication values mapped to their respective keys */
   authResult: WebSearchAuthValues;
+  /** Why each unauthenticated category failed, also logged at debug level; empty when authenticated. */
+  gaps: WebSearchAuthGap[];
+}
+
+const GAP_REASONS: Record<WebSearchAuthGap['reason'], string> = {
+  missing: 'is not set',
+  rejected: 'was rejected',
+  unavailable: 'could not be read',
+};
+
+/** Explains why web search is unavailable, for a log line. */
+function describeGaps(gaps: WebSearchAuthGap[]): string {
+  return gaps
+    .map(({ category, service, field, variable, reason }) => {
+      const scope = service ? `${category} (${service})` : category;
+      const setting = field ? `${field}${variable ? ` (${variable})` : ''}` : 'saved settings';
+      return `${scope}: ${setting} ${GAP_REASONS[reason]}`;
+    })
+    .join('; ');
 }
 
 interface KeenableAuthResolution {
@@ -383,6 +517,35 @@ interface KeenableAuthResolution {
   hasSystemApiKey: boolean;
   rejectedUserApiUrl: boolean;
   lookupFailed: boolean;
+}
+
+/** The code a credential lookup rejects with when a required value is neither set nor saved. */
+const MISSING_VALUE_CODE = 'PLUGIN_AUTH_NOT_FOUND';
+
+/** Whether a credential lookup failed because a value is missing rather than unreadable. */
+function isMissingValueError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error != null &&
+    'code' in error &&
+    error.code === MISSING_VALUE_CODE
+  );
+}
+
+/** Why Keenable did not authenticate: its saved values were unreadable, or the user's URL was blocked. */
+function getKeenableGap(
+  category: TWebSearchCategories,
+  { lookupFailed }: KeenableAuthResolution,
+): WebSearchAuthGap {
+  if (lookupFailed) {
+    return { category, service: SearchProviders.KEENABLE, reason: 'unavailable' };
+  }
+  return {
+    category,
+    service: SearchProviders.KEENABLE,
+    field: 'keenableApiUrl',
+    reason: 'rejected',
+  };
 }
 
 /**
@@ -414,6 +577,7 @@ export async function loadWebSearchAuth({
 }: {
   userId: string;
   webSearchConfig: TCustomConfig['webSearch'];
+  /** With `throwError`, rejects with code {@link MISSING_VALUE_CODE} when a required value is neither set nor saved. */
   loadAuthValues: (params: {
     userId: string;
     authFields: string[];
@@ -624,9 +788,13 @@ export async function loadWebSearchAuth({
     return userSelections;
   }
 
-  /** Type-safe iterator for the category-service combinations */
+  /**
+   * Type-safe iterator for the category-service combinations. Records in
+   * `misses` why each service it tried did not authenticate.
+   */
   async function checkAuth<C extends TWebSearchCategories>(
     category: C,
+    misses: WebSearchAuthGap[],
   ): Promise<[boolean, boolean]> {
     type ServiceType = keyof (typeof webSearchAuth)[C];
     let isUserProvided = false;
@@ -644,6 +812,7 @@ export async function loadWebSearchAuth({
     if (!specificService) {
       const selections = await resolveUserSelections();
       if (selections.lookupFailed) {
+        misses.push({ category, reason: 'unavailable' });
         return [false, true];
       }
       if (category === SearchCategories.PROVIDERS && selections.searchProvider) {
@@ -673,6 +842,7 @@ export async function loadWebSearchAuth({
       const keenable = await resolveKeenableAuth(true);
       authResult.searchProvider = SearchProviders.KEENABLE;
       if (keenable.lookupFailed || keenable.rejectedUserApiUrl) {
+        misses.push(getKeenableGap(category, keenable));
         return [false, true];
       }
       return [true, isUserProvided || keenable.isUserProvided || !keenable.hasSystemApiKey];
@@ -684,6 +854,7 @@ export async function loadWebSearchAuth({
       const keenable = await resolveKeenableAuth(searchUsesKeenable);
       authResult.scraperProvider = ScraperProviders.KEENABLE;
       if (keenable.lookupFailed || keenable.rejectedUserApiUrl) {
+        misses.push(getKeenableGap(category, keenable));
         return [false, true];
       }
       return [true, isUserProvided || keenable.isUserProvided || !keenable.hasSystemApiKey];
@@ -717,39 +888,65 @@ export async function loadWebSearchAuth({
 
       if (requiredKeys.length === 0) continue;
 
-      const credentials = getServiceCredentials(requiredKeys, optionalKeys, webSearchConfig);
-      if (!credentials) continue;
+      const name = service as string;
+      const keyless = getKeylessKey(requiredKeys, webSearchConfig);
+      const credentials = getServiceCredentials(
+        requiredKeys,
+        optionalKeys,
+        webSearchConfig,
+        keyless?.key,
+      );
+      if (typeof credentials === 'string') {
+        misses.push({ category, service: name, field: credentials, reason: 'missing' });
+        continue;
+      }
 
       const authFields: string[] = [];
       const optionalFields = new Set<string>();
-      for (const { required, source } of credentials) {
+      for (const { key, required, source } of credentials) {
         if (source.kind !== 'env') {
           continue;
         }
         authFields.push(source.field);
-        if (!required) {
+        if (!required || key === keyless?.key) {
           optionalFields.add(source.field);
         }
       }
 
       try {
+        /**
+         * A key that may be left out is looked up as optional, so its absence
+         * does not throw, while a saved value the store cannot read still does
+         * instead of reading as no key.
+         */
         const authValues =
           authFields.length > 0
-            ? await loadAuthValues({ userId, authFields, optional: optionalFields, throwError })
+            ? await loadAuthValues({
+                userId,
+                authFields,
+                optional: optionalFields,
+                throwError,
+                ...(keyless != null && { failOnOptionalError: true }),
+              })
             : {};
         const resolved = resolveCredentials(credentials, authValues);
 
-        let allFieldsAuthenticated = true;
+        let miss: WebSearchAuthGap | undefined;
         for (const credential of resolved.values()) {
+          const { key: field, field: variable } = credential;
           if (credential.required && !credential.value) {
-            allFieldsAuthenticated = false;
+            if (field === keyless?.key) {
+              // Decided below, once the URL it depends on is resolved.
+              continue;
+            }
+            miss = { category, service: name, field, variable, reason: 'missing' };
             break;
           }
           if (
             !(await isCredentialUsable(credential, resolved, webSearchConfig?.allowedAddresses))
           ) {
             if (credential.required) {
-              allFieldsAuthenticated = false;
+              miss = { category, service: name, field, variable, reason: 'rejected' };
               break;
             }
             continue;
@@ -759,13 +956,18 @@ export async function loadWebSearchAuth({
             isUserProvided = true;
           }
         }
+        if (!miss && keyless != null && !resolved.get(keyless.key)?.value) {
+          const gap = allowKeyless(keyless, resolved, authResult);
+          miss = gap && { category, service: name, ...gap };
+        }
         blockEnvironmentKeyFallback(authResult, resolved.values());
 
         if (resolved.get('jinaApiKey')?.value && authResult.jinaApiUrl == null) {
           authResult.jinaApiUrl = DEFAULT_JINA_API_URL;
         }
 
-        if (!allFieldsAuthenticated) {
+        if (miss) {
+          misses.push(miss);
           continue;
         }
         if (category === SearchCategories.PROVIDERS) {
@@ -776,7 +978,22 @@ export async function loadWebSearchAuth({
           authResult.rerankerType = service as RerankerTypes;
         }
         return [true, isUserProvided];
-      } catch {
+      } catch (error) {
+        if (!isMissingValueError(error)) {
+          misses.push({ category, service: name, reason: 'unavailable' });
+          continue;
+        }
+        for (const { key: field, required, source } of credentials) {
+          if (required && source.kind === 'env') {
+            misses.push({
+              category,
+              service: name,
+              field,
+              variable: source.field,
+              reason: 'missing',
+            });
+          }
+        }
         continue;
       }
     }
@@ -801,6 +1018,7 @@ export async function loadWebSearchAuth({
     if (category === SearchCategories.PROVIDERS && !specificService) {
       const keenable = await resolveKeenableAuth(true);
       if (keenable.lookupFailed || keenable.rejectedUserApiUrl) {
+        misses.push(getKeenableGap(category, keenable));
         return [false, true];
       }
       if (authResult.keenableApiKey || authResult.keenableApiUrl) {
@@ -823,6 +1041,7 @@ export async function loadWebSearchAuth({
       const searchUsesKeenable = authResult.searchProvider === SearchProviders.KEENABLE;
       const keenable = await resolveKeenableAuth(searchUsesKeenable);
       if (keenable.lookupFailed || keenable.rejectedUserApiUrl) {
+        misses.push(getKeenableGap(category, keenable));
         return [false, true];
       }
       if (
@@ -844,14 +1063,20 @@ export async function loadWebSearchAuth({
     SearchCategories.RERANKERS,
   ] as const;
   const authTypes: [TWebSearchCategories, AuthType][] = [];
+  const gaps: WebSearchAuthGap[] = [];
   for (const category of categories) {
-    const [isCategoryAuthenticated, isUserProvided] = await checkAuth(category);
+    const misses: WebSearchAuthGap[] = [];
+    const [isCategoryAuthenticated, isUserProvided] = await checkAuth(category, misses);
     if (!isCategoryAuthenticated) {
       authenticated = false;
+      gaps.push(...misses);
       authTypes.push([category, AuthType.USER_PROVIDED]);
       continue;
     }
     authTypes.push([category, isUserProvided ? AuthType.USER_PROVIDED : AuthType.SYSTEM_DEFINED]);
+  }
+  if (!authenticated) {
+    logger.debug(`[loadWebSearchAuth] Web search is not authenticated for ${describeGaps(gaps)}`);
   }
 
   const scraperProvider =
@@ -896,6 +1121,7 @@ export async function loadWebSearchAuth({
   );
 
   return {
+    gaps,
     authTypes,
     authResult,
     authenticated,

@@ -1,6 +1,11 @@
 import React, { useRef, useState } from 'react';
 import { useIsMutating } from '@tanstack/react-query';
-import { Constants, MutationKeys, dataService } from 'librechat-data-provider';
+import {
+  Constants,
+  MutationKeys,
+  dataService,
+  isForcedTemporaryRetention,
+} from 'librechat-data-provider';
 import {
   Label,
   Button,
@@ -12,8 +17,8 @@ import {
   OGDialogTemplate,
 } from '@librechat/client';
 import type { TConversation } from 'librechat-data-provider';
+import { useArchiveAllConversationsMutation, useGetStartupConfig } from '~/data-provider';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
-import { useArchiveAllConversationsMutation } from '~/data-provider';
 import useNewChat from '~/hooks/Conversations/useNewChat';
 import { isTemporaryConversation } from '~/utils';
 import { NotificationSeverity } from '~/common';
@@ -44,6 +49,10 @@ export const ArchiveAllChats = () => {
   const getConversation = useGetConversation();
   const { startNewChat } = useNewChat();
   const { showToast } = useToastContext();
+  const { data: startupConfig } = useGetStartupConfig();
+  /** Archiving turns every chat temporary when the administrator enforces it, so the chats leave
+   * Archived chats and expire instead of staying there. */
+  const isEnforced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
   const pendingArchives = useIsMutating({
     mutationKey: [MutationKeys.archiveAllConversations],
   });
@@ -124,7 +133,13 @@ export const ArchiveAllChats = () => {
           title={localize('com_nav_confirm_archive_all')}
           className="max-w-[28.125rem]"
           main={
-            <Label className="break-words">{localize('com_nav_archive_all_confirm_message')}</Label>
+            <Label className="break-words">
+              {localize(
+                isEnforced
+                  ? 'com_nav_archive_all_confirm_message_temporary'
+                  : 'com_nav_archive_all_confirm_message',
+              )}
+            </Label>
           }
           selection={
             <OGDialogClose asChild>

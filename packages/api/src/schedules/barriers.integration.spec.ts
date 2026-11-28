@@ -8,12 +8,16 @@ import { ToolNode } from '@librechat/agents';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { AIMessage } from '@librechat/agents/langchain/messages';
-import { createModels, createMethods } from '@librechat/data-schemas';
 import { DEFAULT_MCP_APP_OPERATION_LIMITS } from 'librechat-data-provider';
+import {
+  createModels,
+  createMethods,
+  createScheduleMCPConsentStorage,
+} from '@librechat/data-schemas';
 import type { IScheduleRun, IUser } from '@librechat/data-schemas';
-import type { ScheduledMCPTarget } from 'librechat-data-provider';
+import type { RunGrantTarget } from 'librechat-data-provider';
 import type { IJobStoreV2, ScheduleProviderOwner } from '~/stream/interfaces/IJobStore';
-import type { ScheduledMCPBearerResult } from './authorization/contract';
+import type { ScheduledMCPBearerResult } from './bearer';
 import type { MCPOAuthTokens } from '~/mcp/oauth/types';
 import type { SchedulesServiceDeps } from './service';
 import type { ParsedServerConfig } from '~/mcp/types';
@@ -28,17 +32,17 @@ import {
   cleanupMCPRequestContext,
   quiesceMCPRequestContext,
 } from '~/mcp/request';
-import { createScheduleMCPExecution, bindScheduledMCPInvocation } from './authorization/execution';
-import { getScheduledMCPPolicyRevision, ScheduledMCPPolicyError } from './authorization/policy';
+import { createRunGrantExecution, bindRunGrantInvocation } from '~/agents/authority/execution';
+import { getRunGrantPolicyRevision, RunGrantPolicyError } from '~/agents/authority/policy';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
-import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
+import { getRunGrantConfigurationRevision } from '~/agents/authority/configuration';
 import { createOAuthMCPServer } from '~/mcp/__tests__/helpers/oauthTestServer';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
-import { createScheduleMCPConsentService } from './authorization/service';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { RedisJobStore } from '~/stream/implementations/RedisJobStore';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { createRunGrantService } from '~/agents/authority/service';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCP_APPS_CAPABILITY_PROFILE } from '~/mcp/capabilities';
 import { FlowStateManager } from '~/flow/manager';
@@ -54,6 +58,7 @@ async function fixture(
   await database.connect(mongo.getUri(), { autoIndex: false });
   createModels(database);
   const methods = createMethods(database);
+  const storage = createScheduleMCPConsentStorage(database);
   const principal = new database.Types.ObjectId();
   const owner = principal.toString();
   const scheduledFor = new Date('2026-10-04T00:00:00Z');
@@ -135,6 +140,7 @@ async function fixture(
   return {
     database,
     methods,
+    storage,
     owner,
     schedule,
     scheduledFor,
@@ -986,7 +992,7 @@ it.each(['root', 'child'])(
         source: 'yaml',
         headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
       };
-      const target: ScheduledMCPTarget = {
+      const target: RunGrantTarget = {
         resource: {
           serverName: 'Files',
           url: server.url,
@@ -1002,11 +1008,11 @@ it.each(['root', 'child'])(
         ],
         policyRevision: '',
       };
-      target.resource.configurationRevision = getScheduledMCPConfigurationRevision(
+      target.resource.configurationRevision = getRunGrantConfigurationRevision(
         definition,
         target.resource,
       );
-      target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
+      target.policyRevision = getRunGrantPolicyRevision(target.permittedTools);
       const resolveEnrollment = async () =>
         structuredClone([
           dropped
@@ -1019,8 +1025,8 @@ it.each(['root', 'child'])(
               }
             : target,
         ]);
-      const consent = createScheduleMCPConsentService({
-        storage: f.methods,
+      const consent = createRunGrantService({
+        storage: f.storage,
         resolveEnrollment,
         getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
         canUse: async () => true,
@@ -1051,8 +1057,8 @@ it.each(['root', 'child'])(
           resolveBearer: bearer,
         }),
       );
-      await createScheduleMCPExecution({
-        storage: f.methods,
+      await createRunGrantExecution({
+        storage: f.storage,
         /** Only the per-call check sees the change, after the bearer host has accepted. */
         loadAuthorization: async () => ({
           authority: {
@@ -1090,7 +1096,7 @@ it.each(['root', 'child'])(
               flowManager,
               requestScopedConnections: context,
               scheduledBearerInvocation: bindScheduledMCPBearerInvocation(context, agentId, 'echo'),
-              scheduledMCPInvocation: bindScheduledMCPInvocation(context, agentId, 'echo'),
+              scheduledMCPInvocation: bindRunGrantInvocation(context, agentId, 'echo'),
             });
           } catch (error) {
             failure = error;
@@ -1130,7 +1136,7 @@ it.each(['root', 'child'])(
         await new Promise((resolve) => setTimeout(resolve, 10));
       expect(writes).toHaveBeenCalled();
       expect(bearer).toHaveBeenCalledTimes(1);
-      expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
+      expect(failure).toBeInstanceOf(RunGrantPolicyError);
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(resultReturned).toBe(false);
       expect(provider).not.toHaveBeenCalled();
@@ -2056,7 +2062,7 @@ describe.each(['authority', 'provider'] as const)('%s observation', (source) => 
         requiresOAuth: false,
         headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
       };
-      const target: ScheduledMCPTarget = {
+      const target: RunGrantTarget = {
         resource: {
           serverName: 'Files',
           url: server.url,
@@ -2069,7 +2075,7 @@ describe.each(['authority', 'provider'] as const)('%s observation', (source) => 
         permittedTools: [{ agentId: 'root', tools: ['echo'] }],
         policyRevision: 'read-only',
       };
-      target.resource.configurationRevision = getScheduledMCPConfigurationRevision(
+      target.resource.configurationRevision = getRunGrantConfigurationRevision(
         definition,
         target.resource,
       );

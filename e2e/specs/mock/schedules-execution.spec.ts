@@ -127,6 +127,44 @@ test.describe('scheduled chat execution', () => {
   });
 
   /**
+   * A failed model call does not fail the request: the turn ends with an error part and its
+   * job completes. The run must still settle as an error, or a schedule whose model fails
+   * every time shows as healthy and never reaches its auto-disable threshold.
+   */
+  test('a run whose model call fails settles as an error and counts the failure', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await page.goto('/c/new', { timeout: 15000 });
+    const token = await getAccessToken(page);
+    const agent = await ensureAgent(page, token);
+    const schedule = await createSchedule(
+      page,
+      token,
+      scheduleBody(agent.id, { prompt: `E2E_FORCED_ERROR:sched-${Date.now()}` }),
+    );
+
+    const result = await requestJson<RunNowResult>(page, {
+      path: `/api/schedules/${schedule.id}/run`,
+      token,
+      method: 'POST',
+    });
+    expect(result.status).toBe('started');
+
+    await expect
+      .poll(async () => (await readSchedule(page, token, schedule.id))?.lastRun?.status, {
+        timeout: 60000,
+        intervals: [1000],
+      })
+      .toBe('error');
+
+    const stored = await withMongo((db) =>
+      db.collection('schedules').findOne({ id: schedule.id }, { projection: { failureCount: 1 } }),
+    );
+    expect(stored?.failureCount).toBe(1);
+  });
+
+  /**
    * A due schedule must fire on the engine's own tick, with no user action, exactly once, and
    * then advance past the occurrence. TICK_MS is 30s, so budget for one tick.
    *

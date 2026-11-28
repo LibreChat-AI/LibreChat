@@ -145,3 +145,65 @@ describe('encodeAndFormatVideos - provider formatting', () => {
     expect(result.videos).toEqual([]);
   });
 });
+
+describe('encodeAndFormatVideos - agents that share the history', () => {
+  const agent = (provider: Providers, endpoint: string, useResponsesApi?: boolean) => ({
+    provider,
+    endpoint,
+    model_parameters: { model: 'model', useResponsesApi },
+  });
+  const gpt = agent(Providers.OPENAI, 'openAI');
+  const gateway = agent(Providers.OPENAI, 'MyGateway');
+  const gemini = agent(Providers.VERTEXAI, 'vertexai');
+  const claude = agent(Providers.ANTHROPIC, 'anthropic');
+  const responses = agent(Providers.AZURE, 'azureOpenAI', true);
+  const videoUrl = { type: 'video_url', video_url: { url: 'data:video/mp4;base64,AAAA' } };
+  const media = { type: 'media', mimeType: 'video/mp4', data: 'AAAA' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedValidateVideo.mockResolvedValue({ isValid: true });
+    mockedIsConfigured.mockImplementation((_req, { endpoint }) => endpoint === 'MyGateway');
+    const file = createMockFile();
+    mockedGetFileStream.mockResolvedValue({
+      file,
+      content: 'AAAA',
+      metadata: {
+        file_id: file.file_id,
+        filepath: file.filepath,
+        source: file.source,
+        filename: file.filename,
+        type: file.type,
+      },
+    });
+  });
+
+  const encode = (provider: Providers, recipients: Iterable<ReturnType<typeof agent>>) =>
+    encodeAndFormatVideos(req, [createMockFile()], { provider, recipients }, getStrategyFunctions);
+
+  it('keeps video_url when every other agent reads it, has it rewritten or left out', async () => {
+    const result = await encode(Providers.OPENROUTER, [gateway, gemini, claude, responses]);
+    expect(result.videos).toEqual([videoUrl]);
+  });
+
+  it("sends Gemini's part when an OpenAI-compatible agent cannot read video_url", async () => {
+    const result = await encode(Providers.OPENROUTER, [gemini, gpt]);
+    expect(result.videos).toEqual([media]);
+  });
+
+  it("keeps a Vertex agent's media part whoever else reads the history", async () => {
+    const result = await encode(Providers.VERTEXAI, [gpt, gateway, claude, responses]);
+    expect(result.videos).toEqual([media]);
+  });
+
+  it("refuses video over a Vertex reader's limit, with its reason", async () => {
+    mockedValidateVideo.mockImplementation(async (_buffer, _size, provider) =>
+      provider === Providers.VERTEXAI
+        ? { isValid: false, error: 'Video file size (21MB) exceeds the 20MB limit' }
+        : { isValid: true },
+    );
+    await expect(encode(Providers.OPENROUTER, [gemini])).rejects.toThrow(
+      'Video validation failed: Video file size (21MB) exceeds the 20MB limit',
+    );
+  });
+});

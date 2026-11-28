@@ -16,6 +16,7 @@ import {
   type ShareMethods,
   type SharedLinkContentSnapshot,
 } from './share';
+import { CLAIM_INDEX, CLAIM_INDEX_OPTIONS } from '~/schema/share';
 import { MEILI_SEARCH_LIMIT } from '~/common/search';
 import logger from '~/config/winston';
 
@@ -37,6 +38,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: { type: String, index: true },
+        spec: { type: String, select: false },
         user: { type: String, index: true },
         messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
         shareId: { type: String, index: true },
@@ -44,6 +46,7 @@ describe('Share Methods', () => {
         expiredAt: { type: Date },
         snapshotFiles: { type: Boolean },
         fileSnapshots: { type: [mongoose.Schema.Types.Mixed], default: undefined },
+        claim: { type: String, select: false },
       },
       { timestamps: true },
     );
@@ -80,6 +83,7 @@ describe('Share Methods', () => {
         privateTextTokens: { type: [String], select: false, default: undefined },
         isCreatedByUser: Boolean,
         isUserSubmitted: Boolean,
+        trigger: { type: mongoose.Schema.Types.Mixed, select: false, default: undefined },
         userSubmittedPaths: {
           type: [String],
           default: undefined,
@@ -112,6 +116,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: String,
+        spec: String,
         user: String,
         endpoint: String,
         endpointType: String,
@@ -253,6 +258,364 @@ describe('Share Methods', () => {
       expect(surviving).toHaveLength(1);
       const winner = fulfilled[0] as PromiseFulfilledResult<t.CreateShareResult>;
       expect(surviving[0].shareId).toBe(winner.value.shareId);
+    });
+
+    describe('creates that overlap', () => {
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      /** A conversation with one message, ready to share; returns the message id. */
+      const seedConversation = async (userId: string, conversationId: string) => {
+        const messageId = `msg_${nanoid()}`;
+        await Conversation.create({ conversationId, user: userId, title: 'Racing Conversation' });
+        await Message.create({
+          messageId,
+          conversationId,
+          user: userId,
+          text: 'Test message',
+          isCreatedByUser: true,
+        });
+        return messageId;
+      };
+
+      /**
+       * Holds the next shared-link insert after its create stamped `_id` and `createdAt`, so
+       * another create can run to completion before the held insert lands.
+       */
+      const holdNextInsert = () => {
+        const insertOne = SharedLink.collection.insertOne.bind(SharedLink.collection);
+        let release!: () => void;
+        let reach!: () => void;
+        let land!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const reached = new Promise<void>((resolve) => {
+          reach = resolve;
+        });
+        const landed = new Promise<void>((resolve) => {
+          land = resolve;
+        });
+        jest.spyOn(SharedLink.collection, 'insertOne').mockImplementationOnce(async (...args) => {
+          reach();
+          await held;
+          const result = await insertOne(...args);
+          land();
+          return result;
+        });
+        return { reached, release, landed };
+      };
+
+      /**
+       * Holds every rival check, the re-read a create makes after its insert, until released, and
+       * reports the first two arrivals.
+       */
+      const holdRivalChecks = () => {
+        const findOne = SharedLink.collection.findOne.bind(SharedLink.collection);
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const arrivals: (() => void)[] = [];
+        const arrived = [0, 1].map(
+          () => new Promise<void>((resolve) => arrivals.push(() => resolve())),
+        );
+        jest.spyOn(SharedLink.collection, 'findOne').mockImplementation(async (...args) => {
+          const [filter] = args;
+          if (filter != null && '_id' in filter) {
+            arrivals.shift()?.();
+            await held;
+          }
+          return findOne(...args);
+        });
+        return { arrived, release };
+      };
+
+      const settle = async (promise: Promise<t.CreateShareResult>) =>
+        (await Promise.allSettled([promise]))[0];
+
+      /** One create won, every other one was told the share exists, and only its share is left. */
+      const expectOneShare = async (
+        results: PromiseSettledResult<t.CreateShareResult>[],
+        userId: string,
+        conversationId: string,
+      ) => {
+        const fulfilled = results.filter(
+          (result): result is PromiseFulfilledResult<t.CreateShareResult> =>
+            result.status === 'fulfilled',
+        );
+        expect(fulfilled).toHaveLength(1);
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            expect(result.reason).toMatchObject({ code: 'SHARE_EXISTS' });
+          }
+        }
+        const surviving = await SharedLink.find({ conversationId, user: userId }).lean();
+        expect(surviving.map((share) => share.shareId)).toEqual([fulfilled[0].value.shareId]);
+      };
+
+      test('keep one share when an earlier-stamped insert lands after a later create finished', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        const { reached, release } = holdNextInsert();
+
+        const earlier = settle(shareMethods.createSharedLink(userId, conversationId));
+        await reached;
+        const later = await settle(shareMethods.createSharedLink(userId, conversationId));
+        release();
+
+        expect(later.status).toBe('fulfilled');
+        await expectOneShare([await earlier, later], userId, conversationId);
+      });
+
+      test('refuse a create whose insert lands while another create for the key decides', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        const first = holdNextInsert();
+        const second = holdNextInsert();
+
+        const deciding = settle(shareMethods.createSharedLink(userId, conversationId));
+        await first.reached;
+        const arriving = settle(shareMethods.createSharedLink(userId, conversationId));
+        await second.reached;
+        const checks = holdRivalChecks();
+        first.release();
+        await checks.arrived[0];
+        second.release();
+
+        expect(await arriving).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'SHARE_EXISTS' },
+        });
+        checks.release();
+        await expectOneShare([await deciding, await arriving], userId, conversationId);
+      });
+
+      test('leave the next create free after one fails before its insert lands', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        jest.spyOn(logger, 'error').mockImplementation(() => logger);
+        jest
+          .spyOn(SharedLink.collection, 'insertOne')
+          .mockRejectedValueOnce(new Error('insert failed'));
+
+        await expect(shareMethods.createSharedLink(userId, conversationId)).rejects.toMatchObject({
+          code: 'SHARE_CREATE_ERROR',
+        });
+        expect(await SharedLink.countDocuments({ conversationId, user: userId })).toBe(0);
+
+        const result = await shareMethods.createSharedLink(userId, conversationId);
+        const surviving = await SharedLink.find({ conversationId, user: userId }).lean();
+        expect(surviving.map((share) => share.shareId)).toEqual([result.shareId]);
+      });
+
+      test('free a key once the link holding it expired', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+
+        const kept = await shareMethods.createSharedLink(userId, conversationId);
+        const held = await SharedLink.findOne({ shareId: kept.shareId }).select('+claim').lean();
+        expect(held?.claim).toBeDefined();
+        await expect(shareMethods.createSharedLink(userId, conversationId)).rejects.toMatchObject({
+          code: 'SHARE_EXISTS',
+        });
+
+        await SharedLink.updateOne(
+          { shareId: kept.shareId },
+          { $set: { expiredAt: new Date(Date.now() - 1000) } },
+        );
+        const result = await shareMethods.createSharedLink(userId, conversationId);
+        const active = await SharedLink.find({
+          conversationId,
+          user: userId,
+          expiredAt: { $exists: false },
+        }).lean();
+        expect(active.map((share) => share.shareId)).toEqual([result.shareId]);
+      });
+
+      test('free a message key once the link holding it moved to another message', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        const messageId = await seedConversation(userId, conversationId);
+        const laterId = `msg_${nanoid()}`;
+        await Message.create({
+          messageId: laterId,
+          conversationId,
+          user: userId,
+          text: 'Later message',
+          isCreatedByUser: true,
+          parentMessageId: messageId,
+        });
+
+        const moved = await shareMethods.createSharedLink(userId, conversationId, messageId);
+        await shareMethods.updateSharedLink(userId, moved.shareId, laterId);
+        const result = await shareMethods.createSharedLink(userId, conversationId, messageId);
+
+        const links = await SharedLink.find({ conversationId, user: userId })
+          .select('+claim')
+          .lean();
+        expect(
+          links.map(({ shareId, targetMessageId, claim }) => ({
+            shareId,
+            targetMessageId,
+            claimed: claim != null,
+          })),
+        ).toEqual(
+          expect.arrayContaining([
+            { shareId: moved.shareId, targetMessageId: laterId, claimed: false },
+            { shareId: result.shareId, targetMessageId: messageId, claimed: true },
+          ]),
+        );
+        expect(links).toHaveLength(2);
+      });
+
+      test('keep a link when a later-stamped link made without a claim lands during its create', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        const { reached, release } = holdNextInsert();
+
+        const current = settle(shareMethods.createSharedLink(userId, conversationId));
+        await reached;
+        const previous = await SharedLink.create({
+          shareId: `share_${nanoid()}`,
+          conversationId,
+          user: userId,
+          title: 'Created by the previous version',
+        });
+        release();
+
+        const result = await current;
+        expect(result.status).toBe('fulfilled');
+        const winner = result.status === 'fulfilled' ? result.value : undefined;
+        const kept = await SharedLink.findOne({ shareId: winner?.shareId }).lean();
+        expect(kept?.createdAt?.getTime()).toBeLessThanOrEqual(previous.createdAt?.getTime() ?? 0);
+        const links = await SharedLink.find({ conversationId, user: userId }).lean();
+        expect(links.map((share) => share.shareId).sort()).toEqual(
+          [winner?.shareId, previous.shareId].sort(),
+        );
+      });
+
+      test('refuse a create when an earlier-stamped link made without a claim lands during it', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        const { reached, release } = holdNextInsert();
+
+        const current = settle(shareMethods.createSharedLink(userId, conversationId));
+        await reached;
+        const previous = await SharedLink.create({
+          shareId: `share_${nanoid()}`,
+          conversationId,
+          user: userId,
+          title: 'Created by the previous version',
+          createdAt: new Date(Date.now() - 60_000),
+        });
+        release();
+
+        expect(await current).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'SHARE_EXISTS' },
+        });
+        const links = await SharedLink.find({ conversationId, user: userId }).lean();
+        expect(links.map((share) => share.shareId)).toEqual([previous.shareId]);
+      });
+
+      test('build the claim index for a collection that lacks it', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        if (await SharedLink.collection.indexExists('user_1_claim_1')) {
+          await SharedLink.collection.dropIndex('user_1_claim_1');
+        }
+        const methods = createShareMethods(mongoose);
+
+        const results = await Promise.allSettled([
+          methods.createSharedLink(userId, conversationId),
+          methods.createSharedLink(userId, conversationId),
+          methods.createSharedLink(userId, conversationId),
+        ]);
+
+        await expectOneShare(results, userId, conversationId);
+        expect(await SharedLink.collection.indexExists('user_1_claim_1')).toBe(true);
+      });
+
+      test('refuse to create a link while the claim index cannot be built', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        if (await SharedLink.collection.indexExists('user_1_claim_1')) {
+          await SharedLink.collection.dropIndex('user_1_claim_1');
+        }
+        const failed = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+        const build = jest
+          .spyOn(SharedLink.collection, 'createIndex')
+          .mockRejectedValueOnce(new Error('not authorized to create indexes'));
+        const methods = createShareMethods(mongoose);
+
+        try {
+          await expect(methods.createSharedLink(userId, conversationId)).rejects.toMatchObject({
+            code: 'SHARE_CREATE_ERROR',
+          });
+          expect(await SharedLink.countDocuments({ conversationId, user: userId })).toBe(0);
+          expect(failed).toHaveBeenCalledWith(
+            '[createSharedLink] Error creating shared link',
+            expect.objectContaining({ error: 'not authorized to create indexes' }),
+          );
+
+          const result = await methods.createSharedLink(userId, conversationId);
+          expect(build).toHaveBeenCalledTimes(2);
+          const surviving = await SharedLink.find({ conversationId, user: userId }).lean();
+          expect(surviving.map((share) => share.shareId)).toEqual([result.shareId]);
+        } finally {
+          jest.restoreAllMocks();
+          await SharedLink.collection.createIndex(CLAIM_INDEX, CLAIM_INDEX_OPTIONS);
+        }
+      });
+
+      test('use a provisioned claim index when the application cannot create indexes', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        await seedConversation(userId, conversationId);
+        await SharedLink.collection.createIndex(CLAIM_INDEX, CLAIM_INDEX_OPTIONS);
+        const build = jest
+          .spyOn(SharedLink.collection, 'createIndex')
+          .mockRejectedValue(new Error('not authorized to create indexes'));
+        const methods = createShareMethods(mongoose);
+
+        const results = await Promise.allSettled([
+          methods.createSharedLink(userId, conversationId),
+          methods.createSharedLink(userId, conversationId),
+        ]);
+
+        expect(build).not.toHaveBeenCalled();
+        await expectOneShare(results, userId, conversationId);
+      });
+
+      test('refuse a whole-conversation share when a message share lands during its insert', async () => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        const messageId = await seedConversation(userId, conversationId);
+        const { reached, release } = holdNextInsert();
+
+        const whole = settle(shareMethods.createSharedLink(userId, conversationId));
+        await reached;
+        const targeted = await shareMethods.createSharedLink(userId, conversationId, messageId);
+        release();
+
+        const result = await whole;
+        expect(result.status).toBe('rejected');
+        expect(result.status === 'rejected' && result.reason).toMatchObject({
+          code: 'SHARE_EXISTS',
+        });
+        const surviving = await SharedLink.find({ conversationId, user: userId }).lean();
+        expect(surviving.map((share) => share.shareId)).toEqual([targeted.shareId]);
+      });
     });
 
     test('should ignore expired shares when checking for duplicates', async () => {
@@ -525,6 +888,33 @@ describe('Share Methods', () => {
     });
   });
 
+  it('reads the published spec only for a fork and refreshes it on republish', async () => {
+    const key = { user: 'owner', conversationId: 'spec-chat' };
+    await Conversation.create({ ...key, title: 'Spec chat', spec: 'specialist' });
+    await Message.create({ ...key, messageId: 'root', text: 'Published message' });
+
+    const { shareId, _id } = await shareMethods.createSharedLink(key.user, key.conversationId);
+    const preflight = jest.fn();
+    const fork = await shareMethods.getSharedForkSnapshot(shareId, _id, { preflight });
+    expect(fork).toMatchObject({ spec: 'specialist', share: { shareId } });
+    expect(fork?.share).not.toHaveProperty('spec');
+    expect(preflight.mock.calls[0][0]).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedMessages(shareId)).not.toHaveProperty('spec');
+
+    await Conversation.updateOne(key, { $set: { spec: 'replacement' } });
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'specialist');
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'replacement');
+
+    await Conversation.updateOne(key, { $unset: { spec: 1 } });
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await SharedLink.findOne({ shareId }).select('+spec').lean()).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toMatchObject({
+      spec: undefined,
+      share: { shareId },
+    });
+  });
+
   describe('getSharedMessages', () => {
     /** Publishes through `createSharedLink` with one response whose stored `sender` is
      *  what the header will render, so what a viewer reads back is the published flag. */
@@ -670,6 +1060,10 @@ describe('Share Methods', () => {
           text: 'Hello',
           isCreatedByUser: true,
           parentMessageId: Constants.NO_PARENT,
+          trigger: {
+            event: { type: 'schedule.occurrence', occurredAt: new Date(0) },
+            subject: { kind: 'schedule', id: 'schedule-1' },
+          },
         },
         {
           messageId: `msg_${nanoid()}`,
@@ -727,6 +1121,11 @@ describe('Share Methods', () => {
       ]);
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'isUserSubmitted',
+      );
+      /** What started a turn is its owner's to see: a link's viewer is not told. */
+      expect(JSON.stringify(result)).not.toContain('schedule-1');
+      expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
+        'trigger',
       );
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'userSubmittedPaths',
@@ -1169,6 +1568,60 @@ describe('Share Methods', () => {
       const share = await SharedLink.findOne({ shareId }).lean();
       expect(share?.fileSnapshots?.map((snapshot) => snapshot.file_id)).toContain('steer-file-2');
       expect(share?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
+    });
+
+    test("drops the author's skill ids from the shared payload and the copy a fork reads", async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      const shareId = `share_${nanoid()}`;
+      const skillId = new mongoose.Types.ObjectId().toString();
+      const loaded = 'Skill "release-notes" loaded. Follow the instructions below.';
+      const skillCall = (id: string) => ({
+        type: 'tool_call',
+        tool_call: {
+          id,
+          name: 'skill',
+          args: '{"skillName":"release-notes"}',
+          output: loaded,
+          progress: 1,
+          skillId,
+        },
+      });
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: '',
+        isCreatedByUser: false,
+        content: [
+          skillCall('call_skill'),
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: 'call_subagent',
+              name: 'subagent',
+              args: '{}',
+              output: 'done',
+              progress: 1,
+              subagent_content: [skillCall('call_child_skill'), { type: 'text', text: 'ok' }],
+            },
+          },
+        ],
+      });
+      await SharedLink.create({ shareId, conversationId, user: userId, messages: [message._id] });
+
+      const shared = await shareMethods.getSharedMessages(shareId);
+      const fork = await shareMethods.getSharedForkSnapshot(shareId);
+
+      for (const content of [shared?.messages[0]?.content, fork?.share.messages[0]?.content]) {
+        const parts = content as Array<{ tool_call: Record<string, unknown> }>;
+        const child = (parts[1].tool_call.subagent_content as typeof parts)[0].tool_call;
+        expect(parts[0].tool_call).toMatchObject({ id: 'call_skill', output: loaded });
+        expect(child).toMatchObject({ id: 'call_child_skill', output: loaded });
+        expect(JSON.stringify(content)).not.toContain(skillId);
+      }
+      const stored = await Message.findById(message._id).lean();
+      expect(JSON.stringify(stored?.content)).toContain(skillId);
     });
 
     test('leaves safe non-steer content untouched (same array reference)', () => {

@@ -31,6 +31,18 @@ const probe = (page: Page, className: string) =>
 
 const elapsedReading = (page: Page) => messagesView(page).getByTestId('stream-elapsed');
 
+/** Read in one browser task for the same reason as `readDipAlpha`: streaming can replace the footer. */
+const readSweep = (page: Page, selector: string, property: string) =>
+  page.evaluate(
+    ({ selector, property }) => {
+      const element = document.querySelector(
+        `[data-testid="messages-view"] [data-testid="stream-elapsed"] ${selector}`,
+      );
+      return element ? getComputedStyle(element).getPropertyValue(property) : null;
+    },
+    { selector, property },
+  );
+
 const readDipAlpha = (page: Page) =>
   page.evaluate(() => {
     // Streaming can replace the footer between locator resolution and evaluate.
@@ -72,6 +84,7 @@ test.describe('shared part classes', () => {
 
   test('an in-flight label sweeps, and high contrast holds both stops opaque @scenario:in-flight-label-keeps-its-sweep', async ({
     page,
+    browserName,
   }) => {
     test.setTimeout(120_000);
     const label = `shared-part-classes-${Date.now()}`;
@@ -86,22 +99,37 @@ test.describe('shared part classes', () => {
     /** The sweep is two transforms that cancel, a band and the copy of the
      *  label inside it, so the compositor can run it without a repaint. The
      *  label itself must not animate: that is what put the sweep on the main
-     *  thread. */
+     *  thread. Firefox does not keep the two transforms in step once the band
+     *  carries a mask, so there the band stays still and the mask slides over
+     *  the copy. */
+    const firefox = browserName === 'firefox';
     await expect(elapsedReading(page).locator('.shimmer-band')).toHaveCSS(
       'animation-name',
-      'shimmer-band',
+      firefox ? 'none' : 'shimmer-band',
     );
     await expect(elapsedReading(page).locator('.shimmer-copy')).toHaveCSS(
       'animation-name',
-      'shimmer-copy',
+      firefox ? 'shimmer-mask' : 'shimmer-copy',
     );
     await expect(elapsedReading(page)).toHaveCSS('animation-name', 'none');
+
+    /** A sweep that is declared but never advances would pass the checks above. */
+    const [moving, property] = firefox
+      ? ['.shimmer-copy', 'mask-position']
+      : ['.shimmer-band', 'transform'];
+    const first = await readSweep(page, moving, property);
+    expect(first).not.toBeNull();
+    await expect.poll(() => readSweep(page, moving, property)).not.toBe(first);
     await expect.poll(async () => Number(await readDipAlpha(page))).toBeLessThan(1);
 
-    await page.emulateMedia({ contrast: 'more' });
-    await expect(page.locator('html.high-contrast')).toHaveCount(1, { timeout: 5_000 });
-    await expect.poll(() => readDipAlpha(page)).toBe('1');
-    await page.emulateMedia({ contrast: null });
+    /** Playwright's Firefox changes what `prefers-contrast` matches without firing the `change`
+     *  event the theme provider listens for, so the app cannot switch to high contrast there. */
+    if (!firefox) {
+      await page.emulateMedia({ contrast: 'more' });
+      await expect(page.locator('html.high-contrast')).toHaveCount(1, { timeout: 5_000 });
+      await expect.poll(() => readDipAlpha(page)).toBe('1');
+      await page.emulateMedia({ contrast: null });
+    }
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await expect(elapsedReading(page).locator('.shimmer-clip')).toHaveCSS('display', 'none');

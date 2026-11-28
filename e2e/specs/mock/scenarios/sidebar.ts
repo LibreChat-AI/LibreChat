@@ -21,6 +21,10 @@ async function firstVisible(candidates: Locator): Promise<Locator | null> {
  * The mobile drawer stays mounted and slides, so a test id read reports the off-canvas copy as
  * present before the expanded state commits, and both earlier readings sent this helper back
  * with the list still hidden behind the pane.
+ *
+ * A closing drawer keeps that control painted until its slide ends, so after an action that
+ * closes it (choosing a chat, starting a new one) wait for `#mobile-drawer` to be hidden before
+ * calling this again, or it returns at once with the drawer still on its way out.
  */
 export async function openSidebar(page: Page) {
   const isOpen = async () =>

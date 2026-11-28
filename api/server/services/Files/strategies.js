@@ -28,6 +28,7 @@ const {
   deleteFirebaseFile,
   saveBufferToFirebase,
   uploadFileToFirebase,
+  deleteFirebaseObject,
   uploadImageToFirebase,
   processFirebaseAvatar,
   getFirebaseFileStream,
@@ -90,6 +91,7 @@ const firebaseStrategy = () => ({
   processAvatar: processFirebaseAvatar,
   handleImageUpload: uploadImageToFirebase,
   getDownloadStream: getFirebaseFileStream,
+  deleteByPath: deleteFirebaseObject,
 });
 
 /**

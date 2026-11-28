@@ -1,5 +1,5 @@
 import type { AppConfig, IUser } from '@librechat/data-schemas';
-import { buildScheduledApprovalAdmissionHooks } from './execution';
+import { approvalHooks } from '~/agents/authority/execution';
 import { createScheduledPauseCheck } from './host';
 
 describe('createScheduledPauseCheck', () => {
@@ -53,11 +53,11 @@ describe('createScheduledPauseCheck', () => {
   });
 });
 
-describe('buildScheduledApprovalAdmissionHooks', () => {
+describe('approvalHooks', () => {
   it('announces a possible pause only for a grant that asks', async () => {
-    expect(buildScheduledApprovalAdmissionHooks()).toEqual([]);
-    expect(buildScheduledApprovalAdmissionHooks({ mayAsk: false })).toEqual([]);
-    const [entry, ...rest] = buildScheduledApprovalAdmissionHooks({ mayAsk: true });
+    expect(approvalHooks()).toEqual([]);
+    expect(approvalHooks({ mayAsk: false })).toEqual([]);
+    const [entry, ...rest] = approvalHooks({ mayAsk: true });
     expect(rest).toEqual([]);
     // No matcher: admission treats every tool as one that may ask. It decides nothing itself.
     expect(entry.matcher).toBeUndefined();

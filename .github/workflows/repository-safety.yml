@@ -30,3 +30,22 @@ jobs:
         run: node --test .github/scripts/check-symlinks.test.mjs
       - name: Reject out-of-bounds symlinks
         run: node .github/scripts/check-symlinks.mjs
+
+  # Linux CI resolves `Files.tsx` and `files.ts` as two modules; macOS and
+  # Windows resolve `import './Files'` to `files.ts`, so the build fails there.
+  # Runs on every pull request, because any path can add a collision.
+  casing:
+    name: Reject paths that differ only by case
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+      - name: Test casing check
+        run: node --test scripts/casing.test.mts
+      - name: Reject paths that collide on case-insensitive file systems
+        run: node scripts/casing.mts

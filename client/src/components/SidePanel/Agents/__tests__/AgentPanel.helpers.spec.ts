@@ -280,6 +280,17 @@ describe('composeAgentUpdatePayload', () => {
     expect(payload.git_identity).toBeUndefined();
   });
 
+  it.each([true, false])('sends the text-only switch as %s', (textOnly) => {
+    const form = createForm();
+    form.text_only = textOnly;
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.text_only).toBe(textOnly);
+  });
+
   it('persists standalone skill authoring separately from catalog access', () => {
     const form = createForm();
     form.skills = [];

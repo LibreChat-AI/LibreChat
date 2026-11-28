@@ -88,7 +88,16 @@ const argsAt = (tool: number, delta: number): string => {
   return `{"intent":"${intent}","code":"${'x = compute(1)\\n'.repeat(delta - 6)}`;
 };
 
-function buildStream(labelled: boolean): Snapshot[] {
+type Stream = {
+  /** Whether batches get labels and phases get summaries. */
+  labelled: boolean;
+  /** Phases the run goes through; each closes with a summary before the next starts. */
+  phases?: number;
+  /** Batches of tool calls in each phase. */
+  batches?: number;
+};
+
+function buildStream({ labelled, phases = 1, batches = BATCHES }: Stream): Snapshot[] {
   const snapshots: Snapshot[] = [];
   let content: Snapshot = [];
   const commit = (next: Snapshot) => {
@@ -100,7 +109,27 @@ function buildStream(labelled: boolean): Snapshot[] {
     next[index] = part;
     commit(next);
   };
-  for (let batch = 0; batch < BATCHES; batch += 1) {
+  for (let phase = 0; phase < phases; phase += 1) {
+    const phaseStart = content.length;
+    for (let batch = 0; batch < batches; batch += 1) {
+      streamBatch(phase * batches + batch);
+    }
+    if (labelled) {
+      commit([
+        ...content,
+        {
+          type: ContentTypes.ACTIVITY_LABEL,
+          [ContentTypes.ACTIVITY_LABEL]: SUMMARY,
+          activity_label_type: 'phase',
+          activity_start_index: phaseStart,
+          activity_end_index: content.length,
+          activity_count: batches,
+          pending: false,
+        } as unknown as TMessageContentParts,
+      ]);
+    }
+  }
+  function streamBatch(batch: number) {
     const base = content.length;
     const ids = NAMES.map((_, tool) => `call_${batch}_${tool}`);
     for (let tool = 0; tool < NAMES.length; tool += 1) {
@@ -117,22 +146,8 @@ function buildStream(labelled: boolean): Snapshot[] {
     }
     commit([...content, labelPart('', ids)]);
     if (labelled) {
-      replace(content.length - 1, labelPart(LABELS[batch], ids));
+      replace(content.length - 1, labelPart(LABELS[batch % LABELS.length], ids));
     }
-  }
-  if (labelled) {
-    commit([
-      ...content,
-      {
-        type: ContentTypes.ACTIVITY_LABEL,
-        [ContentTypes.ACTIVITY_LABEL]: SUMMARY,
-        activity_label_type: 'phase',
-        activity_start_index: 0,
-        activity_end_index: content.length,
-        activity_count: BATCHES,
-        pending: false,
-      } as unknown as TMessageContentParts,
-    ]);
   }
   const textIndex = content.length;
   for (let delta = 1; delta <= TEXT_DELTAS; delta += 1) {
@@ -209,11 +224,13 @@ const median = (values: number[]): number =>
   values.slice().sort((a, b) => a - b)[values.length >> 1];
 
 describe('ContentParts live-run render benchmark', () => {
-  it.each([
-    ['labelled run (activity labels on)', true],
-    ['unlabelled run (feature off)', false],
-  ])('%s', (name, labelled) => {
-    const snapshots = buildStream(labelled);
+  it.each<[string, Stream]>([
+    ['labelled run (activity labels on)', { labelled: true }],
+    ['unlabelled run (feature off)', { labelled: false }],
+    /** A long agent run: what a streamed delta costs once earlier phases have settled. */
+    ['long run (8 phases of 3 batches)', { labelled: true, phases: 8, batches: 3 }],
+  ])('%s', (name, stream) => {
+    const snapshots = buildStream(stream);
     replay(snapshots);
     const runs = [replay(snapshots), replay(snapshots), replay(snapshots)];
     const report = {

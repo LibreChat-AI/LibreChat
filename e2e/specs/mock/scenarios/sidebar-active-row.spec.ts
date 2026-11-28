@@ -14,12 +14,24 @@ const ACTIVE = /(^|\s)bg-surface-nav-selected(\s|$)/;
 const row = (page: Page, title: string) =>
   page.getByTestId('convo-item').filter({ hasText: title }).filter({ visible: true }).first();
 
+/**
+ * On a narrow viewport choosing a chat or starting a new one closes the drawer, and the drawer
+ * stays painted, close control included, for the whole of that slide. Opened again before the
+ * slide ends, the shared opener would find it open, the rows would be read from a drawer that
+ * goes on closing, and the next tap would land on it. So it is waited shut first. Desktop
+ * renders no drawer, so this passes at once there.
+ */
+async function waitDrawerShut(page: Page) {
+  await expect(page.locator('#mobile-drawer')).toBeHidden();
+}
+
 async function openRow(page: Page, id: string, title: string) {
   await openSidebar(page);
   await row(page, title)
     .getByRole('button', { name: new RegExp(`^${title} conversation`) })
     .dispatchEvent('click');
   await expect(page).toHaveURL(new RegExp(`/c/${id}$`));
+  await waitDrawerShut(page);
 }
 
 async function expectHighlighted(page: Page, active: string | null, titles: string[]) {
@@ -67,6 +79,7 @@ test.describe('sidebar active row', () => {
         .first()
         .click();
       await expect(page).toHaveURL(/\/c\/new$/);
+      await waitDrawerShut(page);
       await expectHighlighted(page, null, titles);
     } finally {
       await deleteMessagesByConversation([first, second]);

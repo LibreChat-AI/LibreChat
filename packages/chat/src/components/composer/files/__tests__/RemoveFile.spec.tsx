@@ -3,12 +3,10 @@
  */
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import RemoveFile from '../RemoveFile';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 describe('RemoveFile', () => {
   it('names the file it removes, or falls back to the generic label', () => {
@@ -19,6 +17,6 @@ describe('RemoveFile', () => {
     expect(onRemove).toHaveBeenCalledTimes(1);
 
     rerender(<RemoveFile onRemove={onRemove} disabled />);
-    expect(screen.getByRole('button', { name: 'com_ui_attach_remove' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Remove file' })).toBeDisabled();
   });
 });
