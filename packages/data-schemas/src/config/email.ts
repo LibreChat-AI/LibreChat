@@ -280,14 +280,18 @@ function quoted(text: string, close: number, bound: number): Word | undefined {
   return level > 0 ? { start: 0, open: false } : undefined;
 }
 
-/** Start of the comment closed at `close`, or -1: no nesting, quotes, at signs or line breaks. */
+/**
+ * Start of the comment closed at `close`, which may hold an at sign, or -1 at a quote, a line
+ * break or another closing parenthesis. Nesting is not followed, so each scan stops at the
+ * previous one; a nested comment is masked through the token fallback in `findEmails`.
+ */
 function comment(text: string, close: number, bound: number): number {
   for (let cursor = close - 1; cursor >= bound; cursor--) {
     const code = text.charCodeAt(cursor);
     if (code === OPEN) {
       return cursor;
     }
-    if (code === CLOSE || code === QUOTE || code === AT || code === CR || code === LF) {
+    if (code === CLOSE || code === QUOTE || code === CR || code === LF) {
       return -1;
     }
   }
@@ -302,7 +306,8 @@ function comment(text: string, close: number, bound: number): number {
  */
 function local(text: string, at: number, floor: number, encoded: boolean): Part {
   const bound = Math.max(0, at - MAX_PART);
-  const limit = Math.max(floor, bound);
+  /** Once a quoted word or comment reads past the floor, the part may run on to the bound. */
+  let limit = Math.max(floor, bound);
   let start = at;
   let units = 0;
   /** A quoted word may close here: at the at sign or before a dot. */
@@ -329,6 +334,7 @@ function local(text: string, at: number, floor: number, encoded: boolean): Part 
         break;
       }
       start = word.start;
+      limit = start < limit ? bound : limit;
       units++;
       if (!word.open) {
         break;
@@ -343,6 +349,7 @@ function local(text: string, at: number, floor: number, encoded: boolean): Part 
         break;
       }
       start = open;
+      limit = start < limit ? bound : limit;
       units++;
       wordEnd = true;
       needDot = false;
@@ -617,7 +624,8 @@ export function findEmails(text: string): Span[] {
       units > 0 && !(size === 1 && segment(text, index)) ? domain(text, end, encoded) : 0;
     mark = end;
     if (stop === 0) {
-      origin = start;
+      /** Text glued to the next at sign inherits this start, so reach back as far as the token. */
+      origin = Math.min(start, token(text, index, Math.max(floor, index - MAX_PART), encoded));
       masked = false;
       index = end;
       continue;

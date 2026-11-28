@@ -192,6 +192,10 @@ describe('maskEmails coverage contract', () => {
     ['a handle', '@user@instance.social', MASK],
     ['an address after a domain', 'a@b.com@c.com', MASK],
     ['encoded at signs', 'jane%40ex%40ample.com', MASK],
+    ['an at sign in a comment', 'alice(work@home)@example.com', MASK],
+    ['an address in a comment', 'alice(work@home.com)@example.com', MASK],
+    ['an at sign in a nested comment', 'alice(a(b@c)d)@example.com', MASK],
+    ['a colon before an at sign glued to the next', 'alice:work@home)@example.com', MASK],
   ])('never leaves text glued to an address outside the mask: %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
   });
@@ -258,6 +262,8 @@ describe('maskEmails bounds', () => {
       '"x"@'.repeat(30_000),
       ')@'.repeat(50_000),
       '(a)@'.repeat(30_000),
+      'a)@'.repeat(30_000),
+      `${'(a@'.repeat(30_000)})@example.com`,
       'a%40'.repeat(50_000),
       '?a%40'.repeat(30_000),
       'a%2540'.repeat(20_000),
