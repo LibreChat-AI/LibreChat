@@ -21,6 +21,7 @@ const mockGenerationJobManager = {
   finishTerminalJob: jest.fn(),
   completeJob: jest.fn(),
   beginProviderExecution: jest.fn(),
+  trackProviderTrailingAbort: jest.fn(),
   markProviderExecutionDrained: jest.fn(),
   failPausePersistence: jest.fn(),
   getResumeState: jest.fn(),
@@ -362,6 +363,8 @@ jest.mock('@librechat/api', () => ({
   getMCPRequestContext: (...args) => mockGetMCPRequestContext(...args),
   createChatFinalization: (...args) =>
     jest.requireActual('@librechat/api').createChatFinalization(...args),
+  createAgentTurnTitle: (...args) =>
+    jest.requireActual('@librechat/api').createAgentTurnTitle(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: (...args) => mockCleanupMCPRequestContextForReq(...args),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),
@@ -577,6 +580,7 @@ describe('ResumableAgentController resume metadata', () => {
       },
     );
     mockGenerationJobManager.beginProviderExecution.mockResolvedValue(true);
+    mockGenerationJobManager.trackProviderTrailingAbort.mockResolvedValue(true);
     mockGenerationJobManager.markProviderExecutionDrained.mockResolvedValue(true);
     mockGenerationJobManager.failPausePersistence.mockResolvedValue(true);
     mockGenerationJobManager.claimGeneration.mockResolvedValue(wonGenerationClaim());
@@ -7697,7 +7701,7 @@ describe('ResumableAgentController resume metadata', () => {
       expect(addTitle).toHaveBeenCalledTimes(1);
       expect(addTitle).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ response: expect.anything() }),
+        expect.objectContaining({ conversationId: expect.any(String), epoch: 1000 }),
       );
     });
 
@@ -7724,6 +7728,34 @@ describe('ResumableAgentController resume metadata', () => {
         'provider-segment-1',
       );
     });
+
+    it.each(['immediate', 'final'])(
+      'cancels a detached %s title on provider cleanup',
+      async (mode) => {
+        resolveTitleTiming.mockReturnValueOnce(mode);
+        const addTitle = jest.fn(
+          (_req, { signal }) => new Promise((resolve) => signal.addEventListener('abort', resolve)),
+        );
+
+        await runFirstTurn({ addTitle });
+
+        const { signal } = addTitle.mock.calls[0][1];
+        expect(signal.aborted).toBe(false);
+        expect(mockGenerationJobManager.markProviderExecutionDrained).not.toHaveBeenCalled();
+        const [streamId, epoch, provider, cancel] =
+          mockGenerationJobManager.trackProviderTrailingAbort.mock.calls[0];
+        cancel();
+        await nextTick();
+        await nextTick();
+
+        expect(signal.aborted).toBe(true);
+        expect(mockGenerationJobManager.markProviderExecutionDrained).toHaveBeenCalledWith(
+          streamId,
+          epoch,
+          provider,
+        );
+      },
+    );
 
     it('cancels an in-flight immediate title when the turn ends preempt-incomplete', async () => {
       const { addTitle, getTitleSignal } = await runFirstTurn({ run: preemptIncompleteRun });

@@ -27,6 +27,7 @@ const mockGenerationJobManager = {
   emitError: jest.fn(),
   completeJob: jest.fn(),
   beginProviderExecution: jest.fn(),
+  trackProviderTrailingAbort: jest.fn(),
   markProviderExecutionDrained: jest.fn(),
   getResumeState: jest.fn(),
   getJobStore: jest.fn(),
@@ -123,6 +124,8 @@ jest.mock('@librechat/api', () => ({
   })),
   createChatFinalization: (...args) =>
     jest.requireActual('@librechat/api').createChatFinalization(...args),
+  createAgentTurnTitle: (...args) =>
+    jest.requireActual('@librechat/api').createAgentTurnTitle(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: jest.fn(),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),
@@ -182,6 +185,7 @@ describe('ResumableAgentController tenant context', () => {
     mockGenerationJobManager.emitError.mockResolvedValue(undefined);
     mockGenerationJobManager.completeJob.mockResolvedValue(undefined);
     mockGenerationJobManager.beginProviderExecution.mockResolvedValue(true);
+    mockGenerationJobManager.trackProviderTrailingAbort.mockResolvedValue(true);
     mockGenerationJobManager.markProviderExecutionDrained.mockResolvedValue(true);
     mockGenerationJobManager.claimGeneration.mockResolvedValue({ claimed: true });
     mockGenerationJobManager.releaseGeneration.mockResolvedValue(undefined);

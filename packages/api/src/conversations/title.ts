@@ -1,14 +1,20 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import type { ConversationMethods } from '@librechat/data-schemas';
+import type { AppConfig, ConversationMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
-import type { ConversationWriteContext } from './save';
+import type { ConversationWriteContext, TurnConversationRequest } from './save';
+import { allowsAssistantSideEffects } from '~/protection/assistant';
+import { resolveConversationTitle } from '~/protection/title';
+import { getOutboundTimeoutMs } from '~/utils/timeouts';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { isEnabled } from '~/utils/common';
 
 type TitleCache = {
   get: (key: string) => Promise<string | undefined>;
   set: (key: string, title: string, ttl: number) => Promise<boolean>;
   delete: (key: string) => Promise<boolean>;
 };
+
+type GetGenerationEpoch = (conversationId: string) => Promise<number | undefined>;
 
 type TitlePublication = {
   ctx: ConversationWriteContext;
@@ -17,6 +23,8 @@ type TitlePublication = {
   convoReady?: Promise<void>;
   signal?: AbortSignal;
   discardSignal?: AbortSignal;
+  epoch?: number;
+  canPublishEarly?: () => boolean;
   onTitleGenerated?: (event: { conversationId: string; title: string }) => Promise<void> | void;
 };
 
@@ -26,8 +34,10 @@ export async function publishConversationTitle(
     saveConvo,
     getConvo,
     titleCache,
+    getGenerationEpoch,
   }: Pick<ConversationMethods, 'saveConvo' | 'getConvo'> & {
     titleCache: TitleCache;
+    getGenerationEpoch?: GetGenerationEpoch;
   },
   {
     ctx,
@@ -36,6 +46,8 @@ export async function publishConversationTitle(
     convoReady,
     signal,
     discardSignal,
+    epoch,
+    canPublishEarly,
     onTitleGenerated,
   }: TitlePublication,
 ): Promise<void> {
@@ -43,6 +55,8 @@ export async function publishConversationTitle(
     return;
   }
   const key = `${ctx.userId}-${conversationId}`;
+  const isCurrent =
+    epoch == null ? undefined : async () => (await getGenerationEpoch?.(conversationId)) === epoch;
   const commit = async () => {
     const saved = await saveConvo(
       ctx,
@@ -61,9 +75,11 @@ export async function publishConversationTitle(
     return saved;
   };
   let publishedEarly = false;
-  if (convoReady != null) {
+  if (convoReady != null && canPublishEarly?.() !== false) {
     const initial = await getConvo(ctx.userId, conversationId);
     if (
+      (!isCurrent || (await isCurrent())) &&
+      canPublishEarly?.() !== false &&
       !discardSignal?.aborted &&
       (initial == null ||
         (!initial.titleSetByUser &&
@@ -75,14 +91,16 @@ export async function publishConversationTitle(
       }
       publishedEarly = true;
     }
-    await convoReady;
   }
+  await convoReady;
   if (discardSignal?.aborted) {
     if (publishedEarly && (await titleCache.get(key)) === title) {
       await titleCache.delete(key);
     }
     return;
   }
+  if (isCurrent && !(await isCurrent())) return;
+  if (discardSignal?.aborted) return;
   let saved = await commit();
   let current = saved ?? (await getConvo(ctx.userId, conversationId));
   if (
@@ -91,12 +109,13 @@ export async function publishConversationTitle(
     current != null &&
     !current.titleSetByUser &&
     (current.title == null || current.title === '' || current.title === 'New Chat') &&
+    (!isCurrent || (await isCurrent())) &&
     !discardSignal?.aborted
   ) {
     saved = await commit();
     current = saved ?? (await getConvo(ctx.userId, conversationId));
   }
-  if (current?.title == null || discardSignal?.aborted) {
+  if (current?.title == null || (isCurrent && !(await isCurrent())) || discardSignal?.aborted) {
     return;
   }
   if (!publishedEarly || current.title !== title) {
@@ -121,10 +140,215 @@ export async function publishFallbackConversationTitle(
   }
 }
 
-type GeneratedTitleRequest = { params: { conversationId: string }; user?: { id: string } };
+type AgentTitleInvocation<TResult> = {
+  admit: () => Promise<void>;
+  generate: () => Promise<TResult>;
+  finish: (result: TResult) => Promise<string | undefined>;
+};
+
+/** Do not enter a new title phase after cancellation, even if the previous one ignored the signal. */
+export async function executeAgentTitleModel<TOptions, TResult>(
+  signal: AbortSignal,
+  {
+    prepare,
+    createInvocation,
+    onError,
+  }: {
+    prepare: () => Promise<TOptions | undefined>;
+    createInvocation: (options: TOptions, signal: AbortSignal) => AgentTitleInvocation<TResult>;
+    onError: (error: unknown) => void;
+  },
+): Promise<string | undefined> {
+  signal.throwIfAborted();
+  const options = await prepare();
+  signal.throwIfAborted();
+  if (options == null) return;
+
+  const { admit, generate, finish } = createInvocation(options, signal);
+  try {
+    await admit();
+    signal.throwIfAborted();
+    const result = await generate();
+    signal.throwIfAborted();
+    return await finish(result);
+  } catch (error) {
+    onError(error);
+  }
+}
+
+const pendingKey = (key: string, epoch: number) => `pending:${epoch}:${key}`;
+
+/** The SDK invokes a separate title model. Bound its full call, including retries, with the
+ * actual signal the title chain receives. A broken integration must not pin chat cleanup. */
+export async function runAgentConversationTitle({
+  appConfig,
+  titleCache,
+  key,
+  epoch,
+  signal,
+  discardSignal,
+  generate,
+  publish,
+}: {
+  appConfig?: AppConfig;
+  titleCache: TitleCache;
+  key: string;
+  epoch?: number;
+  signal?: AbortSignal;
+  discardSignal?: AbortSignal;
+  generate: (controller: AbortController) => Promise<string | undefined>;
+  publish: (title: string) => Promise<void>;
+}): Promise<void> {
+  const titleTimeout = getOutboundTimeoutMs(appConfig, 'titleMs');
+  // Inline approval resume awaits the title before publishing FINAL. Keep its legacy bound.
+  const timeout = epoch == null ? Math.min(45_000, titleTimeout) : titleTimeout;
+  const controller = new AbortController();
+  const sources = [signal, discardSignal].filter((source) => source != null);
+  const parent = AbortSignal.any(sources);
+  const abort = () => controller.abort(parent.reason);
+  const pending = epoch == null ? undefined : pendingKey(key, epoch);
+  const deadline = Date.now() + timeout;
+  if (parent.aborted) return;
+  const timer = setTimeout(
+    () => controller.abort(new DOMException('Title request timed out', 'TimeoutError')),
+    timeout,
+  );
+  parent.addEventListener('abort', abort, { once: true });
+  try {
+    let title: string | undefined;
+    // Remove the listener even if a provider never settles after being aborted.
+    let onAbort: (() => void) | undefined;
+    try {
+      const cancelled = new Promise<never>((_, reject) => {
+        onAbort = () => reject(controller.signal.reason);
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      title = await Promise.race([
+        cancelled,
+        (async () => {
+          if (pending) await titleCache.set(pending, String(deadline), timeout);
+          controller.signal.throwIfAborted();
+          return generate(controller);
+        })(),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      parent.removeEventListener('abort', abort);
+      if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+      controller.abort();
+    }
+    if (title && !discardSignal?.aborted) await publish(title);
+  } finally {
+    // Keep the positive pending signal until the result is visible to readers.
+    if (pending) await titleCache.delete(pending);
+  }
+}
+
+type AgentTitleRequest = Omit<TurnConversationRequest, 'config'> & {
+  user: { id: string };
+  config?: AppConfig;
+};
+
+export type AgentTitleOptions = Pick<
+  TitlePublication,
+  'epoch' | 'convoReady' | 'signal' | 'discardSignal' | 'canPublishEarly' | 'onTitleGenerated'
+> & {
+  text: string;
+  response?: { conversationId?: string | null };
+  conversationId?: string | null;
+  immediate?: boolean;
+  client: {
+    options: { titleConvo?: boolean };
+    titleConvo?: (input: {
+      text: string;
+      abortController: AbortController;
+      immediate: boolean;
+    }) => Promise<string | undefined>;
+  };
+};
+
+/** Agent endpoint adapter: admits title work and publishes only policy-approved results. */
+export function createAgentConversationTitleHandler({
+  saveConvo,
+  getConvo,
+  getCache,
+  getGenerationEpoch,
+  getEnabledSetting,
+  logger,
+}: Pick<ConversationMethods, 'saveConvo' | 'getConvo'> & {
+  getCache: () => TitleCache;
+  getGenerationEpoch: GetGenerationEpoch;
+  getEnabledSetting: () => string | boolean | undefined;
+  logger: {
+    warn: (message: string) => void;
+    error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
+  };
+}): (req: AgentTitleRequest, options: AgentTitleOptions) => Promise<void> {
+  return async (
+    req,
+    { text, response, client, immediate = false, conversationId, ...publication },
+  ) => {
+    if (
+      !isEnabled(getEnabledSetting() ?? true) ||
+      !allowsAssistantSideEffects(req.config, client.options.titleConvo) ||
+      req.body?.isTemporary
+    )
+      return;
+
+    const convoId = conversationId ?? response?.conversationId;
+    if (!convoId) {
+      logger.warn('[addTitle] Missing conversationId; skipping title generation');
+      return;
+    }
+    const generate = client.titleConvo;
+    if (typeof generate !== 'function') return;
+    const titleCache = getCache();
+    const { epoch, signal, discardSignal } = publication;
+    try {
+      await runAgentConversationTitle({
+        appConfig: req.config,
+        titleCache,
+        key: `${req.user.id}-${convoId}`,
+        epoch,
+        signal,
+        discardSignal,
+        generate: (abortController) => generate.call(client, { text, abortController, immediate }),
+        publish: async (candidate) => {
+          const title = resolveConversationTitle({ filters: req.config?.filters, candidate });
+          if (title == null) return;
+          await publishConversationTitle(
+            { saveConvo, getConvo, titleCache, getGenerationEpoch },
+            {
+              ...publication,
+              ctx: {
+                userId: req.user.id,
+                isTemporary: req.resolvedConversation?.isTemporary ?? req.body?.isTemporary,
+                expiredAt: req.resolvedConversation?.expiredAt,
+                interfaceConfig: req.config?.interfaceConfig,
+              },
+              conversationId: convoId,
+              title,
+            },
+          );
+        },
+      });
+    } catch (error) {
+      if (!signal?.aborted && !discardSignal?.aborted) {
+        logger.error('Error generating title:', getSafeErrorMetadata(error));
+      }
+    }
+  };
+}
+
+type GeneratedTitleRequest = {
+  params: { conversationId: string };
+  query?: { pending?: unknown };
+  user?: { id: string };
+};
 
 type GeneratedTitleDependencies = Pick<ConversationMethods, 'getConvoTitleState'> & {
   getCache: () => TitleCache;
+  getGenerationEpoch?: GetGenerationEpoch;
   logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
   delay?: (milliseconds: number) => Promise<void>;
 };
@@ -140,24 +364,48 @@ export function createGeneratedTitleHandler(
     try {
       const cache = deps.getCache();
       const key = `${userId}-${conversationId}`;
+      const supportsPending = req.query?.pending === '1';
+      const notReady = (pending = false) =>
+        res.status(404).json({
+          message: "Title not found or method not implemented for the conversation's endpoint",
+          ...(pending && { code: 'title_pending' }),
+        });
       let title = await cache.get(key);
       if (title == null) {
-        for (const milliseconds of [500, 1000, 2000, 4000, 8000]) {
-          await (deps.delay ?? delay)(milliseconds);
-          title = await cache.get(key);
-          if (title != null) break;
+        const disconnected = new AbortController();
+        const close = () => disconnected.abort();
+        res.once('close', close);
+        try {
+          for (const milliseconds of [0, 500, 1000, 2000, 4000, 8000]) {
+            if (milliseconds > 0) {
+              await (deps.delay?.(milliseconds) ??
+                delay(milliseconds, undefined, {
+                  signal: disconnected.signal,
+                }));
+              if (disconnected.signal.aborted) return res;
+              title = await cache.get(key);
+              if (title != null) break;
+            }
+            if (!supportsPending || milliseconds > 500) continue;
+            const epoch = await deps.getGenerationEpoch?.(conversationId);
+            if (epoch == null) continue;
+            const deadline = await cache.get(pendingKey(key, epoch));
+            if (deadline != null && Number(deadline) > Date.now()) return notReady(true);
+          }
+        } catch (error) {
+          if (disconnected.signal.aborted) return res;
+          throw error;
+        } finally {
+          res.off('close', close);
         }
       }
-      if (title == null)
-        return res.status(404).json({
-          message: "Title not found or method not implemented for the conversation's endpoint",
-        });
+      if (title == null) return notReady();
       const current = await deps.getConvoTitleState(userId, conversationId);
       const result =
         current?.titleSetByUser && current.title != null
           ? { title: current.title, titleSetByUser: true, titleRevision: current.titleRevision }
           : { title };
-      await cache.delete(key);
+      if (!supportsPending) await cache.delete(key);
       return res.status(200).json(result);
     } catch (error) {
       deps.logger.error('[gen_title] Title lookup failed', getSafeErrorMetadata(error));

@@ -13,6 +13,7 @@ function fixture(redisFinalizationRecoveryTimeoutMs?: number, isRedis = true) {
       return true;
     }),
     markProviderExecutionDrained: jest.fn().mockResolvedValue(true),
+    trackProviderTrailingAbort: jest.fn().mockResolvedValue(true),
   };
   const abort = new AbortController();
   const finalization = createChatFinalization({
@@ -40,6 +41,13 @@ it.each([
     undefined,
     expected,
   );
+});
+
+it('registers cancellation on the exact provider segment', async () => {
+  const { finalization, jobs } = fixture();
+  const cancel = jest.fn();
+  await expect(finalization.trackTrailingAbort(cancel)).resolves.toBe(true);
+  expect(jobs.trackProviderTrailingAbort).toHaveBeenCalledWith('chat', 1, 'provider', cancel);
 });
 
 it('keeps the non-Redis stop and claim contract', async () => {

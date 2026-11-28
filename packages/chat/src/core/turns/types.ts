@@ -3,6 +3,7 @@ import type {
   TConversation,
   TEditedContent,
   TReasoningOverride,
+  ChatFinalFrame,
 } from 'librechat-data-provider';
 
 /** The user turn an `ask` call submits. */
@@ -103,8 +104,9 @@ export type TResData = TBaseResData & {
 };
 
 /** The final frame, whose conversation may arrive partial. */
-export type TFinalResData = Omit<TBaseResData, 'conversation'> & {
-  conversation: Partial<TConversation> & Pick<TConversation, 'conversationId'>;
-  requestMessage?: TMessage;
-  responseMessage?: TMessage;
-};
+export type TFinalResData = Omit<TBaseResData, 'conversation'> &
+  Pick<ChatFinalFrame, 'titleRetryEpoch'> & {
+    conversation: Partial<TConversation> & Pick<TConversation, 'conversationId'>;
+    requestMessage?: TMessage;
+    responseMessage?: TMessage;
+  };

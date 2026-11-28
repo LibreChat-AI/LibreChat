@@ -66,6 +66,55 @@ async function start(streamId: string, timeout = DEFAULT_REDIS_FINALIZATION_RECO
   return { job, provider, options };
 }
 
+test.each(['deletion', 'replacement'] as const)(
+  'cancels terminal trailing work on another replica during %s',
+  async (operation) => {
+    const id = `remote-trailing-provider-${operation}`;
+    const { job, provider } = await start(id);
+    const otherSubscriber = redis.duplicate();
+    otherSubscriber.on('error', () => undefined);
+    const otherReplica = new GenerationJobManagerClass();
+    otherReplica.configure({
+      jobStore: new RedisJobStore(redis),
+      eventTransport: new RedisEventTransport(redis, otherSubscriber),
+      isRedis: true,
+    });
+    let drain: Promise<boolean> | undefined;
+    const cancel = jest.fn(() => {
+      drain = manager.markProviderExecutionDrained(id, job.createdAt, provider);
+    });
+    const ordinaryAbort = jest.fn();
+    const unsubscribe = await transport.onAbort(id, ordinaryAbort);
+    try {
+      await expect(
+        manager.trackProviderTrailingAbort(id, job.createdAt, provider, cancel),
+      ).resolves.toBe(true);
+      await expect(manager.completeJob(id, undefined, job.createdAt)).resolves.toBe(true);
+      expect(cancel).not.toHaveBeenCalled();
+      transport.emitTrailingAbort(id, job.createdAt - 1, provider);
+      transport.emitTrailingAbort(id, job.createdAt, `${provider}-other`);
+      if (operation === 'deletion') {
+        await expect(
+          otherReplica.abortJob(id, { expectedCreatedAt: job.createdAt, awaitProviderDrain: true }),
+        ).resolves.toMatchObject({ failureReason: 'already_settled' });
+      } else {
+        const replacement = await otherReplica.createJob(id, 'user', id);
+        expect(replacement.createdAt).toBeGreaterThan(job.createdAt);
+        expect(replacement.abortController.signal.aborted).toBe(false);
+      }
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(ordinaryAbort).not.toHaveBeenCalled();
+      await expect(drain).resolves.toBe(operation === 'deletion');
+      await expect(transport.hasProviderDrain(id, job.createdAt, provider)).resolves.toBe(true);
+    } finally {
+      unsubscribe();
+      await (drain ?? manager.markProviderExecutionDrained(id, job.createdAt, provider));
+      await otherReplica.destroy({ settlementBudgetMs: 0 });
+      otherSubscriber.disconnect();
+    }
+  },
+);
+
 test('settles an interrupted chat with received content and exact provider proof after Redis returns', async () => {
   const id = 'stream-outage';
   const { job, provider, options } = await start(id);

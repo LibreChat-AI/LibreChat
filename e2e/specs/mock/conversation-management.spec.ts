@@ -383,14 +383,15 @@ test.describe('conversation management', () => {
           });
         }
         await expect.poll(async () => !!(await titleRequest())).toBe(true);
-        const published = page.waitForResponse(
-          (response) =>
-            new URL(response.url()).pathname.startsWith('/api/convos/gen_title/') &&
-            response.status() === 200,
-          { timeout: 30000 },
-        );
+        // A local rename stops the page's poll. Read the published result separately.
+        const authorization = await renameResponse.request().headerValue('authorization');
+        if (!authorization) throw new Error('Expected an authenticated rename request');
         await request.post(`${fixture}/__e2e/release`);
-        expect((await (await published).json()).title).toBe(renamedTitle);
+        const published = await page.request.get(`/api/convos/gen_title/${conversationId}`, {
+          headers: { authorization },
+        });
+        expect(published.ok()).toBeTruthy();
+        expect(await published.json()).toMatchObject({ title: renamedTitle, titleSetByUser: true });
         await expect.poll(async () => (await titleRequest())?.completed === true).toBe(true);
         await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
           timeout: 30000,
@@ -403,6 +404,112 @@ test.describe('conversation management', () => {
       }
     });
   }
+
+  test('first-turn title updates the open chat after the old timeout and polling budget', async ({
+    page,
+    request,
+  }) => {
+    test.skip(process.env.E2E_TITLE_CONVO !== 'true', 'Requires the title-enabled mock profile');
+    test.setTimeout(225_000);
+    const label = uniqueLabel('late-title');
+    const title = `Generated ${label}`;
+    const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
+    await request.post(`${fixture}/__e2e/reset`);
+    await request.post(`${fixture}/__e2e/behavior`, {
+      data: { label: title, hold: true, holdModel: 'mock-title-model' },
+    });
+    try {
+      await page.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(page, { label: 'Mock Titles final', model: 'mock-titles-final' });
+      const stream = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.startsWith('/api/agents/chat/stream/') &&
+          response.request().method() === 'GET',
+      );
+      const run = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
+      const { conversationId } = await run.json();
+      await (await stream).finished();
+      const path = `/api/convos/gen_title/${conversationId}`;
+      await expect
+        .poll(async () => {
+          const { requests } = await (await request.get(`${fixture}/__e2e/requests`)).json();
+          return requests.some(
+            (record: { prompt: string; model: string }) =>
+              record.model === 'mock-title-model' && record.prompt.includes(label),
+          );
+        })
+        .toBe(true);
+      const href = new URL(`/c/${conversationId}`, page.url()).href;
+      const row = conversationRow(page, href);
+      await expect(row).toContainText('New Chat');
+
+      // Two legacy fetch cycles can each spend 4 * 15.5s + 3 * 5s. Observe
+      // a real pending response beyond both cycles before releasing the provider.
+      const beyondLegacy = Date.now() + 155_000;
+      const pending = await page.waitForResponse(
+        (response) =>
+          Date.now() >= beyondLegacy &&
+          new URL(response.url()).pathname === path &&
+          response.status() === 404,
+        { timeout: 165_000 },
+      );
+      expect((await pending.json()).code).toBe('title_pending');
+      await request.post(`${fixture}/__e2e/release`);
+      await expect(row).toContainText(title, { timeout: 15_000 });
+      await expect(page).toHaveTitle(new RegExp(title));
+      await expect(page).toHaveURL(href);
+    } finally {
+      await request.post(`${fixture}/__e2e/reset`, { timeout: 2000 }).catch(() => undefined);
+    }
+  });
+
+  test('recovers a pending first-turn title on the next message', async ({ page, request }) => {
+    test.skip(process.env.E2E_TITLE_CONVO !== 'true', 'Requires the title-enabled mock profile');
+    test.setTimeout(45_000);
+    const first = uniqueLabel('pending-title');
+    const second = uniqueLabel('replacement-title');
+    const title = `Recovered ${second}`;
+    const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
+    await request.post(`${fixture}/__e2e/reset`);
+    await request.post(`${fixture}/__e2e/behavior`, {
+      data: {
+        hold: true,
+        holdModel: 'mock-title-model',
+        label: title,
+        labelsByPrompt: {
+          [second]: title,
+          [first]: `Superseded ${first}`,
+        },
+      },
+    });
+    const requestedTitleFor = async (label: string) => {
+      const { requests } = await (await request.get(`${fixture}/__e2e/requests`)).json();
+      return requests.some(
+        (record: { model: string; prompt: string }) =>
+          record.model === 'mock-title-model' && record.prompt.includes(label),
+      );
+    };
+    try {
+      await page.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(page, { label: 'Mock Titles final', model: 'mock-titles-final' });
+      const run = await sendMessageAndWaitForCompletion(page, replyPrompt(first));
+      const { conversationId } = await run.json();
+      await expect.poll(() => requestedTitleFor(first)).toBe(true);
+      const href = new URL(`/c/${conversationId}`, page.url()).href;
+      await expect(conversationRow(page, href)).toContainText('New Chat');
+      // Reopening the chat loses the initial tab's polling state.
+      await page.reload();
+      const followUp = await sendMessageAndWaitForCompletion(page, replyPrompt(second));
+      expect((await followUp.json()).conversationId).toBe(conversationId);
+      await expect.poll(() => requestedTitleFor(second)).toBe(true);
+      await request.post(`${fixture}/__e2e/release`);
+      await expect(conversationRow(page, href)).toContainText(title, { timeout: 10_000 });
+      await expect(page).toHaveTitle(new RegExp(title));
+      await expect(page).toHaveURL(href);
+    } finally {
+      await request.post(`${fixture}/__e2e/reset`, { timeout: 2000 }).catch(() => undefined);
+    }
+  });
 
   test('adopts a newer remote rename from delayed final-title polling', async ({
     page,

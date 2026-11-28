@@ -20,7 +20,11 @@ let mockQueriesResults: Array<{
   data?: { title: string; titleSetByUser?: boolean; titleRevision?: number };
   error?: unknown;
 }> = [];
-let mockCapturedQueries: Array<{ queryKey: unknown[] }> = [];
+let mockCapturedQueries: Array<{
+  queryKey: unknown[];
+  retry: (failureCount: number, error: unknown) => boolean;
+  queryFn: (context: { signal: AbortSignal }) => Promise<unknown>;
+}> = [];
 
 const mockSetQueryData = jest.fn();
 const mockGetQueryData = jest.fn();
@@ -31,7 +35,7 @@ const mockFindManualTitle = jest.fn();
 
 jest.mock('@tanstack/react-query', () => ({
   useQuery: jest.fn(() => ({ data: { activeJobIds: mockActiveJobIds } })),
-  useQueries: jest.fn(({ queries }: { queries: Array<{ queryKey: unknown[] }> }) => {
+  useQueries: jest.fn(({ queries }: { queries: typeof mockCapturedQueries }) => {
     mockCapturedQueries = queries;
     return mockQueriesResults;
   }),
@@ -48,6 +52,8 @@ jest.mock('../../Endpoints', () => ({
 }));
 
 jest.mock('~/utils', () => ({
+  getResponseErrorCode: (error: { response?: { data?: { code?: string } } }) =>
+    error.response?.data?.code,
   findManualConvoTitleInAllQueries: (...args: unknown[]) => mockFindManualTitle(...args),
   isNotFoundError: (error: unknown): boolean => {
     if (error != null && typeof error === 'object') {
@@ -66,8 +72,10 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 import { renderHook, act } from '@testing-library/react';
+import { dataService } from 'librechat-data-provider';
 import {
   useTitleGeneration,
+  clearTitleGenerationState,
   genTitleQueryKey,
   queueTitleGeneration,
   markTitleGenerationProcessed,
@@ -80,6 +88,7 @@ const eligibleKeys = () => mockCapturedQueries.map((q) => JSON.stringify(q.query
 const isEligible = (id: string) => eligibleKeys().includes(JSON.stringify(genTitleQueryKey(id)));
 
 beforeEach(() => {
+  clearTitleGenerationState();
   mockActiveJobIds = [];
   mockTiming = 'immediate';
   mockQueriesResults = [];
@@ -137,6 +146,23 @@ describe('useTitleGeneration — eligibility', () => {
 
     expect(isEligible('conv-sse-title')).toBe(false);
   });
+});
+
+it('continues only confirmed pending titles beyond the old retry budget, with a finite cap', () => {
+  renderHook(() => useTitleGeneration(true));
+  act(() => queueTitleGeneration('conv-pending'));
+  const { retry, queryFn } = mockCapturedQueries[0];
+  const pending = { response: { status: 404, data: { code: 'title_pending' } } };
+  expect(retry(35, pending)).toBe(true);
+  expect(retry(64, pending)).toBe(false);
+  expect(retry(3, notFound)).toBe(false);
+  expect(retry(0, { response: { status: 500 } })).toBe(false);
+  const { signal } = new AbortController();
+  void queryFn({ signal });
+  expect(dataService.genTitle).toHaveBeenCalledWith(
+    { conversationId: 'conv-pending' },
+    { pending: true, signal },
+  );
 });
 
 describe('useTitleGeneration — result handling', () => {
@@ -251,4 +277,36 @@ describe('useTitleGeneration — result handling', () => {
 
     expect(mockResetQueries).toHaveBeenCalledWith(genTitleQueryKey('conv-done404'));
   });
+});
+
+it('reopens an exhausted title poll only for a newer server attempt', () => {
+  const id = 'follow-up-title';
+  const { rerender } = renderHook(() => useTitleGeneration(true));
+  act(() => queueTitleGeneration(id, 7));
+  expect(eligibleKeys()).toEqual([JSON.stringify(genTitleQueryKey(id, 7))]);
+  mockQueriesResults = [{ isError: true, error: notFound }];
+  rerender();
+  rerender();
+  expect(isEligible(id)).toBe(false);
+  expect(eligibleKeys()).toEqual([]);
+  mockQueriesResults = [];
+  act(() => queueTitleGeneration(id, 7));
+  expect(eligibleKeys()).toEqual([]);
+  act(() => queueTitleGeneration(id, 8));
+  expect(eligibleKeys()).toEqual([JSON.stringify(genTitleQueryKey(id, 8))]);
+  mockQueriesResults = [{ isSuccess: true, data: { title: 'Recovered title' } }];
+  rerender();
+  expect(mockUpdateConvoInAllQueries).toHaveBeenCalledWith(
+    expect.anything(),
+    id,
+    expect.any(Function),
+  );
+});
+
+it('does not reopen title polling after a user rename', () => {
+  const id = 'manually-renamed';
+  renderHook(() => useTitleGeneration(true));
+  act(() => markTitleGenerationProcessed(id));
+  act(() => queueTitleGeneration(id, 8));
+  expect(eligibleKeys()).toEqual([]);
 });

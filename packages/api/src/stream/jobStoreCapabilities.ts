@@ -9,6 +9,7 @@ import type { IJobStore, IJobStoreV2 } from './interfaces/IJobStore';
  * required by the current generation manager.
  */
 export const JOB_STORE_V2_REQUIRED_METHODS = [
+  'getGenerationEpoch',
   'acknowledgeReplacedJobs',
   'markProviderExecutionDrained',
   'beginProviderExecution',

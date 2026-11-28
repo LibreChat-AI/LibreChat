@@ -8,11 +8,13 @@ const mockCache = {
 };
 const mockSaveConvo = jest.fn();
 const mockGetConvo = jest.fn();
+const mockGetEpoch = jest.fn();
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   isEnabled: (val) => val === true || val === 'true',
   sanitizeTitle: (title) => title,
+  GenerationJobManager: { getJobStore: () => ({ getGenerationEpoch: mockGetEpoch }) },
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -46,6 +48,7 @@ describe('agents addTitle', () => {
     mockCache.delete.mockReset().mockImplementation((key) => mockCacheStore.delete(key));
     mockSaveConvo.mockReset().mockImplementation(async (_ctx, data) => data);
     mockGetConvo.mockReset().mockResolvedValue(null);
+    mockGetEpoch.mockReset().mockResolvedValue(7);
   });
 
   it('does not start title generation when assistant output protection is required', async () => {
@@ -96,6 +99,47 @@ describe('agents addTitle', () => {
     });
 
     expect(client.titleConvo).toHaveBeenCalledWith(expect.objectContaining({ immediate: true }));
+  });
+
+  it.each([true, false])('publishes a healthy late title (immediate: %s)', async (immediate) => {
+    jest.useFakeTimers();
+    try {
+      let resolveTitle;
+      const client = {
+        options: { titleConvo: true },
+        titleConvo: jest.fn(
+          () =>
+            new Promise((resolve) => {
+              resolveTitle = resolve;
+            }),
+        ),
+      };
+      const pending = addTitle(makeReq(), {
+        text: 'hello',
+        client,
+        conversationId: 'cid-slow-provider',
+        epoch: 7,
+        immediate,
+        ...(immediate && { convoReady: Promise.resolve(), canPublishEarly: () => false }),
+      });
+
+      await jest.advanceTimersByTimeAsync(45_001);
+      expect(mockSaveConvo).not.toHaveBeenCalled();
+      expect(mockCacheStore.has('pending:7:user-1-cid-slow-provider')).toBe(true);
+
+      resolveTitle('Late Title');
+      await pending;
+
+      expect(mockCacheStore.get('user-1-cid-slow-provider')).toBe('Late Title');
+      expect(mockCacheStore.has('pending:7:user-1-cid-slow-provider')).toBe(false);
+      expect(mockSaveConvo).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ conversationId: 'cid-slow-provider', title: 'Late Title' }),
+        expect.objectContaining({ noUpsert: true }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('falls back to response.conversationId in legacy (final) mode', async () => {
@@ -265,10 +309,10 @@ describe('agents addTitle', () => {
 
   it('propagates the abort signal to the title model call', async () => {
     const client = makeClient();
+    client.titleConvo.mockImplementation(() => new Promise(() => {}));
     const ac = new AbortController();
-    ac.abort();
 
-    await addTitle(makeReq(), {
+    const pending = addTitle(makeReq(), {
       text: 'hi',
       client,
       conversationId: 'cid',
@@ -278,7 +322,71 @@ describe('agents addTitle', () => {
     });
 
     const { abortController } = client.titleConvo.mock.calls[0][0];
-    expect(abortController.signal.aborted).toBe(true);
+    ac.abort();
+    await pending;
+    expect(abortController.signal.reason).toBe(ac.signal.reason);
+    expect(mockSaveConvo).not.toHaveBeenCalled();
+  });
+
+  it('aborts at the configured title deadline and removes the pending marker', async () => {
+    jest.useFakeTimers();
+    try {
+      const req = makeReq();
+      req.config.timeouts = { titleMs: 60_000 };
+      const client = makeClient();
+      let complete;
+      client.titleConvo.mockImplementation(() => new Promise((resolve) => (complete = resolve)));
+      const pending = addTitle(req, { text: 'hello', client, conversationId: 'cid', epoch: 7 });
+      await jest.advanceTimersByTimeAsync(45_001);
+      const { abortController } = client.titleConvo.mock.calls[0][0];
+      expect(abortController.signal.aborted).toBe(false);
+      expect(mockCacheStore.has('pending:7:user-1-cid')).toBe(true);
+      await jest.advanceTimersByTimeAsync(14_999);
+      await pending;
+      expect(abortController.signal.reason.name).toBe('TimeoutError');
+      expect(mockCacheStore.has('pending:7:user-1-cid')).toBe(false);
+      complete('Too late');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSaveConvo).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the legacy deadline for inline titles with no generation epoch', async () => {
+    jest.useFakeTimers();
+    try {
+      const req = makeReq();
+      req.config.timeouts = { titleMs: 180_000 };
+      const client = makeClient();
+      client.titleConvo.mockImplementation(() => new Promise(() => {}));
+      const pending = addTitle(req, { text: 'hello', client, conversationId: 'cid' });
+      const { abortController } = client.titleConvo.mock.calls[0][0];
+      await jest.advanceTimersByTimeAsync(44_999);
+      expect(abortController.signal.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(abortController.signal.reason.name).toBe('TimeoutError');
+      expect(mockSaveConvo).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not save or cache a title from a generation replaced after its stream closed', async () => {
+    const client = makeClient('Old Title');
+    mockGetEpoch.mockResolvedValue(8);
+    await addTitle(makeReq(), {
+      text: 'hello',
+      client,
+      conversationId: 'cid',
+      epoch: 7,
+      immediate: true,
+      convoReady: Promise.resolve(),
+      canPublishEarly: () => false,
+    });
+    expect(mockSaveConvo).not.toHaveBeenCalled();
+    expect(mockCacheStore.size).toBe(0);
   });
 
   it('discards the title without persisting when the stream is superseded', async () => {

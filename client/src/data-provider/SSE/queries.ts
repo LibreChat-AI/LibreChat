@@ -6,6 +6,7 @@ import type { TConversation } from 'librechat-data-provider';
 import type { StreamStatusResponse } from '@librechat/chat';
 import {
   isNotFoundError,
+  getResponseErrorCode,
   updateConvoInAllQueries,
   setDocumentTitle,
   findManualConvoTitleInAllQueries,
@@ -36,7 +37,10 @@ export function useStreamStatus(conversationId: string | undefined, enabled = tr
   });
 }
 
-export const genTitleQueryKey = (conversationId: string) => ['genTitle', conversationId] as const;
+export const genTitleQueryKey = (conversationId: string, retryEpoch?: number) =>
+  retryEpoch == null
+    ? (['genTitle', conversationId] as const)
+    : (['genTitle', conversationId, retryEpoch] as const);
 
 /** Response type for active jobs query */
 export interface ActiveJobsResponse {
@@ -47,6 +51,8 @@ export interface ActiveJobsResponse {
  * Stores conversationIds that need title generation once their job completes */
 const titleQueue = new Set<string>();
 const processedTitles = new Set<string>();
+const exhaustedTitles = new Set<string>();
+const titleRetryEpochs = new Map<string, number>();
 
 /** Conversations whose eager (immediate-mode) title fetch 404'd while the stream
  * was still active. They wait for stream completion before fetching again instead
@@ -57,28 +63,44 @@ const deferredTitles = new Set<string>();
 /** Listeners to notify when queue changes (for non-resumable streams like assistants) */
 const queueListeners = new Set<() => void>();
 
-/** Queue a conversation for title generation (call when starting new conversation) */
-export function queueTitleGeneration(conversationId: string) {
-  if (!isTitleGenerationProcessed(conversationId)) {
-    titleQueue.add(conversationId);
-    queueListeners.forEach((listener) => listener());
+/** A new server attempt may reopen exhausted polling, but never a received title or rename. */
+export function queueTitleGeneration(conversationId: string, retryEpoch?: number) {
+  if (processedTitles.has(conversationId)) return;
+  if (retryEpoch != null) {
+    const previous = titleRetryEpochs.get(conversationId);
+    if (previous != null && previous >= retryEpoch) return;
+    titleRetryEpochs.set(conversationId, retryEpoch);
+    exhaustedTitles.delete(conversationId);
+    deferredTitles.delete(conversationId);
+  } else if (exhaustedTitles.has(conversationId)) {
+    return;
   }
+  titleQueue.add(conversationId);
+  queueListeners.forEach((listener) => listener());
 }
 
 /** Drops all module-level title state; called when a session ends so the next account starts clean. */
 export function clearTitleGenerationState() {
   titleQueue.clear();
   processedTitles.clear();
+  exhaustedTitles.clear();
+  titleRetryEpochs.clear();
   deferredTitles.clear();
   queueListeners.forEach((listener) => listener());
 }
 
 export function isTitleGenerationProcessed(conversationId: string): boolean {
-  return processedTitles.has(conversationId);
+  return processedTitles.has(conversationId) || exhaustedTitles.has(conversationId);
 }
 
 export function markTitleGenerationProcessed(conversationId: string) {
   processedTitles.add(conversationId);
+  titleRetryEpochs.delete(conversationId);
+  exhaustedTitles.delete(conversationId);
+  clearQueuedTitle(conversationId);
+}
+
+function clearQueuedTitle(conversationId: string) {
   titleQueue.delete(conversationId);
   deferredTitles.delete(conversationId);
   queueListeners.forEach((listener) => listener());
@@ -124,7 +146,7 @@ export function useTitleGeneration(enabled = true) {
     const eligible: string[] = [];
 
     for (const conversationId of titleQueue) {
-      if (processedTitles.has(conversationId)) {
+      if (isTitleGenerationProcessed(conversationId)) {
         continue;
       }
       const eager = timing === 'immediate' && !deferredTitles.has(conversationId);
@@ -140,24 +162,26 @@ export function useTitleGeneration(enabled = true) {
 
   useEffect(() => {
     setReadyToFetch((prev) => {
-      const next = prev.filter((id) => !processedTitles.has(id));
+      const next = prev.filter((id) => !isTitleGenerationProcessed(id));
       return next.length === prev.length ? prev : next;
     });
   }, [queueVersion]);
 
-  // Fetch titles for ready conversations.
+  // Fetch titles for ready conversations. A positive pending response extends the
+  // legacy budget, up to the 5-minute server ceiling plus a few retries for races.
+  const titleQueryKeys = readyToFetch.map((id) => genTitleQueryKey(id, titleRetryEpochs.get(id)));
   const titleQueries = useQueries({
-    queries: readyToFetch.map((conversationId) => ({
-      queryKey: genTitleQueryKey(conversationId),
-      queryFn: () => dataService.genTitle({ conversationId }),
+    queries: titleQueryKeys.map((queryKey) => ({
+      queryKey,
+      queryFn: ({ signal }: { signal?: AbortSignal }) =>
+        dataService.genTitle({ conversationId: queryKey[1] }, { pending: true, signal }),
       // Gate on `enabled` so no /gen_title request fires while unauthenticated
       // (e.g. after logout) even if the module-level queue still holds IDs.
       enabled,
       staleTime: Infinity,
-      /** Retry only on 404 (title still generating server-side) so a transient
-       * not-ready response is never treated as final. All other errors are
-       * terminal. Bounded retry adapted from PR #13329. */
-      retry: (failureCount: number, error: unknown) => isNotFoundError(error) && failureCount < 3,
+      retry: (failureCount: number, error: unknown) =>
+        isNotFoundError(error) &&
+        failureCount < (getResponseErrorCode(error) === 'title_pending' ? 64 : 3),
       retryDelay: () => 5_000,
     })),
   });
@@ -165,8 +189,13 @@ export function useTitleGeneration(enabled = true) {
   useEffect(() => {
     const activeSet = new Set(activeJobIds);
     titleQueries.forEach((titleQuery, index) => {
-      const conversationId = readyToFetch[index];
-      if (!conversationId || processedTitles.has(conversationId)) {
+      const key = titleQueryKeys[index];
+      if (!enabled || !key) return;
+      const [, conversationId, retryEpoch] = key;
+      if (
+        isTitleGenerationProcessed(conversationId) ||
+        retryEpoch !== titleRetryEpochs.get(conversationId)
+      ) {
         return;
       }
 
@@ -198,7 +227,7 @@ export function useTitleGeneration(enabled = true) {
           // Failed while still streaming: drop and clear so the completion
           // transition re-promotes a fresh fetch (instead of busy-looping).
           deferredTitles.add(conversationId);
-          queryClient.removeQueries(genTitleQueryKey(conversationId));
+          queryClient.removeQueries(key);
           setReadyToFetch((prev) => prev.filter((id) => id !== conversationId));
         } else if (!deferredTitles.has(conversationId)) {
           // First failure at/after completion without a prior deferral: grant one
@@ -206,15 +235,16 @@ export function useTitleGeneration(enabled = true) {
           // in place — `resetQueries` refetches active observers with a fresh retry
           // budget, unlike `removeQueries`, which leaves the observer in error state.
           deferredTitles.add(conversationId);
-          queryClient.resetQueries(genTitleQueryKey(conversationId));
+          queryClient.resetQueries(key);
         } else {
           // The post-completion fetch also failed — the title is genuinely absent.
-          markTitleGenerationProcessed(conversationId);
+          exhaustedTitles.add(conversationId);
+          clearQueuedTitle(conversationId);
           setReadyToFetch((prev) => prev.filter((id) => id !== conversationId));
         }
       }
     });
-  }, [titleQueries, readyToFetch, queryClient, activeJobIds]);
+  }, [titleQueries, titleQueryKeys, queryClient, activeJobIds, enabled]);
 }
 
 /**

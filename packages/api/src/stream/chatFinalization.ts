@@ -11,6 +11,7 @@ type Jobs = Pick<
   | 'claimTerminalJob'
   | 'completeJob'
   | 'markProviderExecutionDrained'
+  | 'trackProviderTrailingAbort'
 >;
 
 type Response = { text?: string; content?: unknown; unfinished?: boolean };
@@ -26,6 +27,7 @@ export interface ChatFinalization {
     persist: (content: Content | undefined) => Promise<void>,
     settleSnapshots: () => Promise<void>,
   ): Promise<boolean>;
+  trackTrailingAbort(cancel: () => void): Promise<boolean>;
   drain(release?: () => void | Promise<void>): Promise<void>;
 }
 
@@ -94,6 +96,11 @@ export function createChatFinalization({
           persist(interrupted() ? filterPersistableAbortContent(readContent()) : undefined),
         beforeTerminalCleanup: settleSnapshots,
       });
+    },
+    async trackTrailingAbort(cancel) {
+      return (
+        provider == null || jobs.trackProviderTrailingAbort(streamId, createdAt, provider, cancel)
+      );
     },
     async drain(release) {
       try {

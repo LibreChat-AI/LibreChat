@@ -205,8 +205,12 @@ export default function useFinalHandler(ctx: EventHandlerContext): FinalHandler 
         const isNewConvo = conversation.conversationId !== submissionConvo.conversationId;
 
         // Skip temporary conversations; the server never generates titles for them.
-        if (isNewConvo && conversation.conversationId && !_isTemporary) {
-          titles.queue(conversation.conversationId);
+        if (conversation.conversationId && !_isTemporary) {
+          if (data.titleRetryEpoch != null) {
+            titles.queue(conversation.conversationId, data.titleRetryEpoch);
+          } else if (isNewConvo) {
+            titles.queue(conversation.conversationId);
+          }
         }
 
         const setFinalMessages = (id: string | null, _messages: TMessage[]) => {

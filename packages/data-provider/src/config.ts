@@ -3216,6 +3216,8 @@ export const outboundTimeoutsSchema = z.object({
   actionsMs: outboundTimeoutMs,
   /** The OpenAI moderation check that runs before a chat turn. */
   moderationMs: outboundTimeoutMs,
+  /** Standalone Agent title request budget, bounded by retained generation identity. */
+  titleMs: z.number().int().positive().max(300_000).optional(),
   /** Reading a stored image, by URL or from blob storage, to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
   /** Reading a stored document, audio or video file from storage to encode it for a provider. */

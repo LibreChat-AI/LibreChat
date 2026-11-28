@@ -661,6 +661,7 @@ async function finalizeResumedTurn({
           text: userMessage.text,
           conversationId,
           client,
+          signal: job.abortController.signal,
           onTitleGenerated: ({ conversationId: titleConvoId, title }) => {
             conversation.title = title;
             return GenerationJobManager.emitChunk(

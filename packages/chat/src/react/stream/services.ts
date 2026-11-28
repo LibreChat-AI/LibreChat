@@ -53,8 +53,8 @@ export type ConversationCacheServices = {
 
 /** Title generation for new conversations, and the window title that names the open one. */
 export type TitleServices = {
-  /** Asks for the generated title of a conversation that just got its id. */
-  queue: (conversationId: string) => void;
+  /** Poll for the initial title or a server-announced retry. */
+  queue: (conversationId: string, retryEpoch?: number) => void;
   /** Marks a conversation's generated title as received. */
   markProcessed: (conversationId: string) => void;
   /** Names the browser tab after the open conversation. */
