@@ -2562,6 +2562,66 @@ describe('User parameter passing tests', () => {
       );
     });
 
+    it('omits empty-string optional arguments but keeps required and non-empty ones', async () => {
+      const mockUser = { id: 'empty-optional-user', role: 'USER' };
+      const mockRes = { write: jest.fn(), flush: jest.fn() };
+      const { getRoleByName } = require('~/models');
+      getRoleByName.mockResolvedValue({
+        permissions: {
+          [PermissionTypes.MCP_SERVERS]: {
+            [Permissions.USE]: true,
+          },
+        },
+      });
+      const callTool = jest.fn().mockResolvedValue(['ok', null]);
+      mockGetMCPManager.mockReturnValue({ callTool });
+
+      const toolKey = `search${D}acme`;
+      const mcpTool = await createMCPTool({
+        res: mockRes,
+        user: mockUser,
+        toolKey,
+        provider: 'openai',
+        userMCPAuthMap: {},
+        availableTools: {
+          [toolKey]: {
+            function: {
+              name: toolKey,
+              description: 'Search',
+              parameters: {
+                type: 'object',
+                properties: {
+                  q: { type: 'string' },
+                  scope: { type: 'string' },
+                  cursor: { type: 'string' },
+                  limit: { type: 'integer' },
+                  filters: { type: 'object', properties: { tag: { type: 'string' } } },
+                },
+                required: ['scope'],
+              },
+            },
+          },
+        },
+      });
+
+      await mcpTool.invoke(
+        { q: 'agenda', scope: '', cursor: '', limit: 0, filters: { tag: '' } },
+        {
+          configurable: { user: mockUser },
+          metadata: { provider: 'openai', thread_id: 'thread-1', run_id: 'run-1' },
+          toolCall: {},
+        },
+      );
+
+      /** `cursor` is optional and empty: dropped. `scope` is required: kept even when empty.
+       *  Falsy non-strings (`0`) and nested objects are passed through unchanged. */
+      expect(callTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolArguments: { q: 'agenda', scope: '', limit: 0, filters: { tag: '' } },
+        }),
+      );
+    });
+
     it('should reject tool execution when user lacks MCP server use permission', async () => {
       const mockUser = { id: 'mcp-denied-user', role: 'USER' };
       const mockRes = { write: jest.fn(), flush: jest.fn() };
