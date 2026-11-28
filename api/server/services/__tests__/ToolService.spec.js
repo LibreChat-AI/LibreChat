@@ -1127,6 +1127,29 @@ describe('ToolService - Action Capability Gating', () => {
       });
     });
 
+    it('passes the programmatic tool resolver from the definitions loader to initialization', async () => {
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.execute_code];
+      const req = createMockReq(capabilities);
+      const resolveProgrammaticTool = jest.fn();
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      mockLoadToolDefinitions.mockResolvedValueOnce({
+        toolDefinitions: [],
+        toolRegistry: new Map(),
+        hasDeferredTools: false,
+        resolveProgrammaticTool,
+      });
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_ptc_resolver', tools: [Tools.execute_code] },
+        definitionsOnly: true,
+      });
+
+      expect(result.resolveProgrammaticTool).toBe(resolveProgrammaticTool);
+      expect(resolveProgrammaticTool).not.toHaveBeenCalled();
+    });
+
     it('primes code files through the initializer-selected stateful route', async () => {
       const capabilities = [AgentCapabilities.tools, AgentCapabilities.execute_code];
       const req = createMockReq(capabilities);
@@ -4109,6 +4132,52 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({ tools: ['programmatic_tool'] }),
       );
       expect([...result.configurable.ptcToolMap.keys()]).toEqual(['programmatic_tool']);
+    });
+
+    it('loads agent builder read tools for PTC and keeps the write tools out', async () => {
+      const capabilities = [
+        AgentCapabilities.tools,
+        AgentCapabilities.programmatic_tools,
+        AgentCapabilities.execute_code,
+        AgentCapabilities.agent_builder,
+      ];
+      const req = createMockReq(capabilities);
+      const listAgents = { name: 'list_agents', invoke: jest.fn() };
+      const getAgent = { name: 'get_agent', invoke: jest.fn() };
+      const toolRegistry = new Map([
+        ['list_agents', { name: 'list_agents', allowed_callers: ['direct', 'code_execution'] }],
+        ['get_agent', { name: 'get_agent', allowed_callers: ['direct', 'code_execution'] }],
+        ['update_agent', { name: 'update_agent', allowed_callers: ['direct'] }],
+        [
+          Constants.BASH_PROGRAMMATIC_TOOL_CALLING,
+          { name: Constants.BASH_PROGRAMMATIC_TOOL_CALLING, allowed_callers: ['direct'] },
+        ],
+      ]);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [listAgents, getAgent],
+        toolContextMap: {},
+      });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: {
+          id: 'agent_builder_ptc',
+          tools: [Tools.execute_code, AgentCapabilities.agent_builder],
+        },
+        toolNames: [Constants.BASH_PROGRAMMATIC_TOOL_CALLING],
+        toolRegistry,
+        actionsEnabled: false,
+      });
+
+      expect(mockLoadToolsUtil).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tools: ['list_agents', 'get_agent'],
+          options: expect.objectContaining({ toolRegistry }),
+        }),
+      );
+      expect([...result.configurable.ptcToolMap.keys()]).toEqual(['list_agents', 'get_agent']);
     });
 
     it('intersects PTC loading with the SDK live caller projection', async () => {

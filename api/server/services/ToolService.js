@@ -1349,6 +1349,7 @@ async function loadToolDefinitionsWrapper({
     mcpResolution,
     oauthActionToolNames,
     mcpServerLookupOrder,
+    resolveProgrammaticTool,
   } = await loadToolDefinitions(
     {
       userId: req.user.id,
@@ -1491,6 +1492,7 @@ async function loadToolDefinitionsWrapper({
       mcpToolAliases = reloadResult.mcpToolAliases;
       mcpResolution = reloadResult.mcpResolution;
       oauthActionToolNames = reloadResult.oauthActionToolNames;
+      resolveProgrammaticTool = reloadResult.resolveProgrammaticTool;
     }
   }
 
@@ -1614,6 +1616,7 @@ async function loadToolDefinitionsWrapper({
     hasDeferredTools,
     deferredToolsEnabled,
     agentBuilderEnabled,
+    resolveProgrammaticTool,
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,

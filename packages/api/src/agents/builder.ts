@@ -43,6 +43,7 @@ import type { AgentToolFilterDeps } from './attachable';
 import type { AgentListAccessDeps } from './listing';
 import type { ServerRequest } from '~/types';
 import { checkAccess, checkAccessWithRequestCache } from '~/middleware/access';
+import { allowCodeExecutionCallers, declareDirectOnly } from './callers';
 import { AGENT_SORT_CURSOR_ERROR_CODE } from './marketplace';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { filterAttachableTools } from './attachable';
@@ -65,13 +66,6 @@ const MAX_DETAIL_NAMES = 20;
 const READ_ROLE_PERMISSIONS: Permissions[] = [Permissions.USE];
 /** Role permissions a write tool needs: the same as the panel's create and update routes. */
 const WRITE_ROLE_PERMISSIONS: Permissions[] = [Permissions.USE, Permissions.CREATE];
-
-/**
- * Builder tools are called by the model directly, never from code. Programmatic calls skip
- * the approval hook, so writes must stay direct-only; this stays the builder's own rule until
- * `allowed_callers` becomes shared per-tool policy.
- */
-const BUILDER_ALLOWED_CALLERS: LCTool['allowed_callers'] = ['direct'];
 
 /** A write operation `endpoints.agents.agentBuilder` can list. */
 export type AgentBuilderOperation = 'create' | 'update';
@@ -809,7 +803,9 @@ function getOfferedFields(
 
 /**
  * LLM-facing definitions for the builder tools: the read tools, plus each write tool whose
- * operation `writes` lists, with a schema of only its listed fields.
+ * operation `writes` lists, with a schema of only its listed fields. Read tools let the
+ * shared caller policy decide whether code may call them. Write tools are direct-only,
+ * because calls made from code skip the approval hook.
  */
 export function getAgentBuilderToolDefinitions(
   limits: AgentBuilderListLimits = resolveAgentBuilderLimits(),
@@ -821,12 +817,15 @@ export function getAgentBuilderToolDefinitions(
     if (!fields) {
       continue;
     }
-    definitions.push({
+    const definition: LCTool = {
       name: spec.name,
       description: spec.description,
       parameters: toToolParameters(spec.schema({ limits, fields })) as LCTool['parameters'],
-      allowed_callers: BUILDER_ALLOWED_CALLERS,
-    });
+      allowed_callers: ['direct'],
+    };
+    definitions.push(
+      spec.operation ? declareDirectOnly(definition) : allowCodeExecutionCallers(definition),
+    );
   }
   return definitions;
 }

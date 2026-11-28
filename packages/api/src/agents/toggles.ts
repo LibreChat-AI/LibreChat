@@ -25,6 +25,7 @@ import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { synthesizeDeferralToolOptions } from '~/agents/deferral';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
+import { synthesizeCallerToolOptions } from '~/agents/callers';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { filterChatSelectableMCPServers } from '~/mcp/utils';
 
@@ -100,12 +101,16 @@ export async function resolveEphemeralMCPServers({
 
 interface ToolOptionSources {
   ephemeralAgent?: Pick<TEphemeralAgent, 'run_in_background' | 'describe_intent'> | null;
-  modelSpec?: Pick<TModelSpec, 'runInBackground' | 'describeIntent' | 'deferLoading'> | null;
+  modelSpec?: Pick<
+    TModelSpec,
+    'runInBackground' | 'describeIntent' | 'deferLoading' | 'programmaticTools'
+  > | null;
 }
 
 /**
  * Per-tool options an ephemeral or model-spec agent carries in place of saved
- * `tool_options`: its background, intent and deferral selections, composed.
+ * `tool_options`: its background, intent, deferral and caller selections,
+ * composed.
  */
 export function synthesizeToggleToolOptions({
   ephemeralAgent,
@@ -115,5 +120,8 @@ export function synthesizeToggleToolOptions({
     synthesizeBackgroundToolOptions({ ephemeralAgent, modelSpec }),
     synthesizeIntentToolOptions({ ephemeralAgent, modelSpec }),
   );
-  return mergeSynthesizedToolOptions(toolOptions, synthesizeDeferralToolOptions({ modelSpec }));
+  return mergeSynthesizedToolOptions(
+    mergeSynthesizedToolOptions(toolOptions, synthesizeDeferralToolOptions({ modelSpec })),
+    synthesizeCallerToolOptions({ modelSpec }),
+  );
 }

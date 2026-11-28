@@ -2,7 +2,8 @@
  * @fileoverview Tool-selection policy for capability-injected per-tool options.
  *
  * A model spec / ephemeral agent expresses per-tool capability choices
- * (`describeIntent`, `runInBackground`) against its LOAD-TIME tool entries:
+ * (`describeIntent`, `runInBackground`, `deferLoading`, `programmaticTools`)
+ * against its LOAD-TIME tool entries:
  * capability markers (`execute_code`, `memory`), lazy `mcp_all` placeholders,
  * and fields that never reach the `tools` array at all (`skills`). The
  * definitions those choices must govern only exist at INITIALIZATION time,
@@ -32,7 +33,7 @@
  */
 
 import { logger } from '@librechat/data-schemas';
-import type { AgentToolOptions } from 'librechat-data-provider';
+import type { AgentToolOptions, AllowedCaller } from 'librechat-data-provider';
 
 /**
  * Reserved `tool_options` key holding a synthesized selection's default for
@@ -52,58 +53,118 @@ export const TOOL_SELECTION_WILDCARD = '*';
  */
 export type CapabilityToolNames = ReadonlyMap<string, readonly string[]>;
 
-type SelectionField = 'describe_intent' | 'run_in_background' | 'defer_loading';
+type BooleanSelectionField = 'describe_intent' | 'run_in_background' | 'defer_loading';
 
-export interface ResolvedToolOption {
-  value: boolean;
+/** Per-tool options resolved through the selection policy below. */
+export type SelectionField = BooleanSelectionField | 'allowed_callers';
+
+type ToolOptionEntry = AgentToolOptions[string] | undefined;
+
+/**
+ * How one field reads its value from a `tool_options` entry, and which
+ * values opt in. `read` returns undefined when the entry does not speak.
+ */
+interface SelectionCodec<T> {
+  read: (options: ToolOptionEntry) => T | undefined;
+  optsIn: (value: T) => boolean;
+}
+
+function booleanCodec(field: BooleanSelectionField): SelectionCodec<boolean> {
+  return {
+    read: (options) => (options?.[field] == null ? undefined : options[field] === true),
+    optsIn: (value) => value,
+  };
+}
+
+/** An empty list does not speak, matching how the MCP registry always read it. */
+const callersCodec: SelectionCodec<AllowedCaller[]> = {
+  read: (options) =>
+    options?.allowed_callers != null && options.allowed_callers.length > 0
+      ? options.allowed_callers
+      : undefined,
+  optsIn: (callers) => callers.includes('code_execution'),
+};
+
+interface ResolvedSelection<T> {
+  value: T;
   /** The `tool_options` key that decided the value: the definition's own
    *  name, a capability marker that registered it, or the wildcard. */
   source: string;
 }
 
+export type ResolvedToolOption = ResolvedSelection<boolean>;
+
+export type ResolvedToolCallers = ResolvedSelection<AllowedCaller[]>;
+
 /**
- * Resolves one selection field for a definition name. Precedence: an
- * explicit entry under the definition's own name, then capability markers
- * whose registrations include the name (an opting-in marker wins over an
- * opting-out one when two capabilities register the same tool, e.g.
- * `read_file` under both code and skills), then the wildcard default.
- * Returns undefined when no policy speaks, leaving the caller's default
- * (native intent tools, background's opt-in-only) in force.
+ * The one precedence every selection field shares: an explicit entry under
+ * the definition's own name, then capability markers whose registrations
+ * include the name (an opting-in marker wins over an opting-out one when two
+ * capabilities register the same tool, e.g. `read_file` under both code and
+ * skills), then the wildcard default.
  */
-export function resolveToolOption(
+function resolveSelection<T>(
   name: string,
-  field: SelectionField,
+  codec: SelectionCodec<T>,
   toolOptions: AgentToolOptions | undefined,
   capabilityToolNames?: CapabilityToolNames,
-): ResolvedToolOption | undefined {
+): ResolvedSelection<T> | undefined {
   if (!toolOptions) {
     return undefined;
   }
-  const explicit = toolOptions[name]?.[field];
-  if (explicit != null) {
-    return { value: explicit === true, source: name };
+  const explicit = codec.read(toolOptions[name]);
+  if (explicit !== undefined) {
+    return { value: explicit, source: name };
   }
-  let markerOptOut: ResolvedToolOption | undefined;
+  let markerOptOut: ResolvedSelection<T> | undefined;
   if (capabilityToolNames) {
     for (const [marker, names] of capabilityToolNames) {
-      const markerValue = toolOptions[marker]?.[field];
-      if (markerValue == null || !names.includes(name)) {
+      const markerValue = codec.read(toolOptions[marker]);
+      if (markerValue === undefined || !names.includes(name)) {
         continue;
       }
-      if (markerValue === true) {
-        return { value: true, source: marker };
+      if (codec.optsIn(markerValue)) {
+        return { value: markerValue, source: marker };
       }
-      markerOptOut ??= { value: false, source: marker };
+      markerOptOut ??= { value: markerValue, source: marker };
     }
   }
   if (markerOptOut) {
     return markerOptOut;
   }
-  const wildcard = toolOptions[TOOL_SELECTION_WILDCARD]?.[field];
-  if (wildcard != null) {
-    return { value: wildcard === true, source: TOOL_SELECTION_WILDCARD };
+  const wildcard = codec.read(toolOptions[TOOL_SELECTION_WILDCARD]);
+  if (wildcard !== undefined) {
+    return { value: wildcard, source: TOOL_SELECTION_WILDCARD };
   }
   return undefined;
+}
+
+/**
+ * Resolves one boolean selection field for a definition name through the
+ * shared precedence. Returns undefined when no policy speaks, leaving the
+ * caller's default (native intent tools, background's opt-in-only) in force.
+ */
+export function resolveToolOption(
+  name: string,
+  field: BooleanSelectionField,
+  toolOptions: AgentToolOptions | undefined,
+  capabilityToolNames?: CapabilityToolNames,
+): ResolvedToolOption | undefined {
+  return resolveSelection(name, booleanCodec(field), toolOptions, capabilityToolNames);
+}
+
+/**
+ * Resolves `allowed_callers` for a definition name through the same
+ * precedence. A marker or wildcard entry that admits `code_execution` opts
+ * in. Returns undefined when no policy speaks. This reads policy only:
+ * whether the tool may take the value is decided in `~/agents/callers`.
+ */
+export function resolveToolCallers(
+  name: string,
+  toolOptions: AgentToolOptions | undefined,
+  capabilityToolNames?: CapabilityToolNames,
+): ResolvedToolCallers | undefined {
+  return resolveSelection(name, callersCodec, toolOptions, capabilityToolNames);
 }
 
 /**
@@ -119,7 +180,7 @@ export function resolveToolOption(
  * is dropped and warned about here, where it is knowably invalid.
  */
 export function synthesizeSelectionToolOptions(
-  field: SelectionField,
+  field: BooleanSelectionField,
   selection: boolean | string[] | undefined,
   ephemeralEnabled: boolean,
   label: string,
@@ -154,12 +215,23 @@ export function getSelectionNames(
   toolOptions: AgentToolOptions | undefined,
   field: SelectionField,
 ): Set<string> | undefined {
-  if (toolOptions?.[TOOL_SELECTION_WILDCARD]?.[field] !== false) {
+  return field === 'allowed_callers'
+    ? collectSelectionNames(toolOptions, callersCodec)
+    : collectSelectionNames(toolOptions, booleanCodec(field));
+}
+
+function collectSelectionNames<T>(
+  toolOptions: AgentToolOptions | undefined,
+  codec: SelectionCodec<T>,
+): Set<string> | undefined {
+  const wildcard = codec.read(toolOptions?.[TOOL_SELECTION_WILDCARD]);
+  if (toolOptions == null || wildcard === undefined || codec.optsIn(wildcard)) {
     return undefined;
   }
   const names = new Set<string>();
   for (const [name, options] of Object.entries(toolOptions)) {
-    if (name !== TOOL_SELECTION_WILDCARD && options?.[field] === true) {
+    const value = codec.read(options);
+    if (name !== TOOL_SELECTION_WILDCARD && value !== undefined && codec.optsIn(value)) {
       names.add(name);
     }
   }

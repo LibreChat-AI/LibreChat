@@ -35,6 +35,7 @@ import type { CodeCapabilityConfigLoader } from '~/code/capabilities';
 import { supportsProgrammaticCodeExecution } from '~/code/capabilities';
 import { createContextProgrammaticBashTool } from '~/code/command';
 import { sanitizeGeminiSchema } from '~/mcp/zod';
+import { allowCodeExecutionCallers, resolveAllowedCallers } from '~/agents/callers';
 import { capturePersistedToolOptions } from '~/agents/options';
 
 export type { LCTool, LCToolRegistry, AllowedCaller, JsonSchemaType };
@@ -129,7 +130,9 @@ export function aliasMCPToolOptions(
 }
 
 /**
- * Builds a tool registry from agent-level tool_options.
+ * Builds a tool registry from agent-level tool_options. MCP tools allow
+ * caller selection, so their `allowed_callers` resolve through the shared
+ * policy (own name, then the wildcard).
  *
  * @param tools - Array of tool definitions
  * @param agentToolOptions - Per-tool configuration from the agent
@@ -145,19 +148,16 @@ export function buildToolRegistryFromAgentOptions(
     const { name, description, parameters } = tool;
     const agentOptions = agentToolOptions[name];
 
-    const allowed_callers: AllowedCaller[] =
-      agentOptions?.allowed_callers && agentOptions.allowed_callers.length > 0
-        ? agentOptions.allowed_callers
-        : ['direct'];
-
-    const defer_loading = agentOptions?.defer_loading === true;
-
-    const toolDef: LCTool = {
+    const toolDef: LCTool = allowCodeExecutionCallers({
       name,
-      allowed_callers,
-      defer_loading,
+      allowed_callers: ['direct'],
+      defer_loading: agentOptions?.defer_loading === true,
       toolType: 'mcp',
-    };
+    });
+    const resolvedCallers = resolveAllowedCallers(name, toolDef, agentToolOptions);
+    if (resolvedCallers) {
+      toolDef.allowed_callers = resolvedCallers.callers;
+    }
 
     if (description) {
       toolDef.description = description;
@@ -291,13 +291,13 @@ function buildToolRegistry(
     registry.set(
       toolDef.name,
       bindToolApproval(
-        {
+        allowCodeExecutionCallers<LCTool>({
           name: toolDef.name,
           description: toolDef.description,
           parameters: toolDef.parameters,
           serverName: toolDef.serverName,
           toolType: 'mcp',
-        },
+        }),
         getToolApprovalBinding(toolDef),
         getToolApprovalName(toolDef),
         getToolApprovalIdentity(toolDef),
@@ -397,6 +397,108 @@ export function createToolSearchDefinition(provider?: Providers | string): LCToo
   };
 }
 
+/** What decides whether `run_tools_with_bash` can run for an agent, apart from its tools. */
+export interface ProgrammaticCallingParams {
+  /** Whether the programmatic_tools capability is enabled (from agent config) */
+  programmaticToolsEnabled?: boolean;
+  /** Whether code execution is enabled and requested by this agent */
+  codeExecutionEnabled?: boolean;
+  /** Trusted Code API route selected for the executing agent. */
+  codeExecutionContext?: CodeExecutionContext;
+  codeEnvironments?: readonly CodeEnvironmentConfig[];
+  getAppConfig?: CodeCapabilityConfigLoader;
+}
+
+/**
+ * Whether the capabilities and the selected code environment let the agent call tools from
+ * code. An attached environment must have a selected workspace that runs bash programmatically.
+ */
+export async function isProgrammaticCallingAvailable({
+  programmaticToolsEnabled = false,
+  codeExecutionEnabled = false,
+  codeExecutionContext,
+  codeEnvironments,
+  getAppConfig,
+}: ProgrammaticCallingParams): Promise<boolean> {
+  return (
+    programmaticToolsEnabled &&
+    codeExecutionEnabled &&
+    (codeExecutionContext?.environmentType !== 'attached' ||
+      codeExecutionContext.codeWorkspace != null) &&
+    (await supportsProgrammaticCodeExecution(codeExecutionContext, codeEnvironments, getAppConfig))
+  );
+}
+
+function toProgrammaticToolDefinition(ptcTool: GenericTool): LCTool {
+  return {
+    name: BashProgrammaticToolCallingDefinition.name,
+    description: ptcTool.description,
+    parameters: ptcTool.schema as LCTool['parameters'],
+  };
+}
+
+/** Resolves the `run_tools_with_bash` definition, or `undefined` when the agent cannot use it. */
+export type ProgrammaticToolResolver = () => Promise<LCTool | undefined>;
+
+/**
+ * Returns a resolver for the `run_tools_with_bash` definition. Classification registers the
+ * tool only for programmatic MCP tools; initialization calls this resolver when a tool
+ * registered later (for example an `agent_builder` read tool) allows code callers. The
+ * availability check runs once, on the first call.
+ */
+export function createProgrammaticToolResolver(
+  params: ProgrammaticCallingParams,
+): ProgrammaticToolResolver {
+  let pending: Promise<LCTool | undefined> | undefined;
+  const resolve = async (): Promise<LCTool | undefined> => {
+    if (!(await isProgrammaticCallingAvailable(params))) {
+      return undefined;
+    }
+    try {
+      return toProgrammaticToolDefinition(
+        createContextProgrammaticBashTool(undefined, params.codeExecutionContext),
+      );
+    } catch (error) {
+      logger.error('[programmaticTool] Error creating PTC definition:', error);
+      return undefined;
+    }
+  };
+  return () => (pending ??= resolve());
+}
+
+/**
+ * Registers `run_tools_with_bash` when a definition allows code callers and the tool is not
+ * registered yet. Returns the definitions unchanged when no definition allows code callers,
+ * the tool is already registered, or the resolver reports the tool unavailable.
+ */
+export async function registerProgrammaticTool({
+  toolDefinitions,
+  toolRegistry,
+  resolveProgrammaticTool,
+}: {
+  toolDefinitions?: LCTool[];
+  toolRegistry?: LCToolRegistry;
+  resolveProgrammaticTool?: ProgrammaticToolResolver;
+}): Promise<{ toolDefinitions?: LCTool[]; registered: boolean }> {
+  const name = BashProgrammaticToolCallingDefinition.name;
+  if (
+    toolDefinitions == null ||
+    resolveProgrammaticTool == null ||
+    toolRegistry == null ||
+    toolRegistry.has(name) ||
+    toolDefinitions.some((def) => def.name === name) ||
+    !toolDefinitions.some((def) => def.allowed_callers?.includes('code_execution') === true)
+  ) {
+    return { toolDefinitions, registered: false };
+  }
+  const definition = await resolveProgrammaticTool();
+  if (definition == null) {
+    return { toolDefinitions, registered: false };
+  }
+  toolRegistry.set(name, { name, allowed_callers: ['direct'] });
+  return { toolDefinitions: [...toolDefinitions, definition], registered: true };
+}
+
 /**
  * Builds the tool registry from MCP tools and conditionally creates PTC and tool search tools.
  *
@@ -455,12 +557,14 @@ export async function buildToolClassification(
    * Only enable tool search if the agent has deferred tools AND the capability is enabled.
    */
   const hasProgrammaticTools =
-    programmaticToolsEnabled &&
-    codeExecutionEnabled &&
     agentHasProgrammaticTools(toolRegistry) &&
-    (codeExecutionContext?.environmentType !== 'attached' ||
-      codeExecutionContext.codeWorkspace != null) &&
-    (await supportsProgrammaticCodeExecution(codeExecutionContext, codeEnvironments, getAppConfig));
+    (await isProgrammaticCallingAvailable({
+      programmaticToolsEnabled,
+      codeExecutionEnabled,
+      codeExecutionContext,
+      codeEnvironments,
+      getAppConfig,
+    }));
   const hasDeferredTools = deferredToolsEnabled && agentHasDeferredTools(toolRegistry);
 
   /** Clear defer_loading if capability disabled */
@@ -528,11 +632,7 @@ export async function buildToolClassification(
     if (!definitionsOnly) additionalTools.push(ptcTool);
 
     /** Add PTC definition for event-driven mode */
-    toolDefinitions.push({
-      name: BashProgrammaticToolCallingDefinition.name,
-      description: ptcTool.description,
-      parameters: ptcTool.schema as LCTool['parameters'],
-    });
+    toolDefinitions.push(toProgrammaticToolDefinition(ptcTool));
     toolRegistry.set(BashProgrammaticToolCallingDefinition.name, {
       name: BashProgrammaticToolCallingDefinition.name,
       allowed_callers: ['direct'],
