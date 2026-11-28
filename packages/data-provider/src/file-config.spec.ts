@@ -115,6 +115,27 @@ describe('inferMimeType', () => {
     expect(baseFileConfig.checkType(normalized)).toBe(true);
   });
 
+  it('should infer application/vnd.ms-outlook from extension when browser type is empty', () => {
+    expect(inferMimeType('email.msg', '')).toBe('application/vnd.ms-outlook');
+  });
+
+  it('should pass through application/vnd.ms-outlook when browser reports it', () => {
+    expect(inferMimeType('email.msg', 'application/vnd.ms-outlook')).toBe(
+      'application/vnd.ms-outlook',
+    );
+  });
+
+  it('should normalize application/x-msg to application/vnd.ms-outlook', () => {
+    expect(inferMimeType('email.msg', 'application/x-msg')).toBe('application/vnd.ms-outlook');
+  });
+
+  it('should reject .msg by default and accept it once an operator allows the type', () => {
+    const normalized = inferMimeType('test.msg', '');
+    const optedIn = convertStringsToRegex(['^application/vnd\\.ms-outlook$']);
+    expect(baseFileConfig.checkType(normalized)).toBe(false);
+    expect(baseFileConfig.checkType(normalized, optedIn)).toBe(true);
+  });
+
   it('infers Office MIME types from extension when the browser reports none', () => {
     expect(inferMimeType('legacy.doc', '')).toBe('application/msword');
     expect(inferMimeType('report.docx', '')).toBe(
@@ -226,6 +247,10 @@ describe('supportedMimeTypes', () => {
   it('message/rfc822 (.eml) flows through supportedMimeTypes', () => {
     expect(checkSupported('message/rfc822')).toBe(true);
   });
+
+  it('application/vnd.ms-outlook (.msg) is not in the default supportedMimeTypes', () => {
+    expect(checkSupported('application/vnd.ms-outlook')).toBe(false);
+  });
 });
 
 describe('documentParserMimeTypes', () => {
@@ -251,6 +276,8 @@ describe('documentParserMimeTypes', () => {
     'application/vnd.oasis.opendocument.graphics',
     'text/plain',
     'image/png',
+    // .msg has no built-in extractor, so it is not routed to the document parser
+    'application/vnd.ms-outlook',
   ])('does not match OCR-only or unsupported type: %s', (mimeType) => {
     expect(check(mimeType)).toBe(false);
   });
@@ -1590,6 +1617,14 @@ describe('getConfiguredMimeAccept', () => {
     );
 
     expect(accept).toEqual(new Set(['.potx', templateMime]));
+  });
+
+  it('translates an opted-in Outlook allowlist to the .msg extension and MIME', () => {
+    const accept = toSet(
+      getConfiguredMimeAccept(convertStringsToRegex(['^application/vnd\\.ms-outlook$']), IMAGE_DOC),
+    );
+
+    expect(accept).toEqual(new Set(['.msg', 'application/vnd.ms-outlook']));
   });
 
   it('emits image/* for an image-only allowlist', () => {

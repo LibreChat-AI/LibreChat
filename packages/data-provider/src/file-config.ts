@@ -369,6 +369,8 @@ export const supportedMimeTypes = [
   /^image\/(svg|svg\+xml)$/,
   /** .eml email files */
   /^message\/rfc822$/,
+  /* .msg (application/vnd.ms-outlook) is deliberately absent: it is an OLE2 binary with no
+   * built-in extractor, so it is inferable but only accepted where an operator opts in. */
 ];
 
 export const codeInterpreterMimeTypes = [
@@ -426,6 +428,7 @@ export const codeTypeMapping: { [key: string]: string } = {
   cljc: 'text/plain', // .cljc - Clojure common source
   elm: 'text/plain', // .elm - Elm source
   eml: 'message/rfc822', // .eml - Email message (RFC 822)
+  msg: 'application/vnd.ms-outlook', // .msg - Outlook email message
   erl: 'text/plain', // .erl - Erlang source
   hrl: 'text/plain', // .hrl - Erlang header
   ex: 'text/plain', // .ex - Elixir source
@@ -525,6 +528,8 @@ export const mimeTypeAliases: Readonly<Record<string, string>> = {
   'application/x-shellscript': 'application/x-sh',
   /** libmagic, i.e. `file --mime-type` */
   'text/x-shellscript': 'application/x-sh',
+  /** Some Windows clients with Outlook installed report .msg as x-msg */
+  'application/x-msg': 'application/vnd.ms-outlook',
 };
 
 /**
@@ -895,6 +900,7 @@ const documentMimeExtensions: ReadonlyArray<readonly [string, readonly string[]]
   ['text/html', ['.html', '.htm']],
   ['text/calendar', ['.ics']],
   ['message/rfc822', ['.eml']],
+  ['application/vnd.ms-outlook', ['.msg']],
 ];
 
 /** Preferred extension for a known document MIME type, including its leading dot. */
