@@ -60,6 +60,67 @@ async function share(page: Page, groupId: string, body: unknown) {
 }
 
 test.describe('resource ACL audit', () => {
+  for (const partial of [false, true]) {
+    const scenario = partial
+      ? 'a partial audit rejects the bulk share @scenario:partial'
+      : 'bulk sharing links each grant in order @scenario:batch';
+    test(scenario, async ({ page }) => {
+      await page.goto('/c/new');
+      const suffix = randomUUID();
+      const groupId = await createGroup(page, `Bulk ACL ${suffix}`);
+      const users = await Promise.all([seedUser(suffix + '-a'), seedUser(suffix + '-b')]);
+      const updated = users.map((user) => ({
+        type: 'user',
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        source: 'local',
+        accessRoleId: VIEWER_ROLE,
+      }));
+      const filter = { 'target.id': groupId, action: 'acl.granted' };
+      const index = 'partial-' + suffix;
+      try {
+        if (partial) {
+          const options = {
+            name: index,
+            unique: true,
+            partialFilterExpression: { ...filter, outcome: 'success' },
+          };
+          await withMongo((db) =>
+            db.collection('auditlogs').createIndex({ 'target.id': 1, outcome: 1 }, options),
+          );
+        }
+        const request = share(page, groupId, { updated, removed: [] });
+        if (partial) {
+          await expect(request).rejects.toThrow(/got 500/);
+        } else {
+          await request;
+        }
+        const rows = await withMongo((db) =>
+          db.collection('auditlogs').find(filter).sort({ seq: 1 }).toArray(),
+        );
+        expect(rows.map((row) => row.outcome)).toEqual(
+          partial ? ['success', 'failure'] : ['success', 'success'],
+        );
+        if (partial) {
+          expect(rows[1].metadata.principalId).toBe(rows[0].metadata.principalId);
+        } else {
+          expect(rows.map((row) => row.metadata.principalId).sort()).toEqual(
+            updated.map((user) => user.id).sort(),
+          );
+          expect(rows[1].prevHash).toBe(rows[0].hash);
+        }
+      } finally {
+        await withMongo(async (db) => {
+          await db.collection('users').deleteMany({ _id: { $in: users.map((user) => user._id) } });
+          if (partial) {
+            await db.collection('auditlogs').dropIndex(index);
+          }
+        });
+      }
+    });
+  }
+
   test('sharing then unsharing a prompt group records a grant and a revoke by principal id @scenario:sharing-a-resource-records-acl-grant-and-revoke-by-principal-id', async ({
     page,
   }) => {
