@@ -193,11 +193,12 @@ const server = http.createServer(async (req, res) => {
     const lastUser = flattenPrompt(
       (body.messages ?? []).filter((message) => message.role === 'user').slice(-1),
     );
-    const assistantFixture = lastUser.includes('E2E_ASSISTANT_OUTPUT:')
-      ? lastUser.includes('withhold')
+    let assistantFixture;
+    if (lastUser.includes('E2E_ASSISTANT_OUTPUT:')) {
+      assistantFixture = lastUser.includes('withhold')
         ? ['Do not send this private ', 'phrase example.']
-        : ['This is an ', 'approved answer.']
-      : undefined;
+        : ['This is an ', 'approved answer.'];
+    }
     const promptLabel = Object.entries(behavior.labelsByPrompt ?? {}).find(([needle]) =>
       prompt.includes(needle),
     )?.[1];

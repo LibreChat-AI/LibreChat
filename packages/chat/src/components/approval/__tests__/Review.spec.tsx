@@ -115,7 +115,97 @@ const pendingAction: Agents.PendingAction = {
   },
 };
 
+function renderApproval(initialAutoExpand = true) {
+  const jotaiStore = createStore();
+  let conversationId = 'conversation-1';
+  let action: Agents.PendingAction | null = pendingAction;
+  let autoExpand = initialAutoExpand;
+  jotaiStore.set(pendingApprovalActionFamily(conversationId), action);
+  const tree = () => (
+    <JotaiProvider store={jotaiStore}>
+      <ApprovalProvider pendingAction={action}>
+        <PendingToolApprovalPanel
+          conversationId={conversationId}
+          autoExpand={autoExpand}
+          localize={localize}
+          renderRequest={renderRequest}
+        />
+        <PendingToolApprovalButton conversationId={conversationId} localize={localize} />
+      </ApprovalProvider>
+    </JotaiProvider>
+  );
+  const result = render(tree());
+  return {
+    configure: (value: boolean) => {
+      autoExpand = value;
+      result.rerender(tree());
+    },
+    setAction: (value: Agents.PendingAction | null) => {
+      action = value;
+      act(() => jotaiStore.set(pendingApprovalActionFamily(conversationId), value));
+      result.rerender(tree());
+    },
+    showConversation: (value: string) => {
+      conversationId = value;
+      action = { ...pendingAction, conversationId };
+      act(() => jotaiStore.set(pendingApprovalActionFamily(conversationId), action));
+      result.rerender(tree());
+    },
+  };
+}
+
 describe('PendingToolApproval', () => {
+  test('autoExpand false waits for the toggle and still allows manual collapse', () => {
+    renderApproval(false);
+    expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
+    const toggle = screen.getByTestId('pending-tool-approval-button');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('late configuration can retract and restore automatic expansion', () => {
+    const { configure } = renderApproval();
+    expect(screen.getByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
+    configure(false);
+    expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
+    configure(true);
+    expect(screen.getByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
+  });
+
+  test('manual close survives configuration changes, a gap and a new pending action', () => {
+    const { configure, setAction } = renderApproval();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Collapse' }), { key: 'Escape' });
+    configure(false);
+    configure(true);
+    setAction(null);
+    setAction({ ...pendingAction, actionId: 'action-2' });
+    expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
+  });
+
+  test('manual reopen survives late collapsed configuration and subsequent actions', () => {
+    const { configure, setAction } = renderApproval();
+    const toggle = screen.getByTestId('pending-tool-approval-button');
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    configure(false);
+    setAction(null);
+    setAction({ ...pendingAction, actionId: 'action-2' });
+    expect(screen.getByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
+  });
+
+  test('a manual choice belongs to its conversation', () => {
+    const { showConversation } = renderApproval();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse' }));
+    showConversation('conversation-2');
+    expect(screen.getByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
+    showConversation('conversation-1');
+    expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
+  });
+
   test('reviews the authoritative batch beside the composer and can be collapsed', async () => {
     const jotaiStore = createStore();
     jotaiStore.set(pendingApprovalActionFamily('conversation-1'), pendingAction);

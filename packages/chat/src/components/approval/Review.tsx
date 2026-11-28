@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef } from 'react';
-import { useAtom, useAtomValue } from 'jotai';
+import { atomFamily } from 'jotai/utils';
 import { Button, TooltipAnchor } from '@librechat/client';
+import { atom, useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { ChevronDown, ChevronUp, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import type { MemoExoticComponent, ReactElement, ReactNode, RefObject } from 'react';
 import type { Agents } from 'librechat-data-provider';
@@ -9,6 +10,9 @@ import { buildApprovalPreview, buildApprovalPreviews } from '../../core/parts/ap
 import { useApprovalContext, useResumeSubmit } from './context';
 import { useComposerOverlay } from '../../react/overlay';
 import { isCancelKey } from '../../core/shortcuts';
+
+/** Configuration can change automatic expansion, but never a user's choice for a conversation. */
+const manuallySetPanelFamily = atomFamily((_conversationId: string) => atom(false));
 
 /** Copy for the review panel. A method, so a host localize typed with its own
  *  key union still fits. The keys passed here come from this panel. */
@@ -59,6 +63,8 @@ function previewTitle(
 
 export type PendingToolApprovalPanelProps = {
   conversationId: string;
+  /** Open automatically for pending approvals until the user chooses an open or closed state. */
+  autoExpand?: boolean;
   /** The composer toggle that reopens the panel; collapsing returns focus to it. */
   triggerRef?: RefObject<HTMLButtonElement>;
   localize: ApprovalReviewCopy;
@@ -72,6 +78,7 @@ export const PendingToolApprovalPanel: MemoExoticComponent<
   (props: PendingToolApprovalPanelProps) => ReactNode
 > = memo(function PendingToolApprovalPanel({
   conversationId,
+  autoExpand = true,
   triggerRef,
   localize,
   renderRequest,
@@ -79,15 +86,16 @@ export const PendingToolApprovalPanel: MemoExoticComponent<
 }: PendingToolApprovalPanelProps) {
   const pendingAction = usePendingToolApproval(conversationId);
   const [open, setOpen] = useAtom(approvalPanelOpenFamily(conversationId));
+  const [manuallySet, setManuallySet] = useAtom(manuallySetPanelFamily(conversationId));
   const { getDecisions, getStatus, isReady } = useApprovalContext();
   const { submitToolApproval } = useResumeSubmit();
   const actionId = pendingAction?.actionId;
 
   useEffect(() => {
-    if (actionId != null) {
-      setOpen(true);
+    if (actionId != null && !manuallySet) {
+      setOpen(autoExpand);
     }
-  }, [actionId, setOpen]);
+  }, [actionId, autoExpand, manuallySet, setOpen]);
 
   useComposerOverlay(conversationId, open && pendingAction != null);
 
@@ -110,6 +118,7 @@ export const PendingToolApprovalPanel: MemoExoticComponent<
   /** Collapsing unmounts the focused control, so focus goes back to the
    *  toggle rather than falling to the page. Decisions and drafts are kept. */
   collapseRef.current = () => {
+    setManuallySet(true);
     setOpen(false);
     triggerRef?.current?.focus();
   };
@@ -287,13 +296,17 @@ export const PendingToolApprovalButton: MemoExoticComponent<
 }: PendingToolApprovalButtonProps) {
   const pendingAction = usePendingToolApproval(conversationId);
   const [open, setOpen] = useAtom(approvalPanelOpenFamily(conversationId));
+  const setManuallySet = useSetAtom(manuallySetPanelFamily(conversationId));
 
   if (pendingAction == null) {
     return null;
   }
 
   const count = pendingAction.payload.action_requests.length;
-  const onClick = () => setOpen((current) => !current);
+  const onClick = () => {
+    setManuallySet(true);
+    setOpen((current) => !current);
+  };
   const content = (
     <>
       <ShieldQuestion className="size-4" aria-hidden="true" />

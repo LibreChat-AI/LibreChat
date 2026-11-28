@@ -10,7 +10,7 @@ import {
 import type { ApprovalRequestRenderProps } from '@librechat/chat/components';
 import type { ReactNode, RefObject } from 'react';
 import { useChatApprovalHost } from '~/components/Chat/Messages/Content/ApprovalContext';
-import { useLocalize } from '~/hooks';
+import { useGetAgentsConfig, useLocalize } from '~/hooks';
 
 /**
  * The app's review panel: package chrome, with this app's approval card in each row. The
@@ -26,6 +26,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
   triggerRef?: RefObject<HTMLButtonElement>;
 }) {
   const localize = useLocalize();
+  const { agentsConfig } = useGetAgentsConfig();
   const host = useChatApprovalHost();
   const renderRequest = useCallback(
     (props: ApprovalRequestRenderProps) => <ToolApproval {...props} surface="composer" />,
@@ -51,6 +52,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
       <PackagePanel
         conversationId={conversationId}
         triggerRef={triggerRef}
+        autoExpand={agentsConfig?.toolApproval?.panel !== 'collapsed'}
         localize={localize}
         renderRequest={renderRequest}
         renderCollapse={renderCollapse}
