@@ -35,6 +35,15 @@ function isDuplicateKeyError(error: unknown): boolean {
   return typeof error === 'object' && error != null && (error as { code?: unknown }).code === 11000;
 }
 
+/**
+ * Matches grants whose `expiredAt` is absent, null or still in the future, so an expired grant
+ * stops authorizing at once rather than at the TTL monitor's next sweep (up to a minute later).
+ * `$nor` leaves the callers' top-level `$or` over principals intact.
+ */
+function activeGrantFilter(): { $nor: Array<{ expiredAt: { $lte: Date } }> } {
+  return { $nor: [{ expiredAt: { $lte: new Date() } }] };
+}
+
 /** Names an entry after the grant it records, so two inserts of the same grant collide on `_id`. */
 function grantEntryId(
   principalType: string,
@@ -147,6 +156,50 @@ export const OWNER_ACL_PERMISSION_BIT_SUPERSETS: readonly number[] =
  */
 const OBJECT_ID_HEX = /^[0-9a-fA-F]{24}$/;
 
+/** The display fields of a user or group joined onto an ACL entry; never its credentials. */
+export type JoinedPrincipal = {
+  _id: Types.ObjectId;
+  tenantId?: string;
+  name?: string;
+  username?: string;
+  email?: string;
+  avatar?: string;
+  role?: string;
+  description?: string;
+  source?: string;
+  idOnTheSource?: string;
+};
+
+/** One ACL entry of a resource with its role label and principal details, for the sharing UI. */
+export type ResourcePermissionEntry = {
+  principalType: string;
+  principalId?: Types.ObjectId | string;
+  permBits: number;
+  accessRoleId?: string;
+  userInfo?: JoinedPrincipal;
+  groupInfo?: JoinedPrincipal;
+};
+
+const JOINED_FIELDS: ReadonlyArray<keyof JoinedPrincipal> = [
+  '_id',
+  'tenantId',
+  'name',
+  'username',
+  'email',
+  'avatar',
+  'role',
+  'description',
+  'source',
+  'idOnTheSource',
+];
+
+/** Nested inclusion paths that keep only {@link JOINED_FIELDS} of a joined principal. */
+const JOINED_PROJECTION: Record<string, 1> = Object.fromEntries(
+  ['userInfo', 'groupInfo'].flatMap((joined) =>
+    JOINED_FIELDS.map((key) => [`${joined}.${key}`, 1 as const]),
+  ),
+);
+
 export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
   deleteSharedLinkAclEntries: (resourceIds: string[], keepUser?: string) => Promise<DeleteResult>;
   updateSharedLinkAclExpiration: (resourceId: string, expiredAt: Date | null) => Promise<void>;
@@ -161,6 +214,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     resourceId: string | Types.ObjectId,
     session?: ClientSession,
     readPrimary?: boolean,
+    includeExpired?: boolean,
   ) => Promise<IAclEntry[]>;
   hasPermission: (
     principalsList: Array<{ principalType: string; principalId?: string | Types.ObjectId }>,
@@ -236,6 +290,10 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     readPrimary?: boolean,
   ) => Promise<Types.ObjectId[]>;
   aggregateAclEntries: (pipeline: PipelineStage[]) => Promise<unknown[]>;
+  findResourcePermissionEntries: (
+    resourceType: string,
+    resourceId: string | Types.ObjectId,
+  ) => Promise<ResourcePermissionEntry[]>;
   getFirstOwnerIdsByResource: (
     resourceType: string,
     resourceIds: Array<string | Types.ObjectId>,
@@ -269,6 +327,8 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
    * @param principalsList - List of principals, each containing { principalType, principalId }
    * @param resourceType - The type of resource
    * @param resourceId - The ID of the resource
+   * @param includeExpired - Also return entries past `expiredAt`. Only for mutation snapshots,
+   *   which must see every stored row they may overwrite or delete; never for authorization.
    * @returns Array of matching ACL entries
    */
   async function findEntriesByPrincipalsAndResource(
@@ -277,6 +337,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     resourceId: string | Types.ObjectId,
     session?: ClientSession,
     readPrimary?: boolean,
+    includeExpired?: boolean,
   ): Promise<IAclEntry[]> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     const principalsQuery = principalsList.map((p) => ({
@@ -288,6 +349,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       $or: principalsQuery,
       resourceType,
       resourceId,
+      ...(!includeExpired && activeGrantFilter()),
     });
     if (session) {
       query.session(session);
@@ -325,6 +387,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       resourceType,
       resourceId,
       permBits: { $in: permissionBitSupersets(permissionBit) },
+      ...activeGrantFilter(),
     })
       .select('_id')
       .lean();
@@ -396,6 +459,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       $or: principalsQuery,
       resourceType,
       resourceId: { $in: resourceIds },
+      ...activeGrantFilter(),
     }).lean();
 
     // Compute effective permissions per resource
@@ -578,6 +642,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       ...(resourceIds !== undefined && { resourceId: { $in: resourceIds } }),
       resourceType,
       permBits: { $in: permissionBitSupersets(requiredPermBit) },
+      ...activeGrantFilter(),
     });
     if (readPrimary) {
       /** Cache builds must not capture a lagging secondary's pre-mutation state */
@@ -835,6 +900,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       ...(resourceIds !== undefined && { resourceId: { $in: resourceIds } }),
       resourceType,
       permBits: { $in: permissionBitSupersets(requiredPermissions) },
+      ...activeGrantFilter(),
     });
     if (readPrimary) {
       /** Cache builds must not capture a lagging secondary's pre-mutation state */
@@ -850,6 +916,75 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
   async function aggregateAclEntries(pipeline: PipelineStage[]): Promise<unknown[]> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     return AclEntry.aggregate(pipeline);
+  }
+
+  /**
+   * Every ACL entry of a resource, joined with its access role label and the user or group it
+   * grants to, for the sharing UI. Expired entries are kept: the dialog shows what is stored,
+   * which a renewal of the share would reinstate.
+   *
+   * `$lookup` bypasses the tenant plugin, so the joined roles are filtered to the global
+   * defaults (no `tenantId`), which tenant grants normally reference, and the entry tenant's own
+   * copies. Filtered after the join because DocumentDB lacks the `let`/`pipeline` form. Joined
+   * users and groups are not tenant-filtered here; callers check them against the request.
+   */
+  async function findResourcePermissionEntries(
+    resourceType: string,
+    resourceId: string | Types.ObjectId,
+  ): Promise<ResourcePermissionEntry[]> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const hex = String(resourceId);
+    const id = OBJECT_ID_HEX.test(hex) ? new Types.ObjectId(hex) : resourceId;
+    return AclEntry.aggregate<ResourcePermissionEntry>([
+      { $match: { resourceType, resourceId: id } },
+      { $lookup: { from: 'accessroles', localField: 'roleId', foreignField: '_id', as: 'role' } },
+      {
+        $addFields: {
+          role: {
+            $filter: {
+              input: '$role',
+              as: 'r',
+              cond: {
+                $or: [
+                  { $eq: [{ $ifNull: ['$$r.tenantId', null] }, null] },
+                  { $eq: ['$$r.tenantId', { $ifNull: ['$tenantId', null] }] },
+                ],
+              },
+            },
+          },
+        },
+      },
+      {
+        $lookup: { from: 'users', localField: 'principalId', foreignField: '_id', as: 'userInfo' },
+      },
+      {
+        $lookup: {
+          from: 'groups',
+          localField: 'principalId',
+          foreignField: '_id',
+          as: 'groupInfo',
+        },
+      },
+      {
+        $project: {
+          principalType: 1,
+          principalId: 1,
+          permBits: 1,
+          accessRoleId: { $arrayElemAt: ['$role.accessRoleId', 0] },
+          userInfo: { $arrayElemAt: ['$userInfo', 0] },
+          groupInfo: { $arrayElemAt: ['$groupInfo', 0] },
+        },
+      },
+      {
+        $project: {
+          principalType: 1,
+          principalId: 1,
+          permBits: 1,
+          accessRoleId: 1,
+          ...JOINED_PROJECTION,
+        },
+      },
+    ]);
   }
 
   /**
@@ -996,6 +1131,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     bulkWriteAclEntries,
     findPublicResourceIds,
     aggregateAclEntries,
+    findResourcePermissionEntries,
     getFirstOwnerIdsByResource,
     getSoleOwnedResourceIds,
     moveAclEntriesToPrincipal,

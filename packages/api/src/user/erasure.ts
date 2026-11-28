@@ -391,7 +391,7 @@ export async function eraseUserData(
   await deleteUserMCPServers(userId, deps, tenantId);
   await deps.deleteActions({ user: userId });
   await deps.deleteTokens({ userId });
-  await deps.removeUserFromAllGroups(userId);
+  await deps.removeUserFromAllGroups(userId, tenantId);
   await deps.deleteAclEntries({ principalId: userObjectId });
   await deps.deleteSchedulesByUser(userId);
   await deps.deleteSubscriptions(userId);

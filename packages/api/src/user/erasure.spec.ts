@@ -572,6 +572,20 @@ describe('eraseUserData', () => {
     expect(deleteUserPrompts).toHaveBeenCalledWith(userId.toString());
   });
 
+  it('names the member tenant when removing the user from groups, for cache eviction', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await seedUser(userId);
+    const { deps } = createDeps();
+    const removeUserFromAllGroups = jest.fn(async () => undefined);
+
+    await eraseUserData(
+      { userId: userId.toString(), tenantId: 'tenant-1' },
+      { ...deps, removeUserFromAllGroups },
+    );
+
+    expect(removeUserFromAllGroups).toHaveBeenCalledWith(userId.toString(), 'tenant-1');
+  });
+
   for (const modelName of ['Agent', 'PromptGroup']) {
     it(`keeps the account erasable when the ${modelName} lookup fails`, async () => {
       const userId = new mongoose.Types.ObjectId();

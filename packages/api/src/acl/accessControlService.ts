@@ -612,6 +612,7 @@ export class AccessControlService {
         }
       }
       const loadRoles = () => this._dbMethods.findRolesByResourceType(resourceType, localSession);
+      /** Includes expired rows: a revoke must delete them, or renewing the share would revive them. */
       const loadEntries = () =>
         affectedPrincipals.length > 0
           ? this._dbMethods.findEntriesByPrincipalsAndResource(
@@ -619,6 +620,7 @@ export class AccessControlService {
               resourceType,
               resourceId,
               localSession,
+              true,
               true,
             )
           : Promise.resolve([]);
