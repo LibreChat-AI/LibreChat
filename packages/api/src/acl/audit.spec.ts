@@ -22,7 +22,7 @@ const revokeChange = (type: PrincipalType, id: string | null): PermissionChange 
   principal: { type, id },
 });
 
-function setup(recordImpl?: jest.Mock) {
+function setup(recordImpl?: jest.Mock, recordAuditEntries?: jest.Mock) {
   const recordAuditEntry = recordImpl ?? jest.fn().mockResolvedValue(null);
   const logger = { error: jest.fn() };
   const write = jest.fn().mockResolvedValue('written');
@@ -42,7 +42,7 @@ function setup(recordImpl?: jest.Mock) {
       resourceType: options.resourceType ?? ResourceType.PROMPTGROUP,
       resourceId: options.resourceId ?? 'res-1',
       failClosed,
-      deps: { recordAuditEntry, logger, getAgent: options.getAgent },
+      deps: { recordAuditEntry, recordAuditEntries, logger, getAgent: options.getAgent },
       update: async (beforeWrite) => {
         await beforeWrite({ aclChanges, insightsChanges: options.insightsChanges ?? [] });
         return write();
@@ -52,6 +52,45 @@ function setup(recordImpl?: jest.Mock) {
 }
 
 describe('runAuditedPermissionUpdate', () => {
+  test('retries only missing entries and compensates the durable prefix @scenario:partial', async () => {
+    const batch = jest.fn().mockResolvedValue([true, false]);
+    const single = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('unavailable'))
+      .mockResolvedValue(null);
+    const { run, write } = setup(single, batch);
+    await expect(run([grantChange('first'), grantChange('second')], true)).rejects.toThrow(
+      'Permission change could not be audited',
+    );
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(single.mock.calls.map(([input]) => [input.metadata.principalId, input.outcome])).toEqual(
+      [
+        ['second', 'success'],
+        ['first', 'failure'],
+      ],
+    );
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  test.each([true, false])(
+    'does not repeat an ambiguous append (failClosed=%s) @scenario:partial',
+    async (failClosed) => {
+      const batch = jest.fn().mockResolvedValue([true, null]);
+      const { recordAuditEntry, run, write } = setup(undefined, batch);
+      const result = run([grantChange('first'), grantChange('second')], failClosed);
+      if (failClosed) {
+        await expect(result).rejects.toThrow('Permission change could not be audited');
+        expect(
+          recordAuditEntry.mock.calls.map(([input]) => [input.metadata.principalId, input.outcome]),
+        ).toEqual([['first', 'failure']]);
+        expect(write).not.toHaveBeenCalled();
+      } else {
+        await expect(result).resolves.toBe('written');
+        expect(recordAuditEntry).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   test('targets an uppercase ObjectId hex by its lowercase form', async () => {
     const { recordAuditEntry, run } = setup();
     const hex = 'ABCDEF0123456789ABCDEF01';

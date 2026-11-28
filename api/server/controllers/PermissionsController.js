@@ -139,7 +139,12 @@ const updateResourcePermissions = async (req, res) => {
       req,
       resourceType,
       resourceId,
-      deps: { recordAuditEntry: db.recordAuditEntry, getAgent: db.getAgent, logger },
+      deps: {
+        recordAuditEntries: db.recordAuditEntries,
+        recordAuditEntry: db.recordAuditEntry,
+        getAgent: db.getAgent,
+        logger,
+      },
       update: (beforeWrite, afterWrite) =>
         bulkUpdateResourcePermissions({
           resourceType,

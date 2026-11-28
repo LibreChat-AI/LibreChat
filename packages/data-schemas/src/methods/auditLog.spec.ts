@@ -57,6 +57,33 @@ beforeEach(async () => {
 });
 
 describe('auditLog methods', () => {
+  describe('recordAuditEntries', () => {
+    it('reads the chain tail once and appends rows in order @scenario:batch', async () => {
+      await seed(1);
+      const tail = jest.spyOn(AuditLog, 'findOne');
+      try {
+        const result = await methods.recordAuditEntries([baseInput(), baseInput(), baseInput()]);
+        expect(result).toEqual([true, true, true]);
+        expect(tail).toHaveBeenCalledTimes(1);
+      } finally {
+        tail.mockRestore();
+      }
+      expect(await methods.verifyAuditChain('tenant-a')).toMatchObject({ ok: true, checked: 4 });
+    });
+
+    it('reports only its own durable prefix after a partial insert @scenario:partial', async () => {
+      // The second insert collides with an existing document on this test-only index.
+      await AuditLog.collection.createIndex({ 'actor.name': 1 }, { unique: true });
+      try {
+        const result = await methods.recordAuditEntries([baseInput(), baseInput()]);
+        expect(result).toEqual([true, false]);
+        expect(await methods.verifyAuditChain('tenant-a')).toMatchObject({ ok: true, checked: 1 });
+      } finally {
+        await AuditLog.collection.dropIndex('actor.name_1');
+      }
+    });
+  });
+
   describe('recordAuditEntry', () => {
     it('persists a tenant-scoped entry with denormalized + derived fields', async () => {
       const doc = await methods.recordAuditEntry(baseInput());

@@ -53,6 +53,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface AuditLogMethods {
+  /** Append one chain in order. True confirms a write, false permits retry, null means the outcome is unknown. */
+  recordAuditEntries: (inputs: readonly RecordAuditEntryInput[]) => Promise<(boolean | null)[]>;
   recordAuditEntry: (
     input: RecordAuditEntryInput,
     options?: RecordAuditEntryOptions,
@@ -300,6 +302,54 @@ export interface AuditLogMethodOptions {
   indexBuild?: IndexBuildOptions;
 }
 
+function auditFields(input: RecordAuditEntryInput) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const chainKey = auditChainKey(input.tenantId);
+  const category = input.category ?? AUDIT_ACTION_CATEGORY[input.action];
+  const outcome = input.outcome ?? 'success';
+  const severity =
+    input.severity ?? (outcome === 'failure' || outcome === 'denied' ? 'warning' : 'info');
+  const actor = {
+    type: input.actor.type,
+    name: input.actor.name,
+    ...(input.actor.id != null ? { id: idToString(input.actor.id) } : {}),
+  };
+  const target = {
+    type: input.target.type,
+    ...(input.target.id != null ? { id: idToString(input.target.id) } : {}),
+    ...(input.target.name != null ? { name: input.target.name } : {}),
+  };
+  const metadata = normalizeMetadata(input.metadata);
+  const context = normalizeContext(input.context);
+
+  return {
+    schemaVersion: AUDIT_SCHEMA_VERSION,
+    category,
+    action: input.action,
+    outcome,
+    severity,
+    actor,
+    target,
+    metadata,
+    context,
+    tenantId,
+    chainKey,
+  };
+}
+
+function linkEntry(
+  fields: ReturnType<typeof auditFields>,
+  tail: { seq: number; hash: string } | null,
+) {
+  const entry = {
+    ...fields,
+    seq: (tail?.seq ?? 0) + 1,
+    prevHash: tail?.hash ?? GENESIS_HASH,
+    createdAt: new Date(),
+  };
+  return { ...entry, hash: computeEntryHash(entry) };
+}
+
 export function createAuditLogMethods(
   mongoose: typeof import('mongoose'),
   options: AuditLogMethodOptions = {},
@@ -339,24 +389,8 @@ export function createAuditLogMethods(
     options?: RecordAuditEntryOptions,
   ): Promise<IAuditLog | null> {
     const AuditLog = model();
-    const tenantId = normalizeTenantId(input.tenantId);
-    const chainKey = auditChainKey(input.tenantId);
-    const category = input.category ?? AUDIT_ACTION_CATEGORY[input.action];
-    const outcome = input.outcome ?? 'success';
-    const severity =
-      input.severity ?? (outcome === 'failure' || outcome === 'denied' ? 'warning' : 'info');
-    const actor = {
-      type: input.actor.type,
-      name: input.actor.name,
-      ...(input.actor.id != null ? { id: idToString(input.actor.id) } : {}),
-    };
-    const target = {
-      type: input.target.type,
-      ...(input.target.id != null ? { id: idToString(input.target.id) } : {}),
-      ...(input.target.name != null ? { name: input.target.name } : {}),
-    };
-    const metadata = normalizeMetadata(input.metadata);
-    const context = normalizeContext(input.context);
+    const fields = auditFields(input);
+    const { chainKey, category, outcome, tenantId, actor, target } = fields;
 
     for (let attempt = 0; attempt < MAX_APPEND_RETRIES; attempt++) {
       try {
@@ -366,43 +400,7 @@ export function createAuditLogMethods(
           .sort({ seq: -1 })
           .select('seq hash')
           .lean<{ seq: number; hash: string }>();
-        const prevSeq = last?.seq ?? 0;
-        const prevHash = last?.hash ?? GENESIS_HASH;
-        const seq = prevSeq + 1;
-        const createdAt = new Date();
-        const hash = computeEntryHash({
-          schemaVersion: AUDIT_SCHEMA_VERSION,
-          category,
-          action: input.action,
-          outcome,
-          severity,
-          actor,
-          target,
-          metadata,
-          context,
-          tenantId,
-          chainKey,
-          seq,
-          prevHash,
-          createdAt,
-        });
-        const doc = await AuditLog.create({
-          schemaVersion: AUDIT_SCHEMA_VERSION,
-          category,
-          action: input.action,
-          outcome,
-          severity,
-          actor,
-          target,
-          ...(metadata !== undefined && { metadata }),
-          ...(context !== undefined && { context }),
-          ...(tenantId !== undefined && { tenantId }),
-          chainKey,
-          seq,
-          prevHash,
-          hash,
-          createdAt,
-        });
+        const doc = await AuditLog.create(linkEntry(fields, last));
         return doc;
       } catch (err) {
         if (isDuplicateKeyError(err) && attempt < MAX_APPEND_RETRIES - 1) {
@@ -438,6 +436,61 @@ export function createAuditLogMethods(
       }
     }
     return null;
+  }
+
+  async function recordAuditEntries(
+    inputs: readonly RecordAuditEntryInput[],
+  ): Promise<(boolean | null)[]> {
+    if (!inputs.length) {
+      return [];
+    }
+    const AuditLog = model();
+    const fields = inputs.map(auditFields);
+    const { chainKey } = fields[0];
+    if (fields.some((entry) => entry.chainKey !== chainKey)) {
+      throw new Error('An audit batch must belong to one chain');
+    }
+    await ensureIndexes();
+    let tail = await AuditLog.findOne({ chainKey })
+      .sort({ seq: -1 })
+      .select('seq hash')
+      .read('primary')
+      .lean<{ seq: number; hash: string }>();
+    const rows = fields.map((entry) => {
+      const row = linkEntry(entry, tail);
+      tail = row;
+      const doc = new AuditLog(row);
+      const error = doc.validateSync();
+      if (error) {
+        throw error;
+      }
+      return doc.toObject();
+    });
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- AuditLog rejects public bulk writes. These rows are model-validated and hash-linked to one explicit tenant chain.
+      const result = await AuditLog.collection.insertMany(rows, { ordered: true });
+      return rows.map(() => (result.acknowledged ? true : null));
+    } catch (error) {
+      if (
+        error instanceof mongoose.mongo.MongoBulkWriteError &&
+        error.result.hasWriteErrors() &&
+        !error.result.getWriteConcernError()
+      ) {
+        return rows.map((_, index) => index < error.result.insertedCount);
+      }
+      // An interrupted write may still finish. Only positive primary reads
+      // establish persistence. Retrying an unknown row could duplicate it.
+      try {
+        const persisted = await AuditLog.distinct('_id', {
+          chainKey,
+          _id: { $in: rows.map((row) => row._id) },
+        }).read('primary');
+        const ids = new Set(persisted.map(String));
+        return rows.map((row) => (ids.has(String(row._id)) ? true : null));
+      } catch {
+        return rows.map(() => null);
+      }
+    }
   }
 
   async function listAuditLogPage(
@@ -789,6 +842,7 @@ export function createAuditLogMethods(
   }
 
   return {
+    recordAuditEntries,
     recordAuditEntry,
     listAuditLogPage,
     findAuditLogEntry,
