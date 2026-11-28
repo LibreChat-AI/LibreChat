@@ -105,17 +105,8 @@ describe('agent machine allowlist authorization', () => {
         },
       },
     }) as Parameters<typeof validateAgentCodeEnvironmentAllowlist>[0];
-  let res: Parameters<typeof validateAgentCodeEnvironmentAllowlist>[1];
-  let json: jest.Mock;
-  let status: jest.Mock;
-  beforeEach(() => {
-    json = jest.fn();
-    status = jest.fn(() => ({ json }));
-    res = { status } as unknown as typeof res;
-  });
   it('authorizes each additional machine with the loaded principal-scoped config', () => {
-    expect(validateAgentCodeEnvironmentAllowlist(req(), res, ['authorized'])).toBe(true);
-    expect(status).not.toHaveBeenCalled();
+    expect(validateAgentCodeEnvironmentAllowlist(req(), ['authorized'])).toBeNull();
   });
   it.each(['another-principals-machine', 'managed', 'control-plane'])(
     'refuses %s before reservations even without a default or active sessions',
@@ -123,7 +114,6 @@ describe('agent machine allowlist authorization', () => {
       expect(
         validateStatefulCodeEnvironment(
           req(),
-          res,
           false,
           undefined,
           undefined,
@@ -132,23 +122,19 @@ describe('agent machine allowlist authorization', () => {
           undefined,
           undefined,
           [id],
-        ),
-      ).toBe(false);
-      expect(status).toHaveBeenCalledWith(403);
+        )?.status,
+      ).toBe(403);
     },
   );
   it('enforces the deployment limit before scanning any candidate IDs', () => {
-    expect(validateAgentCodeEnvironmentAllowlist(req(1), res, ['authorized', 'missing'])).toBe(
-      false,
-    );
-    expect(status).toHaveBeenCalledWith(400);
-    expect(json).toHaveBeenCalledWith({
-      error: 'Agent machine choices exceed the configured maximum of 1',
+    expect(validateAgentCodeEnvironmentAllowlist(req(1), ['authorized', 'missing'])).toEqual({
+      status: 400,
+      body: { error: 'Agent machine choices exceed the configured maximum of 1' },
     });
   });
   it('allows removing choices and unrelated edits without reauthorizing inaccessible stored choices', () => {
-    expect(validateAgentCodeEnvironmentAllowlist(req(), res, [])).toBe(true);
-    expect(validateAgentCodeEnvironmentAllowlist(req(), res, undefined)).toBe(true);
+    expect(validateAgentCodeEnvironmentAllowlist(req(), [])).toBeNull();
+    expect(validateAgentCodeEnvironmentAllowlist(req(), undefined)).toBeNull();
   });
   it('restores a version list instead of inheriting current machine privileges', () => {
     expect(

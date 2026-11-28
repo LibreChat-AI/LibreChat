@@ -70,6 +70,8 @@ function isBuiltinSelected(
     case 'ask_user_question':
       // Native tool presented as a builtin — selection lives in agent.tools.
       return form.tools.includes('ask_user_question');
+    case 'agent_builder':
+      return form.tools.includes('agent_builder');
     default:
       return false;
   }

@@ -321,3 +321,28 @@ describe('selection — ask_user_question builtin rides agent.tools', () => {
     expect(none.map((i) => i.id)).not.toContain('ask_user_question');
   });
 });
+
+describe('selection — agent_builder builtin rides agent.tools', () => {
+  const catalog: AgentItem[] = [
+    ...sampleCatalog,
+    {
+      kind: 'builtin',
+      id: 'agent_builder',
+      name: 'com_ui_agent_builder_tool',
+      description: 'com_agents_agent_builder_info',
+      iconKey: 'agent_builder',
+    },
+  ];
+
+  test('a marker-only agent shows the agent builder row', () => {
+    const selected = deriveSelectedItems(
+      { ...emptyFormState, tools: ['agent_builder'] },
+      catalog,
+      [],
+    );
+    expect(selected.map((i) => i.id)).toEqual(['agent_builder']);
+    expect(deriveSelectedItems(emptyFormState, catalog, []).map((i) => i.id)).not.toContain(
+      'agent_builder',
+    );
+  });
+});

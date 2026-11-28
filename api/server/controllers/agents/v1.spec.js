@@ -7763,8 +7763,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         mockReq.params = { id: agentId };
         mockReq.body = { instructionsPrompt: link };
         await updateAgentHandler(mockReq, mockRes);
-        // `updateAgentHandler` only calls `res.status` on error, so no call means success.
-        expect(mockRes.status).not.toHaveBeenCalled();
+        expect(mockRes.status).toHaveBeenCalledWith(200);
         const resaved = mockRes.json.mock.calls[0][0];
         expect(resaved.instructionsPrompt).toEqual(link);
         let persisted = await Agent.findOne({ id: agentId }).lean();
@@ -7774,7 +7773,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         mockRes.status.mockClear();
         mockReq.body = { instructionsPrompt: null, instructions: 'Inline now.' };
         await updateAgentHandler(mockReq, mockRes);
-        expect(mockRes.status).not.toHaveBeenCalled();
+        expect(mockRes.status).toHaveBeenCalledWith(200);
         const updated = mockRes.json.mock.calls[0][0];
         expect(updated.instructionsPrompt).toBeUndefined();
         persisted = await Agent.findOne({ id: agentId }).lean();

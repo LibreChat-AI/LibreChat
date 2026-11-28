@@ -18,11 +18,16 @@ const {
   findShadowedServerNames,
   isNormalizationSensitiveName,
   buildInlineMemoryTool,
+  buildAgentBuilderTool,
   getCodeApiAuthHeaders,
   buildImageToolContext,
   SET_MEMORY_TOOL_NAME,
   buildWebSearchContext,
   DELETE_MEMORY_TOOL_NAME,
+  LIST_AGENTS_TOOL_NAME,
+  GET_AGENT_TOOL_NAME,
+  CREATE_AGENT_TOOL_NAME,
+  UPDATE_AGENT_TOOL_NAME,
   createAskUserQuestionTool,
   ASK_USER_QUESTION_TOOL_NAME,
   resolveWebSearchSSRFAgents,
@@ -73,7 +78,16 @@ const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/pro
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
-const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
+const {
+  getAgent,
+  setMemory,
+  deleteMemory,
+  getRoleByName,
+  getFormattedMemories,
+  getListAgentsByAccess,
+} = require('~/models');
+const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
+const agentsController = require('~/server/controllers/agents/v1');
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
 /** @typedef {import('@librechat/agents/langchain/tools').Tool} Tool */
@@ -439,6 +453,28 @@ const loadTools = async ({
           userId: user,
           memoryMethods: { setMemory, deleteMemory, getFormattedMemories },
           getRoleByName,
+        });
+      continue;
+    } else if (
+      tool === LIST_AGENTS_TOOL_NAME ||
+      tool === GET_AGENT_TOOL_NAME ||
+      tool === CREATE_AGENT_TOOL_NAME ||
+      tool === UPDATE_AGENT_TOOL_NAME
+    ) {
+      requestedTools[tool] = () =>
+        buildAgentBuilderTool({
+          toolName: tool,
+          req: options.req,
+          agent,
+          deps: {
+            getRoleByName,
+            getAgent,
+            getListAgentsByAccess,
+            findAccessibleResources,
+            checkPermission,
+            createAgent: agentsController.createAgentResult,
+            updateAgent: agentsController.updateAgentResult,
+          },
         });
       continue;
     } else if (tool && mcpToolPattern.test(tool)) {

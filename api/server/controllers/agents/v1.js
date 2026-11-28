@@ -112,6 +112,7 @@ const systemTools = {
   [Tools.file_search]: true,
   [Tools.web_search]: true,
   [Tools.memory]: true,
+  [AgentCapabilities.agent_builder]: true,
 };
 
 const MAX_SEARCH_LEN = 100;
@@ -180,7 +181,22 @@ const blockFilteredActionContent = (req, res, actions) => {
   return false;
 };
 
-const blockFilteredAgentContent = async (req, res, agentData) => {
+/** Sends a rejected-write result; returns whether one was sent. */
+const sendError = (res, error) => {
+  if (!error) {
+    return false;
+  }
+  res.status(error.status).json(error.body);
+  return true;
+};
+
+/** Express adapter for the `{ status, body }` agent write functions, which the agent builder tools also call. */
+const sendResult = (getResult) => async (req, res) => {
+  const { status, body } = await getResult(req);
+  res.status(status).json(body);
+};
+
+const blockFilteredAgentContent = async (req, agentData) => {
   const filters = req.config?.filters;
   const definitionPolicyActive =
     hasActivePiiPatterns(filters?.agentInstructions?.pii) ||
@@ -189,7 +205,7 @@ const blockFilteredAgentContent = async (req, res, agentData) => {
     hasActivePiiFields(filters?.toolArguments?.pii, ['name', 'arguments']);
   const filePolicyActive = hasActiveFilePolicy(filters);
   if (!definitionPolicyActive && !filePolicyActive) {
-    return false;
+    return null;
   }
   let opaqueAgentData = agentData;
   let hydratedFiles = [];
@@ -220,8 +236,7 @@ const blockFilteredAgentContent = async (req, res, agentData) => {
       hydratedFiles = fileInspection.hydratedFiles;
     } catch (error) {
       if (error?.statusCode === 400 && error?.body != null) {
-        res.status(error.statusCode).json(error.body);
-        return true;
+        return { status: error.statusCode, body: error.body };
       }
       throw error;
     }
@@ -229,8 +244,7 @@ const blockFilteredAgentContent = async (req, res, agentData) => {
   const avatarPath = agentData?.avatar?.filepath;
   const uninspectableField = getBlockedOpaqueFileField(filters, opaqueAgentData);
   if (uninspectableField != null) {
-    res.status(400).json(contentFilterUninspectableResponse(uninspectableField));
-    return true;
+    return { status: 400, body: contentFilterUninspectableResponse(uninspectableField) };
   }
   const fileFragments = hydratedFiles.flatMap(extractFileContent);
   if (typeof avatarPath === 'string' && !avatarPath.toLowerCase().startsWith('data:')) {
@@ -251,14 +265,12 @@ const blockFilteredAgentContent = async (req, res, agentData) => {
     filters,
   });
   if (finding != null) {
-    res.status(400).json(contentFilterBlockResponse(finding));
-    return true;
+    return { status: 400, body: contentFilterBlockResponse(finding) };
   }
   if (traversalError != null && isContentTraversalProtected({ error: traversalError, filters })) {
-    res.status(traversalError.statusCode).json(traversalError.body);
-    return true;
+    return { status: traversalError.statusCode, body: traversalError.body };
   }
-  return false;
+  return null;
 };
 
 const sanitizeViewerSkillScope = (agent, accessibleSkillSet) => {
@@ -753,10 +765,9 @@ const pruneToolResourceFileIdsForAgent = async ({
  * @route POST /Agents
  * @param {ServerRequest} req - The request object.
  * @param {AgentCreateParams} req.body - The request body.
- * @param {ServerResponse} res - The response object.
- * @returns {Promise<Agent>} 201 - success response - application/json
+ * @returns {Promise<{ status: number, body: object }>} 201 with the agent, or the error status and body.
  */
-const createAgentHandler = async (req, res) => {
+const createAgentResult = async (req) => {
   try {
     /**
      * Hydrated resource records are a client transport shape, not a persisted
@@ -780,21 +791,19 @@ const createAgentHandler = async (req, res) => {
       agentData.tool_options = removeCodeExecutionCaller(agentData.tool_options);
     }
 
-    if (
-      !validateStatefulCodeEnvironment(
-        req,
-        res,
-        agentData.stateful_code_sessions,
-        agentData.stateful_code_environment,
-        agentData.code_environment_id,
-        agentData.code_environment_id != null,
-        agentData.code_workspace_id,
-        undefined,
-        undefined,
-        agentData.code_environment_ids,
-      )
-    ) {
-      return;
+    const environmentError = validateStatefulCodeEnvironment(
+      req,
+      agentData.stateful_code_sessions,
+      agentData.stateful_code_environment,
+      agentData.code_environment_id,
+      agentData.code_environment_id != null,
+      agentData.code_workspace_id,
+      undefined,
+      undefined,
+      agentData.code_environment_ids,
+    );
+    if (environmentError) {
+      return environmentError;
     }
 
     applyAgentInferenceInput(agentData, undefined, req.config);
@@ -815,14 +824,12 @@ const createAgentHandler = async (req, res) => {
       });
     }
 
-    if (
-      await blockFilteredAgentContent(
-        req,
-        res,
-        instructionsContentForScan('create', { data: agentData }),
-      )
-    ) {
-      return;
+    const filterError = await blockFilteredAgentContent(
+      req,
+      instructionsContentForScan('create', { data: agentData }),
+    );
+    if (filterError) {
+      return filterError;
     }
 
     if (agentData.edges?.length) {
@@ -834,16 +841,22 @@ const createAgentHandler = async (req, res) => {
         req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
-        return res.status(400).json({
-          error: 'One or more agents referenced in edges do not exist',
-          agent_ids: missing,
-        });
+        return {
+          status: 400,
+          body: {
+            error: 'One or more agents referenced in edges do not exist',
+            agent_ids: missing,
+          },
+        };
       }
       if (unauthorized.length > 0) {
-        return res.status(403).json({
-          error: 'You do not have access to one or more agents referenced in edges',
-          agent_ids: unauthorized,
-        });
+        return {
+          status: 403,
+          body: {
+            error: 'You do not have access to one or more agents referenced in edges',
+            agent_ids: unauthorized,
+          },
+        };
       }
     }
 
@@ -867,7 +880,7 @@ const createAgentHandler = async (req, res) => {
       new Set([agentData.id]),
     );
     if (subagentReferenceError) {
-      return res.status(subagentReferenceError.status).json(subagentReferenceError.body);
+      return { status: subagentReferenceError.status, body: subagentReferenceError.body };
     }
 
     const instructionsPromptError = await checkInstructionsPromptWrite({
@@ -882,7 +895,7 @@ const createAgentHandler = async (req, res) => {
       req,
     });
     if (instructionsPromptError) {
-      return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
+      return { status: instructionsPromptError.status, body: instructionsPromptError.body };
     }
 
     agentData.author = userId;
@@ -942,17 +955,17 @@ const createAgentHandler = async (req, res) => {
       );
     }
 
-    res.status(201).json(agent);
+    return { status: 201, body: agent };
   } catch (error) {
     if (error instanceof z.ZodError) {
       logger.error('[/Agents] Validation error', error.issues);
-      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
+      return { status: 400, body: { error: 'Invalid request data', details: error.issues } };
     }
     logger.error('[/Agents] Error creating agent', error);
     if (error?.statusCode === 409) {
-      return res.status(409).json({ error: error.message });
+      return { status: 409, body: { error: error.message } };
     }
-    res.status(500).json({ error: error.message });
+    return { status: 500, body: { error: error.message } };
   }
 };
 
@@ -1096,16 +1109,20 @@ const getAgentVersionsHandler = async (req, res) => {
  * @param {object} req.params - Request params
  * @param {string} req.params.id - Agent identifier.
  * @param {AgentUpdateParams} req.body - The Agent update parameters.
- * @returns {Promise<Agent>} 200 - success response - application/json
+ * @returns {Promise<{ status: number, body: object }>} 200 with the agent, or the error status and body.
  */
-const updateAgentHandler = async (req, res) => {
+const updateAgentResult = async (req) => {
   try {
     const id = req.params.id;
     /** See the create path: retain hydrated file IDs through validation. */
     normalizeToolResourceFiles(req.body?.tool_resources);
     const validatedData = agentUpdateSchema.parse(req.body);
-    if (!validateAgentCodeEnvironmentAllowlist(req, res, validatedData.code_environment_ids)) {
-      return;
+    const allowlistError = validateAgentCodeEnvironmentAllowlist(
+      req,
+      validatedData.code_environment_ids,
+    );
+    if (allowlistError) {
+      return allowlistError;
     }
     // Preserve explicit null for avatar to allow resetting the avatar
     const {
@@ -1150,7 +1167,7 @@ const updateAgentHandler = async (req, res) => {
     ) {
       existingAgent = await db.getAgent({ id }, {});
       if (!existingAgent) {
-        return res.status(404).json({ error: 'Agent not found' });
+        return { status: 404, body: { error: 'Agent not found' } };
       }
 
       const codeEnvironmentSelectionChanged =
@@ -1195,20 +1212,18 @@ const updateAgentHandler = async (req, res) => {
           updateData.code_environment_id === null
             ? undefined
             : (updateData.code_environment_id ?? existingAgent.code_environment_id);
-        if (
-          !validateStatefulCodeEnvironment(
-            req,
-            res,
-            effectiveStatefulSessions,
-            effectiveStatefulEnvironment,
-            effectiveCodeEnvironmentId,
-            codeEnvironmentSelectionChanged,
-            effectiveCodeWorkspaceId,
-            existingAgent.code_workspace_id,
-            existingAgent.code_environment_id,
-          )
-        ) {
-          return;
+        const environmentError = validateStatefulCodeEnvironment(
+          req,
+          effectiveStatefulSessions,
+          effectiveStatefulEnvironment,
+          effectiveCodeEnvironmentId,
+          codeEnvironmentSelectionChanged,
+          effectiveCodeWorkspaceId,
+          existingAgent.code_workspace_id,
+          existingAgent.code_environment_id,
+        );
+        if (environmentError) {
+          return environmentError;
         }
       }
 
@@ -1245,16 +1260,22 @@ const updateAgentHandler = async (req, res) => {
         req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
-        return res.status(400).json({
-          error: 'One or more agents referenced in edges do not exist',
-          agent_ids: missing,
-        });
+        return {
+          status: 400,
+          body: {
+            error: 'One or more agents referenced in edges do not exist',
+            agent_ids: missing,
+          },
+        };
       }
       if (unauthorized.length > 0) {
-        return res.status(403).json({
-          error: 'You do not have access to one or more agents referenced in edges',
-          agent_ids: unauthorized,
-        });
+        return {
+          status: 403,
+          body: {
+            error: 'You do not have access to one or more agents referenced in edges',
+            agent_ids: unauthorized,
+          },
+        };
       }
     }
 
@@ -1267,7 +1288,7 @@ const updateAgentHandler = async (req, res) => {
      *  after losing VIEW on a referenced child. */
     const subagentReferenceError = await getSubagentReferenceError(updateData.subagents, req);
     if (subagentReferenceError) {
-      return res.status(subagentReferenceError.status).json(subagentReferenceError.body);
+      return { status: subagentReferenceError.status, body: subagentReferenceError.body };
     }
 
     // Convert OCR to context in incoming updateData
@@ -1276,7 +1297,7 @@ const updateAgentHandler = async (req, res) => {
     existingAgent ??= await db.getAgent({ id }, {});
 
     if (!existingAgent) {
-      return res.status(404).json({ error: 'Agent not found' });
+      return { status: 404, body: { error: 'Agent not found' } };
     }
 
     applyAgentInferenceInput(updateData, existingAgent, req.config);
@@ -1293,7 +1314,7 @@ const updateAgentHandler = async (req, res) => {
       req,
     });
     if (instructionsPromptError) {
-      return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
+      return { status: instructionsPromptError.status, body: instructionsPromptError.body };
     }
 
     // Convert legacy OCR tool resource to context format in existing agent
@@ -1314,18 +1335,16 @@ const updateAgentHandler = async (req, res) => {
       });
     }
 
-    if (
-      await blockFilteredAgentContent(
-        req,
-        res,
-        instructionsContentForScan('update', {
-          data: updateData,
-          existing: existingAgent,
-          nextLink: instructionsPromptField,
-        }),
-      )
-    ) {
-      return;
+    const filterError = await blockFilteredAgentContent(
+      req,
+      instructionsContentForScan('update', {
+        data: updateData,
+        existing: existingAgent,
+        nextLink: instructionsPromptField,
+      }),
+    );
+    if (filterError) {
+      return filterError;
     }
 
     const isMCPTool = (t) =>
@@ -1453,23 +1472,26 @@ const updateAgentHandler = async (req, res) => {
       agent: updatedAgent,
     });
 
-    return res.json(presentedAgent);
+    return { status: 200, body: presentedAgent };
   } catch (error) {
     if (error instanceof z.ZodError) {
       logger.error('[/Agents/:id] Validation error', error.issues);
-      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
+      return { status: 400, body: { error: 'Invalid request data', details: error.issues } };
     }
 
     logger.error('[/Agents/:id] Error updating Agent', error);
 
     if (error.statusCode === 409) {
-      return res.status(409).json({
-        error: error.message,
-        details: error.details,
-      });
+      return {
+        status: 409,
+        body: {
+          error: error.message,
+          details: error.details,
+        },
+      };
     }
 
-    res.status(500).json({ error: error.message });
+    return { status: 500, body: { error: error.message } };
   }
 };
 
@@ -1541,19 +1563,23 @@ const duplicateAgentHandler = async (req, res) => {
       req.config?.endpoints?.agents,
       req.user?.role,
     );
-    if (!validateAgentCodeEnvironmentAllowlist(req, res, newAgentData.code_environment_ids)) {
+    if (
+      sendError(res, validateAgentCodeEnvironmentAllowlist(req, newAgentData.code_environment_ids))
+    ) {
       return;
     }
     if (
       isActiveAgentWorkspaceConfiguration(newAgentData) &&
-      !validateStatefulCodeEnvironment(
-        req,
+      sendError(
         res,
-        newAgentData.stateful_code_sessions,
-        newAgentData.stateful_code_environment,
-        newAgentData.code_environment_id,
-        false,
-        newAgentData.code_workspace_id,
+        validateStatefulCodeEnvironment(
+          req,
+          newAgentData.stateful_code_sessions,
+          newAgentData.stateful_code_environment,
+          newAgentData.code_environment_id,
+          false,
+          newAgentData.code_workspace_id,
+        ),
       )
     ) {
       return;
@@ -1668,11 +1694,13 @@ const duplicateAgentHandler = async (req, res) => {
     }
 
     if (
-      (await blockFilteredAgentContent(
-        req,
+      sendError(
         res,
-        instructionsContentForScan('duplicate', { data: newAgentData }),
-      )) ||
+        await blockFilteredAgentContent(
+          req,
+          instructionsContentForScan('duplicate', { data: newAgentData }),
+        ),
+      ) ||
       blockFilteredActionContent(req, res, sanitizedActions)
     ) {
       return;
@@ -2125,7 +2153,9 @@ const revertAgentVersionHandler = async (req, res) => {
       req.config?.endpoints?.agents,
       req.user?.role,
     );
-    if (!validateAgentCodeEnvironmentAllowlist(req, res, revertVersion.code_environment_ids)) {
+    if (
+      sendError(res, validateAgentCodeEnvironmentAllowlist(req, revertVersion.code_environment_ids))
+    ) {
       return;
     }
 
@@ -2135,14 +2165,16 @@ const revertAgentVersionHandler = async (req, res) => {
     });
     if (
       isActiveAgentWorkspaceConfiguration(restoredWorkspaceConfiguration) &&
-      !validateStatefulCodeEnvironment(
-        req,
+      sendError(
         res,
-        restoredWorkspaceConfiguration.stateful_code_sessions,
-        restoredWorkspaceConfiguration.stateful_code_environment,
-        restoredWorkspaceConfiguration.code_environment_id,
-        false,
-        restoredWorkspaceConfiguration.code_workspace_id,
+        validateStatefulCodeEnvironment(
+          req,
+          restoredWorkspaceConfiguration.stateful_code_sessions,
+          restoredWorkspaceConfiguration.stateful_code_environment,
+          restoredWorkspaceConfiguration.code_environment_id,
+          false,
+          restoredWorkspaceConfiguration.code_workspace_id,
+        ),
       )
     ) {
       return;
@@ -2190,11 +2222,13 @@ const revertAgentVersionHandler = async (req, res) => {
         : [];
 
     if (
-      (await blockFilteredAgentContent(
-        req,
+      sendError(
         res,
-        instructionsContentForScan('revert', { data: revertVersion, existing: existingAgent }),
-      )) ||
+        await blockFilteredAgentContent(
+          req,
+          instructionsContentForScan('revert', { data: revertVersion, existing: existingAgent }),
+        ),
+      ) ||
       blockFilteredActionContent(req, res, actions)
     ) {
       return;
@@ -2339,11 +2373,13 @@ const getAgentCategories = async (_req, res) => {
   }
 };
 module.exports = {
-  createAgent: createAgentHandler,
+  createAgent: sendResult(createAgentResult),
+  createAgentResult,
   getAgent: (req, res) => getAgentHandler(req, res, false),
   getAgentExpanded: (req, res) => getAgentHandler(req, res, true),
   getAgentVersions: getAgentVersionsHandler,
-  updateAgent: updateAgentHandler,
+  updateAgent: sendResult(updateAgentResult),
+  updateAgentResult,
   duplicateAgent: duplicateAgentHandler,
   deleteAgent: deleteAgentHandler,
   getListAgents: getListAgentsHandler,

@@ -2,7 +2,6 @@ import {
   DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
   resolveAllowedStatefulCodeEnvironments,
 } from 'librechat-data-provider';
-import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
 
 interface AgentWorkspaceUpdate {
@@ -65,19 +64,21 @@ export function resolveAgentWorkspaceRestoreConfiguration({
 
 /** Validate all new references against the request's already-loaded, principal-scoped config
  * before the persistence layer acquires deletion reservations. Unrelated edits omit the list. */
+/** A rejected agent write: the HTTP status and JSON body the route sends. */
+export type AgentWriteError = { status: number; body: { error: string } };
+
 export function validateAgentCodeEnvironmentAllowlist(
   req: Pick<ServerRequest, 'config'>,
-  res: Pick<Response, 'status'>,
   environmentIds?: readonly string[],
-): boolean {
-  if (environmentIds == null) return true;
+): AgentWriteError | null {
+  if (environmentIds == null) return null;
   const policy = req.config?.endpoints?.agents?.statefulCodeSessions;
   const maximum = policy?.maxEnvironmentChoices ?? DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES;
   if (environmentIds.length > maximum) {
-    res
-      .status(400)
-      .json({ error: `Agent machine choices exceed the configured maximum of ${maximum}` });
-    return false;
+    return {
+      status: 400,
+      body: { error: `Agent machine choices exceed the configured maximum of ${maximum}` },
+    };
   }
   for (const id of environmentIds) {
     const environment = policy?.environments?.find((candidate) => candidate.id === id);
@@ -87,20 +88,21 @@ export function validateAgentCodeEnvironmentAllowlist(
         environment.pairing.workerId == null &&
         environment.workerId == null)
     ) {
-      res.status(403).json({
-        error: 'One or more agent machine choices are not authorized attached environments',
-      });
-      return false;
+      return {
+        status: 403,
+        body: {
+          error: 'One or more agent machine choices are not authorized attached environments',
+        },
+      };
     }
   }
-  return true;
+  return null;
 }
 
 /** Shared create/update/duplicate/restore policy. CJS controllers only wire the validated data
  * and loaded request config into this boundary; they do not implement routing authorization. */
 export function validateStatefulCodeEnvironment(
   req: Pick<ServerRequest, 'config'>,
-  res: Pick<Response, 'status'>,
   enabled?: boolean,
   environment?: string | null,
   environmentId?: string | null,
@@ -109,8 +111,9 @@ export function validateStatefulCodeEnvironment(
   currentWorkspaceId?: string,
   currentEnvironmentId?: string | null,
   environmentIds?: readonly string[],
-): boolean {
-  if (!validateAgentCodeEnvironmentAllowlist(req, res, environmentIds)) return false;
+): AgentWriteError | null {
+  const allowlistError = validateAgentCodeEnvironmentAllowlist(req, environmentIds);
+  if (allowlistError) return allowlistError;
   const policy = req.config?.endpoints?.agents?.statefulCodeSessions;
   const configuredEnvironments = policy?.environments ?? [];
   const workspaceValidation = validateAgentWorkspaceDefaultBinding({
@@ -121,10 +124,9 @@ export function validateStatefulCodeEnvironment(
     environments: configuredEnvironments,
   });
   if (!workspaceValidation.valid) {
-    res.status(400).json({ error: workspaceValidation.error });
-    return false;
+    return { status: 400, body: { error: workspaceValidation.error } };
   }
-  if (enabled !== true && !environmentIdSelected) return true;
+  if (enabled !== true && !environmentIdSelected) return null;
   if (environmentId != null) {
     const configured = configuredEnvironments.find((candidate) => candidate.id === environmentId);
     if (
@@ -133,24 +135,26 @@ export function validateStatefulCodeEnvironment(
         configured.pairing.workerId == null &&
         configured.workerId == null)
     ) {
-      res
-        .status(400)
-        .json({ error: `Stateful code environment is not configured: ${environmentId}` });
-      return false;
+      return {
+        status: 400,
+        body: { error: `Stateful code environment is not configured: ${environmentId}` },
+      };
     }
   }
-  if (enabled !== true) return true;
+  if (enabled !== true) return null;
   const resolvedEnvironment = environment ?? 'user';
   if (
     resolveAllowedStatefulCodeEnvironments(policy?.allowedEnvironments).includes(
       resolvedEnvironment as 'user' | 'agent-user' | 'conversation',
     )
   )
-    return true;
-  res.status(403).json({
-    error: `Stateful code environment is not allowed by this deployment: ${resolvedEnvironment}`,
-  });
-  return false;
+    return null;
+  return {
+    status: 403,
+    body: {
+      error: `Stateful code environment is not allowed by this deployment: ${resolvedEnvironment}`,
+    },
+  };
 }
 
 export function shouldValidateAgentWorkspaceDefaultBinding({
