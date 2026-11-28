@@ -314,38 +314,35 @@ describe('maskEmails bounds', () => {
     expect(maskEmails(input)).toBe(input);
   });
 
-  it('stays linear on adversarial floods', () => {
-    const floods = [
-      'a@'.repeat(50_000),
-      `a@${'a.'.repeat(50_000)}`,
-      '"a@'.repeat(30_000),
-      '\\"@'.repeat(30_000),
-      '"x"@'.repeat(30_000),
-      ')@'.repeat(50_000),
-      '(a)@'.repeat(30_000),
-      'a)@'.repeat(30_000),
-      `${'(a@'.repeat(30_000)})@example.com`,
-      `${'('.repeat(30_000)}${')@'.repeat(30_000)}`,
-      `(${'"x'.repeat(30_000)})@example.com`,
-      `${('(\\"' + 'x'.repeat(10)).repeat(10_000)})@example.com`,
-      `${('(' + '\\\\\\"'.repeat(500) + '\\"').repeat(40)})@x.com`,
-      `(${'\\'.repeat(100_000)})@example.com`,
-      `${'("'.repeat(30_000)}`,
-      'a%40'.repeat(50_000),
-      '?a%40'.repeat(30_000),
-      'a%2540'.repeat(20_000),
-      'u@['.repeat(30_000),
-      'a@b.c,'.repeat(30_000),
-      `a@b${',c'.repeat(50_000)}`,
-      ('\\'.repeat(1000) + '"@').repeat(100),
-      ('"' + 'a\\"'.repeat(1000) + '"@').repeat(50),
-      '😀@'.repeat(30_000),
-    ];
+  it.each<[label: string, flood: string]>([
+    ['at signs', 'a@'.repeat(50_000)],
+    ['a long dotted domain', `a@${'a.'.repeat(50_000)}`],
+    ['quotes before at signs', '"a@'.repeat(30_000)],
+    ['escaped quotes before at signs', '\\"@'.repeat(30_000)],
+    ['quoted words', '"x"@'.repeat(30_000)],
+    ['closing parentheses', ')@'.repeat(50_000)],
+    ['comments', '(a)@'.repeat(30_000)],
+    ['unpaired parentheses', 'a)@'.repeat(30_000)],
+    ['open comments with at signs', `${'(a@'.repeat(30_000)})@example.com`],
+    ['nested parentheses', `${'('.repeat(30_000)}${')@'.repeat(30_000)}`],
+    ['quotes in a comment', `(${'"x'.repeat(30_000)})@example.com`],
+    ['serialized quotes in comments', `${('(\\"' + 'x'.repeat(10)).repeat(10_000)})@example.com`],
+    ['escape runs in comments', `${('(' + '\\\\\\"'.repeat(500) + '\\"').repeat(40)})@x.com`],
+    ['a backslash run in a comment', `(${'\\'.repeat(100_000)})@example.com`],
+    ['open quoted comments', '("'.repeat(30_000)],
+    ['encoded at signs', 'a%40'.repeat(50_000)],
+    ['encoded at signs after URL syntax', '?a%40'.repeat(30_000)],
+    ['doubly encoded at signs', 'a%2540'.repeat(20_000)],
+    ['open literals', 'u@['.repeat(30_000)],
+    ['comma lists', 'a@b.c,'.repeat(30_000)],
+    ['commas after a label', `a@b${',c'.repeat(50_000)}`],
+    ['backslash runs before quotes', ('\\'.repeat(1000) + '"@').repeat(100)],
+    ['escaped quotes in quoted words', ('"' + 'a\\"'.repeat(1000) + '"@').repeat(50)],
+    ['emoji before at signs', '😀@'.repeat(30_000)],
+  ])('stays linear on %s', (_label, flood) => {
     const started = Date.now();
-    for (const flood of floods) {
-      maskEmails(flood);
-    }
-    expect(Date.now() - started).toBeLessThan(2000);
+    maskEmails(flood);
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });
 
