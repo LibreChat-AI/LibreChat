@@ -507,12 +507,33 @@ function literal(text: string, from: number, limit: number): number {
   return 0;
 }
 
+/** Whether `text` between `from` and `end` holds a dot followed by a label: more domain. */
+function dotted(text: string, from: number, end: number): boolean {
+  for (let cursor = from; cursor < end; cursor++) {
+    const size = dot(text, cursor);
+    if (size > 0 && cursor + size < end && label(text, cursor + size) > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * End of the domain after an at sign. The labels end it in place, unless the delimiter-bounded
+ * token of the earlier patterns runs on past them into another dotted label (`exa.mple'x.com`),
+ * which is more of a malformed domain: then the token ends it, as it did before.
+ */
 function domain(text: string, from: number, encoded: boolean): number {
   const limit = Math.min(text.length, from + MAX_PART);
   if (text.charCodeAt(from) === BRACKET) {
     return literal(text, from, limit);
   }
-  return labels(text, from, limit) || loose(text, from, limit, encoded);
+  const strict = labels(text, from, limit);
+  const fallback = loose(text, from, limit, encoded);
+  if (strict === 0) {
+    return fallback;
+  }
+  return fallback > strict && dotted(text, strict, fallback) ? fallback : strict;
 }
 
 /** Start of the token the earlier patterns read as a local part: back to one of their delimiters. */

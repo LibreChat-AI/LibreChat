@@ -97,7 +97,7 @@ describe('redactMessage', () => {
       redactMessage('Error: no user jane@example.com\n    at f (/app/node_modules/@a/b/c.js:1:2)'),
     ).toBe('Error: no user [REDACTED_EMAIL]\n    at f (/app/node_modules/@a/b/c.js:1:2)');
     expect(redactMessage('user jane/@example.com ok')).toBe('user [REDACTED_EMAIL] ok');
-    expect(redactMessage('/home/jane@example.com/file.js')).toBe('[REDACTED_EMAIL]/file.js');
+    expect(redactMessage('/home/jane@example.com/file.js')).toBe('[REDACTED_EMAIL]');
     expect(redactMessage('see https://social.example/@jane.doe ok')).toBe(
       'see https://[REDACTED_EMAIL] ok',
     );

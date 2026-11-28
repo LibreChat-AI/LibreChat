@@ -147,6 +147,27 @@ describe('maskEmails coverage contract', () => {
     expect(maskEmails(input)).toBe(expected);
   });
 
+  it.each<Case>([
+    ['an apostrophe', "jane@exa.mple'private.com ok", `${MASK} ok`],
+    ['an exclamation mark', 'jane@exa.mple!private.com ok', `${MASK} ok`],
+    ['parentheses', 'jane@exa.mple(private).com ok', `${MASK} ok`],
+    ['a path to a file', 'see https://user@example.com/a/b.json ok', `see https://${MASK} ok`],
+  ])(
+    'masks to the end of the token when %s leads into another dotted label',
+    (_label, input, expected) => {
+      expect(maskEmails(input)).toBe(expected);
+    },
+  );
+
+  it.each<Case>([
+    ['a possessive', "jane@example.com's account", `${MASK}'s account`],
+    ['a closing parenthesis and full stop', '(jane@example.com).', `(${MASK}).`],
+    ['a query', 'mailto:jane@example.com?subject=hi', `mailto:${MASK}?subject=hi`],
+    ['a serialized quote', '"{\\"to\\":\\"jane@example.com\\"}"', `"{\\"to\\":\\"${MASK}\\"}"`],
+  ])('keeps %s after a domain in place', (_label, input, expected) => {
+    expect(maskEmails(input)).toBe(expected);
+  });
+
   it('keeps the separator of a comma or semicolon separated list', () => {
     expect(maskEmails('a@b.com,c.d@e.com;f@g.com')).toBe(`${MASK},${MASK};${MASK}`);
   });
