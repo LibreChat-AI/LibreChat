@@ -185,13 +185,46 @@ function atSign(text: string, index: number): number {
   return code === PERCENT ? encodedAt(text, index) : 0;
 }
 
-/** Width of a dot at `index`: `.`, an IDNA full stop, or an encoded `%2E`, else 0. */
+/** UTF-8 bytes of the IDNA full stops, as percent-encoding writes them. */
+const encodedDots = ['e38082', 'efbc8e', 'efbda1'];
+
+/** Width of an IDNA full stop percent-encoded at one `%25` level throughout, else 0. */
+function encodedWideDot(text: string, index: number): number {
+  let prefix = 1;
+  while (
+    prefix < 1 + 2 * MAX_ENCODING &&
+    text.substring(index + prefix, index + prefix + 2) === '25'
+  ) {
+    prefix += 2;
+  }
+  if ((text.charCodeAt(index + prefix) | 0x20) !== 0x65) {
+    return 0;
+  }
+  const step = prefix + 2;
+  let bytes = '';
+  for (let byte = 0; byte < 3; byte++) {
+    const at = index + byte * step;
+    if (
+      text.charCodeAt(at) !== PERCENT ||
+      text.substring(at + 1, at + prefix) !== '25'.repeat((prefix - 1) / 2)
+    ) {
+      return 0;
+    }
+    bytes += text.substring(at + prefix, at + step).toLowerCase();
+  }
+  return encodedDots.includes(bytes) ? 3 * step : 0;
+}
+
+/** Width of a dot at `index`: `.`, an IDNA full stop, or an encoded one (`%2E`, `%E3%80%82`). */
 function dot(text: string, index: number): number {
   const code = text.charCodeAt(index);
   if (code === DOT || wideDots.has(code)) {
     return 1;
   }
-  return code === PERCENT ? percent(text, index, '2e') : 0;
+  if (code !== PERCENT) {
+    return 0;
+  }
+  return percent(text, index, '2e') || encodedWideDot(text, index);
 }
 
 /** Width of a JSON `\uXXXX` escape at `index`, else 0. */
@@ -604,6 +637,25 @@ function literal(text: string, from: number, limit: number): number {
   return 0;
 }
 
+/** Index after a percent-encoded address literal (`%5B...%5D`, `%255B...`) at `from`, else 0. */
+function encodedLiteral(text: string, from: number, limit: number): number {
+  const open = percent(text, from, '5b');
+  if (open === 0) {
+    return 0;
+  }
+  for (let cursor = from + open; cursor < limit; cursor++) {
+    const code = text.charCodeAt(cursor);
+    const close = code === PERCENT ? percent(text, cursor, '5d') : 0;
+    if (close > 0) {
+      return cursor > from + open ? cursor + close : 0;
+    }
+    if (code === AT || classify(code) & SPACE || encodedAt(text, cursor) > 0) {
+      return 0;
+    }
+  }
+  return 0;
+}
+
 /** Whether `text` between `from` and `end` holds a dot followed by a label: more domain. */
 function dotted(text: string, from: number, end: number): boolean {
   for (let cursor = from; cursor < end; cursor++) {
@@ -624,6 +676,10 @@ function domain(text: string, from: number, encoded: boolean, scan: Scan): numbe
   const limit = Math.min(text.length, from + MAX_PART);
   if (text.charCodeAt(from) === BRACKET) {
     return literal(text, from, limit);
+  }
+  const bracketed = encodedLiteral(text, from, limit);
+  if (bracketed > 0) {
+    return bracketed;
   }
   const strict = labels(text, from, limit);
   const fallback = loose(text, from, limit, encoded, scan);

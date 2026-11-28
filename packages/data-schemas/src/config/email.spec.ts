@@ -92,6 +92,18 @@ describe('maskEmails coverage contract', () => {
       `redirect_uri=${MASK}&a=1`,
     ],
     ['an encoded non-ASCII domain', 'e=jane%40b%C3%BCcher.de', `e=${MASK}`],
+    ['an encoded IPv6 literal', 'e=user%40%5BIPv6%3A2001%3Adb8%3A%3A1%5D&x=1', `e=${MASK}&x=1`],
+    [
+      'an encoded ideographic full stop',
+      'e=jane%40%E4%BE%8B%E5%AD%90%E3%80%82cn&x=1',
+      `e=${MASK}&x=1`,
+    ],
+    [
+      'a doubly encoded full-width full stop',
+      'e=jane%2540ex%25EF%25BC%258Ecom&x=1',
+      `e=${MASK}&x=1`,
+    ],
+    ['a doubly encoded IPv6 literal', 'e=user%2540%255BIPv6%253A%253A1%255D&x=1', `e=${MASK}&x=1`],
   ])('masks a percent-encoded address: %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
   });
