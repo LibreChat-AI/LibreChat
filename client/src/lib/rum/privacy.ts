@@ -1,3 +1,4 @@
+import { PRODUCT_SESSION_HEADER, PRODUCT_SUBMISSION_HEADER } from 'librechat-data-provider';
 import type { RumRecorderConfig } from '@hyperdx/otel-web-session-recorder';
 import type { RumOtelWebExporterOptions } from '@hyperdx/otel-web';
 
@@ -19,6 +20,12 @@ const URL_ATTRIBUTE =
 const URL_SPAN_ATTRIBUTE = /url|uri|href|referr?er|^http\.target$|location/i;
 const HEADER_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.header\.(.+)$/i;
 const CREDENTIAL_HEADER = /authorization|cookie|apikey|token|signature/i;
+/** The SDK lowercases header names and replaces hyphens with underscores. */
+const normalizeHeader = (name: string) => name.replace(/[-_]/g, '').toLowerCase();
+/** Product correlation IDs go only to the product sink, so RUM data cannot join product events. */
+const PRODUCT_HEADERS = new Set(
+  [PRODUCT_SESSION_HEADER, PRODUCT_SUBMISSION_HEADER].map(normalizeHeader),
+);
 const BODY_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.body$/i;
 const CREDENTIAL_ROUTES = [
   /\/oauth\/(?:google|facebook|openid|github|discord|apple|saml)(?:\/callback)?\/?$/i,
@@ -192,7 +199,10 @@ export function createReplayPrivacyPlugin(getPathname: () => string): ReplayPlug
   };
 }
 
-/** Remove credential headers and protected bodies before export, including buffered spans. */
+/**
+ * Remove credential and product correlation headers and protected bodies before export,
+ * including buffered spans.
+ */
 export function sanitizeSpanAttributes(
   attributes: SpanAttributes,
   redactBody = false,
@@ -203,8 +213,9 @@ export function sanitizeSpanAttributes(
       .filter(([key]) => {
         if (removeBody && BODY_SPAN_ATTRIBUTE.test(key)) return false;
         const header = HEADER_SPAN_ATTRIBUTE.exec(key)?.[1];
-        // The SDK lowercases header names and replaces hyphens with underscores.
-        return !header || !CREDENTIAL_HEADER.test(header.replace(/[-_]/g, ''));
+        if (!header) return true;
+        const name = normalizeHeader(header);
+        return !CREDENTIAL_HEADER.test(name) && !PRODUCT_HEADERS.has(name);
       })
       .map(([key, value]) => {
         if (URL_SPAN_ATTRIBUTE.test(key)) {
