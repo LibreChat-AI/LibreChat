@@ -10,6 +10,7 @@ export * from './checkpoints/deletion';
 export * from './compatibility';
 export * from './compaction';
 export * from './contact';
+export * from './content';
 export * from './context';
 export * from './control';
 export * from './conversation';

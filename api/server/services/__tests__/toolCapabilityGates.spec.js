@@ -63,7 +63,7 @@ const CLASSIFIED = {
   'packages/data-provider/src/config.ts': 2,
   /** Config normalization only: strips stale `tool_options` when the capability
    *  is off. Execution is gated by the loaders, so this needs no grant. */
-  'api/server/controllers/agents/v1.js': 1,
+  'packages/api/src/agents/creates.ts': 1,
 };
 
 /** @returns {string[]} repo-relative files under `dir`, excluding tests. */

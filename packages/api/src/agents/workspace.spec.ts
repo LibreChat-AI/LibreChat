@@ -1,5 +1,6 @@
 import {
   AGENT_WORKSPACE_ATTACHED_ENVIRONMENT_ERROR,
+  agentCodeEnvironmentErrorResponse,
   isActiveAgentWorkspaceConfiguration,
   reconcileAgentWorkspaceDefault,
   resolveAgentWorkspaceRestoreConfiguration,
@@ -88,67 +89,61 @@ describe('reconcileAgentWorkspaceDefault', () => {
 });
 
 describe('agent machine allowlist authorization', () => {
-  const req = (maximum = 32) =>
+  const config = (maximum = 32) =>
     ({
-      config: {
-        endpoints: {
-          agents: {
-            statefulCodeSessions: {
-              maxEnvironmentChoices: maximum,
-              environments: [
-                { id: 'authorized', type: 'attached', baseURL: 'https://code.test' },
-                { id: 'managed', type: 'managed' },
-                { id: 'control-plane', type: 'attached', pairing: { allowPrincipalWorkers: true } },
-              ],
-            },
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            maxEnvironmentChoices: maximum,
+            environments: [
+              { id: 'authorized', type: 'attached', baseURL: 'https://code.test' },
+              { id: 'managed', type: 'managed' },
+              { id: 'control-plane', type: 'attached', pairing: { allowPrincipalWorkers: true } },
+            ],
           },
         },
       },
     }) as Parameters<typeof validateAgentCodeEnvironmentAllowlist>[0];
-  let res: Parameters<typeof validateAgentCodeEnvironmentAllowlist>[1];
-  let json: jest.Mock;
-  let status: jest.Mock;
-  beforeEach(() => {
-    json = jest.fn();
-    status = jest.fn(() => ({ json }));
-    res = { status } as unknown as typeof res;
-  });
   it('authorizes each additional machine with the loaded principal-scoped config', () => {
-    expect(validateAgentCodeEnvironmentAllowlist(req(), res, ['authorized'])).toBe(true);
-    expect(status).not.toHaveBeenCalled();
+    expect(validateAgentCodeEnvironmentAllowlist(config(), ['authorized'])).toEqual({ ok: true });
   });
   it.each(['another-principals-machine', 'managed', 'control-plane'])(
     'refuses %s before reservations even without a default or active sessions',
     (id) => {
-      expect(
-        validateStatefulCodeEnvironment(
-          req(),
-          res,
-          false,
-          undefined,
-          undefined,
-          false,
-          undefined,
-          undefined,
-          undefined,
-          [id],
-        ),
-      ).toBe(false);
-      expect(status).toHaveBeenCalledWith(403);
+      const result = validateStatefulCodeEnvironment(config(), {
+        enabled: false,
+        environmentIds: [id],
+      });
+      expect(result).toEqual({
+        ok: false,
+        error: { code: 'code_environment_choices_unauthorized' },
+      });
+      if (!result.ok) {
+        expect(agentCodeEnvironmentErrorResponse(result.error)).toEqual({
+          status: 403,
+          body: {
+            error: 'One or more agent machine choices are not authorized attached environments',
+          },
+        });
+      }
     },
   );
   it('enforces the deployment limit before scanning any candidate IDs', () => {
-    expect(validateAgentCodeEnvironmentAllowlist(req(1), res, ['authorized', 'missing'])).toBe(
-      false,
-    );
-    expect(status).toHaveBeenCalledWith(400);
-    expect(json).toHaveBeenCalledWith({
-      error: 'Agent machine choices exceed the configured maximum of 1',
+    const result = validateAgentCodeEnvironmentAllowlist(config(1), ['authorized', 'missing']);
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'code_environment_choices_exceeded', details: { maximum: 1 } },
     });
+    if (!result.ok) {
+      expect(agentCodeEnvironmentErrorResponse(result.error)).toEqual({
+        status: 400,
+        body: { error: 'Agent machine choices exceed the configured maximum of 1' },
+      });
+    }
   });
   it('allows removing choices and unrelated edits without reauthorizing inaccessible stored choices', () => {
-    expect(validateAgentCodeEnvironmentAllowlist(req(), res, [])).toBe(true);
-    expect(validateAgentCodeEnvironmentAllowlist(req(), res, undefined)).toBe(true);
+    expect(validateAgentCodeEnvironmentAllowlist(config(), [])).toEqual({ ok: true });
+    expect(validateAgentCodeEnvironmentAllowlist(config(), undefined)).toEqual({ ok: true });
   });
   it('restores a version list instead of inheriting current machine privileges', () => {
     expect(
@@ -230,5 +225,65 @@ describe('validateAgentWorkspaceDefaultBinding', () => {
         environments,
       }),
     ).toEqual({ valid: true });
+  });
+});
+
+describe('validateStatefulCodeEnvironment', () => {
+  const config = {
+    endpoints: {
+      agents: {
+        statefulCodeSessions: {
+          allowedEnvironments: ['user'],
+          environments: [
+            { id: 'attached-vm', type: 'attached', baseURL: 'https://code.test' },
+            { id: 'managed-runtime', type: 'managed' },
+          ],
+        },
+      },
+    },
+  } as Parameters<typeof validateStatefulCodeEnvironment>[0];
+
+  it.each([
+    [
+      'a workspace default without an attached environment',
+      { workspaceId: 'project-a', environmentId: 'managed-runtime' },
+      { code: 'code_workspace_environment_required' },
+      { status: 400, body: { error: AGENT_WORKSPACE_ATTACHED_ENVIRONMENT_ERROR } },
+    ],
+    [
+      'an unconfigured environment',
+      { enabled: true, environmentId: 'missing-vm' },
+      { code: 'code_environment_not_configured', details: { environmentId: 'missing-vm' } },
+      { status: 400, body: { error: 'Stateful code environment is not configured: missing-vm' } },
+    ],
+    [
+      'a session scope the deployment does not allow',
+      { enabled: true, environment: 'conversation' },
+      { code: 'code_environment_not_allowed', details: { environment: 'conversation' } },
+      {
+        status: 403,
+        body: {
+          error: 'Stateful code environment is not allowed by this deployment: conversation',
+        },
+      },
+    ],
+  ])('refuses %s with a stable code and the route body', (_name, input, error, response) => {
+    const result = validateStatefulCodeEnvironment(config, input);
+    expect(result).toEqual({ ok: false, error });
+    if (!result.ok) {
+      expect(agentCodeEnvironmentErrorResponse(result.error)).toEqual(response);
+    }
+  });
+
+  it('accepts an allowed configuration', () => {
+    expect(
+      validateStatefulCodeEnvironment(config, {
+        enabled: true,
+        environment: 'user',
+        environmentId: 'attached-vm',
+        environmentIdSelected: true,
+        workspaceId: 'project-a',
+      }),
+    ).toEqual({ ok: true });
   });
 });

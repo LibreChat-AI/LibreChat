@@ -95,6 +95,7 @@ jest.mock('~/cache', () => ({
 
 const {
   createAgent: createAgentHandler,
+  createAgentForRequest,
   getAgent: getAgentHandler,
   getAgentExpanded,
   getAgentVersions: getAgentVersionsHandler,
@@ -699,7 +700,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
       const create = createAgentManagementCreateHandler({
         getRoleByName,
-        createAgent: createAgentHandler,
+        createAgent: createAgentForRequest,
       });
       const checkAgentPermission = async ({
         userId: accessibleUserId,
@@ -952,7 +953,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
             },
           },
         }),
-        createAgent: createAgentHandler,
+        createAgent: createAgentForRequest,
       });
       mockReq.user.tenantId = 'tenant-a';
       mockReq.body = {
@@ -1141,6 +1142,23 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.status).toHaveBeenCalledWith(201);
       const createdAgent = mockRes.json.mock.calls[0][0];
       expect(createdAgent.tool_resources.file_search.file_ids).toEqual([ownedFileId]);
+    });
+
+    test('saves only the tools the creator may attach', async () => {
+      mockReq.body = {
+        provider: 'openai',
+        model: 'gpt-4',
+        name: 'Agent with Tools',
+        tools: ['web_search', 'unregistered_tool', 'search_mcp_example'],
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const createdAgent = mockRes.json.mock.calls[0][0];
+      expect(createdAgent.tools).toEqual(['web_search']);
+      const saved = await Agent.findOne({ id: createdAgent.id }).lean();
+      expect(saved.tools).toEqual(['web_search']);
     });
 
     test('hydrates owned file_ids before fail-close agent resource inspection', async () => {
@@ -5064,6 +5082,28 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         error: 'One or more agents referenced in subagents do not exist',
         agent_ids: [missingMemberId],
       });
+    });
+
+    test('createAgentHandler should return 403 without VIEW on a subagent and create nothing', async () => {
+      mockReq.config = { endpoints: { agents: { capabilities: ['subagents'] } } };
+      mockReq.body = {
+        name: 'Subagent Parent',
+        provider: 'openai',
+        model: 'gpt-4',
+        subagents: { enabled: true, allowSelf: false, agent_ids: [targetAgent.id] },
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'You do not have access to one or more agents referenced in subagents',
+        agent_ids: [targetAgent.id],
+      });
+      expect(getResourcePermissionsMap).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: mockReq.user.id, resourceType: ResourceType.AGENT }),
+      );
+      await expect(Agent.countDocuments({ name: 'Subagent Parent' })).resolves.toBe(0);
     });
 
     test('createAgentHandler should rewrite a graph self placeholder to the generated ID', async () => {
