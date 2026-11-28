@@ -46,6 +46,7 @@ describe('stopRun', () => {
   let cache: Keyv;
   let lock: DistributedLock;
   let cancel: jest.Mock;
+  let retrieve: jest.Mock;
   let recordUsage: jest.Mock;
   let checkMessageGaps: jest.Mock;
   let initializeClient: jest.Mock;
@@ -73,7 +74,7 @@ describe('stopRun', () => {
     cache = new Keyv();
     lock = createDistributedLock();
     cancel = jest.fn().mockResolvedValue({ status: RunStatus.CANCELLING });
-    const retrieve = jest.fn().mockResolvedValue({
+    retrieve = jest.fn().mockResolvedValue({
       model: 'gpt-4o-mini',
       usage: { prompt_tokens: 8, completion_tokens: 4 },
     });
@@ -106,7 +107,7 @@ describe('stopRun', () => {
 
   it('answers 204 and leaves the run alone when its request already recovered it', async () => {
     await cache.set(key, 'thread_1:run_1');
-    expect(await claimRunRecovery(lock, 'run_1')).toBe(true);
+    expect(await claimRunRecovery(lock, 'run_1')).not.toBeNull();
 
     const res = await stop();
 
@@ -122,7 +123,7 @@ describe('stopRun', () => {
     initializeClient.mockRejectedValueOnce(new Error('No API key'));
 
     await expect(stop()).rejects.toThrow('No API key');
-    expect(await claimRunRecovery(lock, 'run_1')).toBe(true);
+    expect(await claimRunRecovery(lock, 'run_1')).not.toBeNull();
   });
 
   it('ends the response when the provider already cancelled the run', async () => {
@@ -133,6 +134,59 @@ describe('stopRun', () => {
 
     expect(res.ended).toBe(true);
     expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('gives back a run the provider did not cancel and fails without billing or reading it', async () => {
+    await cache.set(key, 'thread_1:run_1');
+    cancel.mockRejectedValueOnce(new Error('400 E2E run cancel unavailable'));
+
+    await expect(stop()).rejects.toThrow('The run was not cancelled');
+
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+    expect(checkMessageGaps).not.toHaveBeenCalled();
+    expect(await cache.get(key)).toBe('thread_1:run_1');
+    const claim = createRecoveryClaim({ cache, lock, completedRun: () => undefined });
+    expect(await claim({ key, run_id: 'run_1', error: new Error('Request closed') })).toBe(true);
+  });
+
+  it('lets a later stop cancel, bill and read back a run an earlier stop gave back', async () => {
+    await cache.set(key, 'thread_1:run_1');
+    cancel.mockRejectedValueOnce(new Error('400 E2E run cancel unavailable'));
+    await expect(stop()).rejects.toThrow('The run was not cancelled');
+
+    const res = await stop();
+
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(res.body).toEqual(expect.objectContaining({ final: true }));
+    expect(await cache.get(key)).toBe(RunStatus.CANCELLED);
+  });
+
+  it("gives back a run it did not cancel without taking back the conversation's next entry", async () => {
+    await cache.set(key, 'thread_1:run_1');
+    cancel.mockImplementationOnce(async () => {
+      await cache.set(key, 'thread_1:run_2');
+      throw new Error("400 Cannot cancel run with status 'completed'.");
+    });
+
+    await expect(stop()).rejects.toThrow('The run was not cancelled');
+
+    expect(await cache.get(key)).toBe('thread_1:run_2');
+    expect(await claimRunRecovery(lock, 'run_1')).not.toBeNull();
+  });
+
+  it('gives back a run it could not mark, without cancelling it', async () => {
+    await cache.set(key, 'thread_1:run_1');
+    const set = jest.spyOn(cache, 'set').mockRejectedValueOnce(new Error('cache unavailable'));
+
+    await expect(stop()).rejects.toThrow('The run was not cancelled');
+
+    expect(set).toHaveBeenCalledWith(key, RunStatus.CANCELLED, expect.any(Number));
+    expect(cancel).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+    expect(await cache.get(key)).toBe('thread_1:run_1');
+    expect(await claimRunRecovery(lock, 'run_1')).not.toBeNull();
   });
 
   it('answers 204 when the entry is gone or already marked', async () => {

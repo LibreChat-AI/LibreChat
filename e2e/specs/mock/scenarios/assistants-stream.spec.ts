@@ -161,26 +161,44 @@ async function runCancels(page: Page, assistantId: string): Promise<number> {
   }).length;
 }
 
-/** Sends `text` to an assistant through a chat route the way an API client does, and drops the
- *  connection once the stream carries `until`. Resolves with the conversation the turn created. */
-async function sendAndDrop(
+/** Where each run the app started for `assistantId` stands at the provider. */
+async function runStatuses(page: Page, assistantId: string): Promise<string[]> {
+  const response = await page.request.get(`${PROVIDER}/__e2e/runs`);
+  const { runs } = (await response.json()) as {
+    runs: { assistant_id: string; status: string }[];
+  };
+  return runs.filter((run) => run.assistant_id === assistantId).map((run) => run.status);
+}
+
+type Version = 'v1' | 'v2';
+
+/** The headers the Assistants routes take from an API client. */
+async function clientHeaders(page: Page): Promise<Record<string, string>> {
+  return {
+    Authorization: `Bearer ${await getAccessToken(page)}`,
+    'Content-Type': 'application/json',
+    /** The Assistants routes refuse a client that does not identify as a browser. */
+    'User-Agent': await page.evaluate(() => navigator.userAgent),
+  };
+}
+
+/** A turn an API client sent to an assistant, streaming back to it. */
+type ClientTurn = {
+  /** Reads on until the stream carries `marker` or ends, and resolves with all it read. */
+  readUntil: (marker: string) => Promise<string>;
+  /** Drops the connection. */
+  drop: () => void;
+};
+
+/** Sends `text` to an assistant through a chat route the way an API client does. */
+async function sendAsClient(
   page: Page,
-  {
-    version,
-    assistantId,
-    text,
-    until,
-  }: { version: 'v1' | 'v2'; assistantId: string; text: string; until: string },
-): Promise<string> {
+  { version, assistantId, text }: { version: Version; assistantId: string; text: string },
+): Promise<ClientTurn> {
   const controller = new AbortController();
   const response = await fetch(new URL(`/api/assistants/${version}/chat`, page.url()), {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${await getAccessToken(page)}`,
-      'Content-Type': 'application/json',
-      /** The chat routes refuse a client that does not identify as a browser. */
-      'User-Agent': await page.evaluate(() => navigator.userAgent),
-    },
+    headers: await clientHeaders(page),
     body: JSON.stringify({
       text,
       sender: 'User',
@@ -199,18 +217,73 @@ async function sendAndDrop(
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let transcript = '';
-  try {
-    while (!transcript.includes(until)) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
+  return {
+    readUntil: async (marker) => {
+      while (!transcript.includes(marker)) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        transcript += decoder.decode(value, { stream: true });
       }
-      transcript += decoder.decode(value, { stream: true });
-    }
+      return transcript;
+    },
+    drop: () => controller.abort(),
+  };
+}
+
+/** Sends `text` to an assistant through a chat route the way an API client does, and drops the
+ *  connection once the stream carries `until`. Resolves with the conversation the turn created. */
+async function sendAndDrop(
+  page: Page,
+  {
+    version,
+    assistantId,
+    text,
+    until,
+  }: { version: Version; assistantId: string; text: string; until: string },
+): Promise<string> {
+  const turn = await sendAsClient(page, { version, assistantId, text });
+  let transcript = '';
+  try {
+    transcript = await turn.readUntil(until);
   } finally {
-    controller.abort();
+    turn.drop();
   }
   return /"conversationId":"([0-9a-f-]{36})"/.exec(transcript)?.[1] ?? '';
+}
+
+type SyncFrame = {
+  sync?: boolean;
+  conversationId?: string;
+  responseMessage?: { messageId?: string };
+};
+
+/** The abort key of a streamed turn: its conversation and the reply its first (`sync`) frame names. */
+function abortKeyOf(transcript: string): string {
+  for (const frame of transcript.split('\n\n')) {
+    const data = frame.split('\n').find((line) => line.startsWith('data: '));
+    try {
+      const event = JSON.parse(data?.slice('data: '.length) ?? 'null') as SyncFrame | null;
+      if (event?.sync === true) {
+        return `${event.conversationId}:${event.responseMessage?.messageId}`;
+      }
+    } catch {
+      /** The last frame may still be arriving. */
+    }
+  }
+  throw new Error('The stream named no conversation yet');
+}
+
+/** Stops a run through a chat route's stop, the way an API client does; resolves with the answer. */
+async function stopAsClient(page: Page, version: Version, abortKey: string) {
+  const response = await fetch(new URL(`/api/assistants/${version}/chat/abort`, page.url()), {
+    method: 'POST',
+    headers: await clientHeaders(page),
+    body: JSON.stringify({ abortKey, endpoint: 'assistants' }),
+  });
+  const text = await response.text();
+  return { status: response.status, final: text.includes('"final":true') };
 }
 
 /** How many transactions billing wrote for the conversation: two (prompt, completion) per read. */
@@ -884,6 +957,114 @@ test.describe('assistants stream', () => {
       }).toEqual({ runs: 1, reads: [1], cancels: 1 });
     } finally {
       await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a stop the provider fails to cancel says so, and the run is still stopped, read back and billed once @scenario:assistants-stop-whose-cancel-fails-leaves-run-to-request', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-cancel-fails');
+    const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_CANCEL_FAIL:E2E_ASSISTANT_USAGE:${label}`;
+    const assistant = await createAssistant(page, `E2E cancel fails ${label}`);
+    try {
+      /** The fake Assistants API refuses the first cancel of this run, which streams on. */
+      await sendToAssistant(page, assistant.id, prompt);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      /** The stop did not stop the run, so it fails rather than answering with a read-back. */
+      expect(stopped.status()).toBe(500);
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      const conversationId = new URL(page.url()).pathname.split('/').pop() ?? '';
+
+      /** The request the stop closed cancels the run itself 2 s later, then reads it back and
+       *  bills it once. */
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        billed: await billedFor(conversationId),
+        statuses: await runStatuses(page, assistant.id),
+      }).toEqual({ runs: 1, reads: [1], billed: 2, statuses: ['cancelled'] });
+
+      /** The chat keeps the reply once, as far as it streamed before the run was cancelled. */
+      await page.reload();
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      await expect(messagesView(page).getByText(/achunk-001/)).toHaveCount(1);
+      await expect(messagesView(page).getByText(/achunk-120/)).toHaveCount(0);
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('an API client whose stop the provider fails to cancel can stop the run again @scenario:assistants-stop-whose-cancel-fails-can-be-retried', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-cancel-retry');
+    const assistant = await createAssistant(page, `E2E cancel retry ${label}`);
+    let turn: ClientTurn | undefined;
+    try {
+      turn = await sendAsClient(page, {
+        version: 'v2',
+        assistantId: assistant.id,
+        text: `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_CANCEL_FAIL:E2E_ASSISTANT_USAGE:${label}`,
+      });
+      const abortKey = abortKeyOf(await turn.readUntil('achunk-005'));
+      const [conversationId] = abortKey.split(':');
+      /** The fake Assistants API refuses the first cancel: the stop fails and the run streams on. */
+      expect(await stopAsClient(page, 'v2', abortKey)).toEqual({ status: 500, final: false });
+      await turn.readUntil('achunk-015');
+
+      /** The next stop finds the run, stops it, and reads it back; the stream then ends there. */
+      expect(await stopAsClient(page, 'v2', abortKey)).toEqual({ status: 200, final: true });
+      expect(await turn.readUntil('achunk-120')).not.toContain('achunk-120');
+
+      /** The request's own check, 2 s after its stream ended, leaves the run to that stop. */
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        billed: await billedFor(conversationId),
+        statuses: await runStatuses(page, assistant.id),
+      }).toEqual({ runs: 1, reads: [1], billed: 2, statuses: ['cancelled'] });
+    } finally {
+      turn?.drop();
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a v1 client that drops its stream to stop a run the provider fails to cancel has its request stop the run @scenario:assistants-v1-stop-whose-cancel-fails-leaves-run-to-request', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-v1-cancel-fails');
+    const assistant = await createAssistant(page, `E2E v1 cancel fails ${label}`, 'v1');
+    let turn: ClientTurn | undefined;
+    try {
+      turn = await sendAsClient(page, {
+        version: 'v1',
+        assistantId: assistant.id,
+        text: `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_CANCEL_FAIL:E2E_ASSISTANT_USAGE:${label}`,
+      });
+      const abortKey = abortKeyOf(await turn.readUntil('achunk-005'));
+      const [conversationId] = abortKey.split(':');
+      /** Like the app, the client closes the stream as it sends the stop. */
+      turn.drop();
+      expect(await stopAsClient(page, 'v1', abortKey)).toEqual({ status: 500, final: false });
+
+      /** The request the client closed cancels the run 2 s later, reads it back and bills it. */
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        billed: await billedFor(conversationId),
+        statuses: await runStatuses(page, assistant.id),
+      }).toEqual({ runs: 1, reads: [1], billed: 2, statuses: ['cancelled'] });
+    } finally {
+      turn?.drop();
+      await deleteAssistant(page, assistant.id, 'v1');
     }
   });
 });
