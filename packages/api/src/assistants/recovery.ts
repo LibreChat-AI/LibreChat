@@ -14,15 +14,36 @@ export interface AbortKeyCache {
 /** Claims a key for a while, atomically across the instances sharing it (`createDistributedLock`). */
 export interface RecoveryLock {
   acquire: (key: string, ttlMs: number) => Promise<string | null>;
+  /** Frees a key only while `token`, from its `acquire`, still holds it. */
+  release: (key: string, token: string) => Promise<boolean>;
+}
+
+/** A run's recovery, held by whoever claimed it. */
+export interface RunClaim {
+  /** Gives the run back, so a later stop or the run's own request can claim it. */
+  release: () => Promise<void>;
 }
 
 /**
  * Claims the recovery of a run (cancelling, billing and reading it back). The stop route and the
  * request that started the run both claim before they recover it, so exactly one of them does,
- * whatever the conversation's abort entry names by then.
+ * whatever the conversation's abort entry names by then. Resolves with the claim, or with nothing
+ * when another holds it.
  */
-export async function claimRunRecovery(lock: RecoveryLock, run_id: string): Promise<boolean> {
-  return (await lock.acquire(`assistants:recovery:${run_id}`, CLAIM_TTL_MS)) != null;
+export async function claimRunRecovery(
+  lock: RecoveryLock,
+  run_id: string,
+): Promise<RunClaim | null> {
+  const key = `assistants:recovery:${run_id}`;
+  const token = await lock.acquire(key, CLAIM_TTL_MS);
+  if (token == null) {
+    return null;
+  }
+  return {
+    release: async () => {
+      await lock.release(key, token);
+    },
+  };
 }
 
 export interface RecoveryClaimDeps {
@@ -67,6 +88,6 @@ export function createRecoveryClaim({
     if ((await cache.get(key)) === RunStatus.CANCELLED) {
       return false;
     }
-    return claimRunRecovery(lock, run_id);
+    return (await claimRunRecovery(lock, run_id)) != null;
   };
 }

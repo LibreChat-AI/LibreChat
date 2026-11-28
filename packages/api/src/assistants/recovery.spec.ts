@@ -32,16 +32,24 @@ describe('createRecoveryClaim', () => {
 
   it('leaves a run the stop route claimed to that stop', async () => {
     await cache.set(key, 'thread_1:run_1');
-    expect(await claimRunRecovery(lock, 'run_1')).toBe(true);
+    expect(await claimRunRecovery(lock, 'run_1')).not.toBeNull();
 
     expect(await createClaim()(closed)).toBe(false);
+  });
+
+  it('claims a run the stop route gave back', async () => {
+    await cache.set(key, 'thread_1:run_1');
+    const stop = await claimRunRecovery(lock, 'run_1');
+    await stop?.release();
+
+    expect(await createClaim()(closed)).toBe(true);
   });
 
   it('keeps the stop route from claiming a run its request recovered', async () => {
     await cache.set(key, 'thread_1:run_1');
     expect(await createClaim()(failed)).toBe(true);
 
-    expect(await claimRunRecovery(lock, 'run_1')).toBe(false);
+    expect(await claimRunRecovery(lock, 'run_1')).toBeNull();
   });
 
   it('leaves a run marked cancelled to the stop that marked it', async () => {
@@ -55,7 +63,7 @@ describe('createRecoveryClaim', () => {
 
     expect(await createClaim()(failed)).toBe(true);
     expect(await cache.get(key)).toBe('thread_1:run_2');
-    expect(await claimRunRecovery(lock, 'run_2')).toBe(true);
+    expect(await claimRunRecovery(lock, 'run_2')).not.toBeNull();
   });
 
   it('claims a run whose entry is gone', async () => {

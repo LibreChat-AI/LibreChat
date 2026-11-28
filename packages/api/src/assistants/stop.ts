@@ -2,13 +2,16 @@ import { logger } from '@librechat/data-schemas';
 import { RunStatus, Time, isUUID } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { FinalEvent, ServerRequest } from '~/types';
-import type { RecoveryLock } from './recovery';
+import type { RecoveryLock, RunClaim } from './recovery';
 import { getTransactionsConfig } from '~/app/config';
 import { claimRunRecovery } from './recovery';
 import { sendEvent } from '~/utils/events';
 
 /** How long a stopped run stays marked `cancelled` in its conversation's abort entry. */
 const STOP_MARK_TTL = Time.THREE_MINUTES;
+/** How long the chat controllers keep a run's abort entry, which a stop that gives the run back
+ *  writes again. */
+const RUN_ENTRY_TTL = Time.TEN_MINUTES;
 
 /** What a stop reads of the run it cancelled, to bill it. */
 interface StoppedRun {
@@ -63,9 +66,31 @@ function messageOf(error: unknown): string {
 }
 
 /**
+ * Gives back a run the stop did not cancel: the conversation's abort entry names the run again,
+ * unless something replaced the stop's mark meanwhile, and the run's claim is released, so a later
+ * stop or the run's own request can still stop it. The check and the write are two cache calls,
+ * like the stop's own read and mark: the cache offers no compare-and-set, so the next run's entry
+ * is only overwritten if it lands between them, which needs this run to have ended already.
+ */
+async function giveBack(
+  cache: StopRunDeps['cache'],
+  { key, entry, claim }: { key: string; entry: string; claim: RunClaim },
+): Promise<void> {
+  try {
+    if ((await cache.get(key)) === RunStatus.CANCELLED) {
+      await cache.set(key, entry, RUN_ENTRY_TTL);
+    }
+  } finally {
+    await claim.release();
+  }
+}
+
+/**
  * Stops the Assistants run a conversation's abort entry names, for the stop route: claims the
  * run's recovery, marks the entry `cancelled`, cancels the run, bills it and reads it back as the
- * final event. A run whose own request already claimed its recovery is answered with 204.
+ * final event. A run whose own request already claimed its recovery is answered with 204. When the
+ * provider does not cancel the run, the stop gives the run back and fails, without billing it or
+ * reading it back: a run the stop did not stop is not the stop's to recover.
  */
 export async function stopRun(req: ServerRequest, res: Response, deps: StopRunDeps): Promise<void> {
   res.setHeader('Content-Type', 'application/json');
@@ -106,7 +131,8 @@ export async function stopRun(req: ServerRequest, res: Response, deps: StopRunDe
 
   const { openai } = await deps.initializeClient({ req, res });
 
-  if (!(await claimRunRecovery(deps.lock, run_id))) {
+  const claim = await claimRunRecovery(deps.lock, run_id);
+  if (!claim) {
     logger.warn('[abortRun] Run already stopped or recovered', { thread_id });
     res.status(204).send({ message: 'Run already cancelled' });
     return;
@@ -123,6 +149,8 @@ export async function stopRun(req: ServerRequest, res: Response, deps: StopRunDe
       res.end();
       return;
     }
+    await giveBack(deps.cache, { key: cacheKey, entry: String(runValues), claim });
+    throw new Error('[abortRun] The run was not cancelled', { cause: error });
   }
 
   try {

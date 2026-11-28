@@ -28,6 +28,8 @@ const unreadableSteps = new Set();
 const billedRuns = new Set();
 /** Messages whose first update is refused, so tagging the run that wrote them fails once. */
 const untaggableMessages = new Set();
+/** Runs whose first cancel is refused, so the first stop of the run fails while it streams on. */
+const uncancellableRuns = new Set();
 /** What an `E2E_ASSISTANT_USAGE` run reports it used once it ends. */
 const RUN_USAGE = { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 };
 const requests = [];
@@ -363,6 +365,7 @@ function toolCallsStep({ id, runId, threadId, assistantId, status, toolCalls }) 
  * `E2E_ASSISTANT_BRIEF` completes the run after three seconds, and `E2E_ASSISTANT_USAGE` makes it
  * report usage once it ends, so the app bills it. `E2E_ASSISTANT_TAG_FAIL` refuses the first
  * metadata the app writes on the run's message, which fails the controller before it bills the run.
+ * `E2E_ASSISTANT_CANCEL_FAIL` refuses the first cancel of the run, which keeps streaming.
  */
 function sendSlowAssistantStream(
   res,
@@ -375,6 +378,7 @@ function sendSlowAssistantStream(
     brief = false,
     billed = false,
     tagFail = false,
+    cancelFail = false,
   },
 ) {
   const runId = createId('run');
@@ -400,6 +404,9 @@ function sendSlowAssistantStream(
   }
   if (tagFail) {
     untaggableMessages.add(message.id);
+  }
+  if (cancelFail) {
+    uncancellableRuns.add(runId);
   }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -529,6 +536,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  /** Where each run stands at the provider, read without counting as one of the app's requests. */
+  if (req.method === 'GET' && url.pathname === '/__e2e/runs') {
+    const data = [...runs.values()].map(({ id, thread_id, assistant_id, status }) => ({
+      id,
+      thread_id,
+      assistant_id,
+      status,
+    }));
+    sendJson(res, 200, { runs: data });
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/__e2e/reset') {
     assistants.clear();
     threads.clear();
@@ -537,6 +556,7 @@ const server = http.createServer(async (req, res) => {
     unreadableSteps.clear();
     billedRuns.clear();
     untaggableMessages.clear();
+    uncancellableRuns.clear();
     requests.length = 0;
     sendJson(res, 200, { ok: true });
     return;
@@ -720,6 +740,7 @@ const server = http.createServer(async (req, res) => {
           brief: prompt.includes('E2E_ASSISTANT_BRIEF'),
           billed: prompt.includes('E2E_ASSISTANT_USAGE'),
           tagFail: prompt.includes('E2E_ASSISTANT_TAG_FAIL'),
+          cancelFail: prompt.includes('E2E_ASSISTANT_CANCEL_FAIL'),
         });
         return;
       }
@@ -736,6 +757,11 @@ const server = http.createServer(async (req, res) => {
       const run = runs.get(runId);
       if (!run || run.thread_id !== threadId) {
         sendError(res, 404, `No run found with id '${runId}'`);
+        return;
+      }
+      /** A 4xx, which the OpenAI SDK does not retry, so the cancel fails at once. */
+      if (uncancellableRuns.delete(runId)) {
+        sendError(res, 400, 'E2E run cancel unavailable');
         return;
       }
       const slow = slowRuns.get(runId);
