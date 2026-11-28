@@ -709,6 +709,66 @@ function applyResponsesVerbosity({
   return false;
 }
 
+function applyResponsesTextFormat({
+  llmConfig,
+  modelKwargs,
+  dropParams,
+}: {
+  llmConfig: OpenAILLMConfig;
+  modelKwargs: Record<string, unknown>;
+  dropParams?: string[];
+}): boolean {
+  if (llmConfig.useResponsesApi !== true) {
+    return false;
+  }
+
+  // A route that drops `text` owns the payload shape; never re-add it.
+  if (dropParams?.includes('text')) {
+    return false;
+  }
+
+  // A structured output format owns the text.format value; never override it.
+  if ((llmConfig as Record<string, unknown>).response_format != null) {
+    return false;
+  }
+
+  const configured = (llmConfig as Record<string, unknown>).text;
+  const hasValidFormat = (value: unknown): boolean => {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+
+    const format = (value as Record<string, unknown>).format;
+    return (
+      format != null &&
+      typeof format === 'object' &&
+      !Array.isArray(format) &&
+      typeof (format as Record<string, unknown>).type === 'string'
+    );
+  };
+
+  // A configured text value with a valid format owns the payload shape; leave it alone.
+  if (hasValidFormat(configured)) {
+    return false;
+  }
+
+  const text = getModelKwargsText(modelKwargs);
+  if (hasValidFormat(text)) {
+    return false;
+  }
+
+  // The SDK emits an empty text object by default, and some OpenAI-compatible servers
+  // (e.g. LM Studio) reject a text object without a valid format, so stamp a plain-text one.
+  // A configured text value without a valid format is merged so its fields survive on the wire,
+  // where modelKwargs outranks the SDK call options. See lmstudio-ai/lmstudio-bug-tracker#1576.
+  const base =
+    configured != null && typeof configured === 'object' && !Array.isArray(configured)
+      ? (configured as Record<string, unknown>)
+      : {};
+  modelKwargs.text = { ...base, ...text, format: { type: 'text' } };
+  return true;
+}
+
 /**
  * Extracts default parameters from customParams.paramDefinitions
  * @param paramDefinitions - Array of parameter definitions with key and default values
@@ -1353,6 +1413,9 @@ export function getOpenAILLMConfig({
       modelKwargs,
       useOpenRouter,
     }) || hasModelKwargs;
+
+  hasModelKwargs =
+    applyResponsesTextFormat({ llmConfig, modelKwargs, dropParams }) || hasModelKwargs;
 
   if (
     llmConfig.model &&

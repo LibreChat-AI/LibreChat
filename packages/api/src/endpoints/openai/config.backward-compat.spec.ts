@@ -42,6 +42,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
           },
           modelKwargs: {
             text: {
+              format: { type: 'text' },
               verbosity: Verbosity.high,
             },
           },
@@ -174,6 +175,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
           },
           modelKwargs: {
             text: {
+              format: { type: 'text' },
               verbosity: Verbosity.high,
             },
           },
