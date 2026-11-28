@@ -24,6 +24,7 @@ export type AuditPlanItem = {
 
 type AclAuditDeps = {
   recordAuditEntry: RecordAuditEntry;
+  recordAuditEntries?: (inputs: readonly RecordAuditEntryInput[]) => Promise<(boolean | null)[]>;
   logger: { error: (message: string, error?: unknown) => void };
 };
 
@@ -313,7 +314,29 @@ export async function runAuditedPermissionUpdate<T>({
         ...items.filter((item) => item.widening),
         ...items.filter((item) => !item.widening),
       ];
-      for (const item of ordered) {
+      let persisted: (boolean | null)[] = [];
+      if (ordered.length > 1 && deps.recordAuditEntries) {
+        try {
+          persisted = await deps.recordAuditEntries(ordered.map((item) => item.input));
+        } catch (error) {
+          deps.logger.error('[ResourcePermissions] Audit batch unavailable', safeMeta(error));
+        }
+      }
+      for (const [index, item] of ordered.entries()) {
+        if (persisted[index] === null) {
+          deps.logger.error('[ResourcePermissions] Audit append outcome unknown');
+          if (failClosed && item.widening) {
+            throw statusError(
+              'Permission change could not be audited',
+              PERMISSION_AUDIT_UNAVAILABLE,
+            );
+          }
+          continue;
+        }
+        if (persisted[index]) {
+          recorded.push(item);
+          continue;
+        }
         try {
           await deps.recordAuditEntry(item.input, { failClosed });
           recorded.push(item);
