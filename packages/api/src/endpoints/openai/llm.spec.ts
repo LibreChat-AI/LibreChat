@@ -2139,6 +2139,8 @@ describe('Responses text format', () => {
     });
 
     expect(result.llmConfig.modelKwargs?.text).toBeUndefined();
+  });
+});
 describe('takesReasoningEffort', () => {
   it.each([
     'o1',
