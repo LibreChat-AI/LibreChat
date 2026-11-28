@@ -34,7 +34,7 @@ export default function Confirm({
         onCloseAutoFocus={(event) => {
           if (submitted.current) {
             event.preventDefault();
-            document.getElementById('files-filter')?.focus({ preventScroll: true });
+            document.getElementById('my-files-list')?.focus({ preventScroll: true });
           }
         }}
       >

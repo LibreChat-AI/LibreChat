@@ -204,3 +204,54 @@ test('row actions use the selected file for details, preview, download and confi
   await menu.getByRole('menuitem', { name: 'Download' }).click();
   expect((await outputDownload).suggestedFilename()).toBe(output.filename);
 });
+
+test('selection crossfades without moving the file list or retaining hidden controls @scenario:my-files-motion', async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const { dialog, table } = await openMyFiles(page);
+  const list = dialog.getByRole('region', { name: 'My Files' });
+  await list.evaluate((node) => {
+    node.scrollTop = 1800;
+  });
+  const target = table.getByRole('row').filter({ hasText: files[36].filename });
+  const checkbox = target.getByRole('checkbox');
+  await checkbox.scrollIntoViewIfNeeded();
+  await checkbox.focus();
+  const before = await list.evaluate((node) => ({
+    top: node.getBoundingClientRect().top,
+    scroll: node.scrollTop,
+  }));
+  await checkbox.press('Space');
+  await expect(checkbox).toBeChecked();
+  const clear = dialog.getByRole('button', { name: 'Clear', exact: true });
+  await expect(clear).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Sort', exact: true })).toHaveCount(0);
+  expect(await list.evaluate((node) => node.getBoundingClientRect().top)).toBe(before.top);
+  expect(
+    await clear.evaluate((node) => getComputedStyle(node.parentElement!).transitionDuration),
+  ).toBe('0.15s');
+  await checkbox.press('Space');
+  await checkbox.press('Space');
+  await expect(checkbox).toBeChecked();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(
+    await clear.evaluate((node) => getComputedStyle(node.parentElement!).transitionProperty),
+  ).toBe('none');
+  expect(await target.evaluate((node) => getComputedStyle(node).transitionProperty)).toBe('none');
+  await page.route('**/api/files', (route) =>
+    route.request().method() === 'DELETE'
+      ? route.fulfill({
+          json: { message: 'Deleted', deletedFileIds: [files[36].file_id], failedFileIds: [] },
+        })
+      : route.fallback(),
+  );
+  await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(target).toHaveCount(0);
+  await expect(list).toBeFocused();
+  await expect(dialog.getByRole('button', { name: 'Sort', exact: true })).toBeVisible();
+  expect(Math.abs((await list.evaluate((node) => node.scrollTop)) - before.scroll)).toBeLessThan(
+    65,
+  );
+});
