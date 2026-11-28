@@ -21,7 +21,6 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
     id: {
       type: String,
       required: true,
-      index: true,
     },
     user: {
       type: Schema.Types.ObjectId,

@@ -4,7 +4,7 @@ import type { ISkillUploadIntentDocument } from '~/types/skillDeletion';
 const skillUploadIntentSchema: Schema<ISkillUploadIntentDocument> =
   new Schema<ISkillUploadIntentDocument>(
     {
-      skillId: { type: Schema.Types.ObjectId, required: true, index: true },
+      skillId: { type: Schema.Types.ObjectId, required: true },
       fileId: { type: String, required: true, unique: true, index: true },
       source: { type: String, required: true },
       storageKey: { type: String, required: true },
@@ -27,7 +27,6 @@ const skillUploadIntentSchema: Schema<ISkillUploadIntentDocument> =
     { timestamps: true },
   );
 
-skillUploadIntentSchema.index({ skillId: 1, state: 1 });
 skillUploadIntentSchema.index({ skillId: 1, state: 1, cleanedAt: 1 });
 skillUploadIntentSchema.index({ state: 1, lastCleanupAttemptAt: 1, createdAt: 1 });
 // The committed cleanup branch must not scan healthy live uploads just to preserve ordering.

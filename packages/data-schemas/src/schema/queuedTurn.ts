@@ -79,7 +79,7 @@ const queuedTurnSchema: Schema<IAgentQueuedTurnDocument> = new Schema(
       required: true,
       index: true,
     },
-    tenantId: { type: String, index: true },
+    tenantId: { type: String },
     conversationId: { type: String, required: true, maxlength: 256 },
     agentId: { type: String, required: true, maxlength: 256 },
     parentMessageId: {

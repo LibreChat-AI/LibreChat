@@ -16,7 +16,6 @@ const aclEntrySchema: Schema<IAclEntry> = new Schema<IAclEntry>(
       required: function (this: IAclEntry) {
         return this.principalType !== PrincipalType.PUBLIC;
       },
-      index: true,
     },
     principalModel: {
       type: String,
@@ -33,7 +32,6 @@ const aclEntrySchema: Schema<IAclEntry> = new Schema<IAclEntry>(
     resourceId: {
       type: Schema.Types.ObjectId,
       required: true,
-      index: true,
     },
     permBits: {
       type: Number,
