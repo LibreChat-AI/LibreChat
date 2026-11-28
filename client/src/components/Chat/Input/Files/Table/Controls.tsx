@@ -48,12 +48,12 @@ export function Controls({ table }: { table: Table<TFile> }) {
     }),
     [data],
   );
-  const options = (id: 'source' | 'context', title: string): MenuItemProps => {
+  const options = (id: 'source' | 'context', title: string): MenuItemProps[] => {
     const column = table.getColumn(id);
     const values = choices[id];
-    return {
-      label: title,
-      subItems: values.map((value) => {
+    return [
+      { label: title, disabled: true },
+      ...values.map((value) => {
         const key = labels[value];
         const label = key ? localize(key) : value;
         return {
@@ -64,11 +64,11 @@ export function Controls({ table }: { table: Table<TFile> }) {
             column?.setFilterValue(column.getFilterValue() === value ? undefined : value),
         };
       }),
-    };
+    ];
   };
   const filterItems = [
-    options('source', localize('com_ui_storage')),
-    options('context', localize('com_ui_context')),
+    ...options('source', localize('com_ui_storage')),
+    ...options('context', localize('com_ui_context')),
     {
       label: localize('com_ui_clear_filters'),
       disabled: !filters.length,

@@ -121,7 +121,7 @@ test('filters and sorts files without scrolling the surrounding dialog @scenario
   await expect(search).toBeFocused();
   await expect(dialog.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Filters', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Storage', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Storage', exact: true })).toBeVisible();
   await page.getByRole('menuitemcheckbox', { name: 'Azure', exact: true }).click();
   await expect(table.getByRole('row')).toHaveCount(2);
   await expect(table.getByRole('row').last()).toContainText(files[0].filename);
