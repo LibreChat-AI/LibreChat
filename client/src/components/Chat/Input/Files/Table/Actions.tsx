@@ -53,14 +53,12 @@ export default function Actions({
   const original =
     isLocallyStoredSource(file.source) ||
     (file.source != null && checkOpenAIStorage(file.source) && 'model' in file && !!file.model);
-  const contextKey = file.context && labels[file.context];
-  const context =
-    contextKey && file.context
-      ? localize('com_files_label_and_identifier', {
-          label: localize(contextKey),
-          value: file.context,
-        })
-      : file.context;
+  function describe(value?: string) {
+    const key = value && labels[value];
+    return key
+      ? localize('com_files_label_and_identifier', { label: localize(key), value })
+      : value;
+  }
   const canPreview =
     (original && !!getPreviewKind(file.filename, file.type, file.source)) ||
     shouldUseExtractedTextPreview(file.llmDeliveryPath);
@@ -128,8 +126,8 @@ export default function Actions({
               {[
                 [localize('com_ui_name'), file.filename],
                 [localize('com_ui_size'), formatFileSize(file.bytes)],
-                [localize('com_ui_storage'), file.source],
-                [localize('com_ui_context'), context],
+                [localize('com_ui_storage'), describe(file.source)],
+                [localize('com_ui_context'), describe(file.context)],
               ].map(([label, value]) => (
                 <div className="contents" key={label}>
                   <dt className="text-text-secondary">{label}</dt>

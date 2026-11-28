@@ -172,7 +172,7 @@ test('row actions use the selected file for details, preview, download and confi
   await menu.getByRole('menuitem', { name: 'Details' }).click();
   const details = page.getByRole('dialog', { name: 'Details' });
   await expect(details).toContainText(file.filename);
-  await expect(details).toContainText('local');
+  await expect(details).toContainText('Host (local)');
   await expect(details).toContainText('Attachment (message_attachment)');
   await details.press('Escape');
   await menu.getByRole('menuitem', { name: 'Preview' }).click();
