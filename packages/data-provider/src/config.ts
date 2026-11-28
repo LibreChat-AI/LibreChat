@@ -2503,6 +2503,16 @@ export const agentsEndpointSchema = baseEndpointSchema
               staleMinutes: z.number().int().min(5).max(1440).optional(),
             })
             .optional(),
+          /** How agents may follow a pull request from a conversation. Each default is used when
+           *  unset. */
+          watch: z
+            .object({
+              /** Most pull requests one conversation may follow at once. Default 5. */
+              maxPerConversation: z.number().int().min(1).max(50).optional(),
+              /** Days a watch lasts before it ends on its own. Default 14. */
+              ttlDays: z.number().int().min(1).max(90).optional(),
+            })
+            .optional(),
           /** The GitHub App the operator registered for events: one app, one webhook secret and
            *  one webhook URL for the deployment. The same app may also be the OAuth client of
            *  `pullRequests`. */

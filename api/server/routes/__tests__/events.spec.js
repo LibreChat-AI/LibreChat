@@ -29,6 +29,8 @@ const reads = [
   ['delete', '/subscriptions/sub_1'],
   ['get', '/subscriptions/sub_1/grant'],
   ['delete', '/subscriptions/sub_1/grant'],
+  ['get', '/watches?conversationId=convo_1'],
+  ['delete', '/watches/watch_1'],
 ];
 const writes = [
   ['post', '/subscriptions'],
@@ -51,6 +53,13 @@ describe('agent event routes', () => {
     role({ [PermissionTypes.AGENT_EVENTS]: { [Permissions.USE]: true } });
     const res = await request(app)[method](`/api/agents/events${path}`).send({});
     expect(res.status).toBe(403);
+  });
+
+  it('reaches the watch handlers for a role that may use events, which check the request', async () => {
+    role({ [PermissionTypes.AGENT_EVENTS]: { [Permissions.USE]: true } });
+    const res = await request(app).get('/api/agents/events/watches');
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ code: 'watch_invalid' });
   });
 
   it('reaches the handler for a role that may create, which then checks the body', async () => {

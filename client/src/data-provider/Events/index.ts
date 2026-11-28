@@ -7,6 +7,7 @@ import type {
   ConfirmRunGrant,
   Subscription,
   RunGrantView,
+  ListedWatch,
 } from 'librechat-data-provider';
 
 /** The caller's event subscriptions on one agent. Idle until the agent is saved. */
@@ -33,6 +34,8 @@ export function useEventSubscriptionMutations(agentId?: string) {
     void queryClient.invalidateQueries([QueryKeys.agentEventSubscriptions, agentId]);
     // An edit can leave a grant behind, so every grant this agent's subscriptions hold is read again.
     void queryClient.invalidateQueries([QueryKeys.agentEventSubscriptionGrant]);
+    // Whether a watch is live or paused follows its subscription, so every conversation's list is read again.
+    void queryClient.invalidateQueries([QueryKeys.agentEventWatches]);
   };
   const create = useMutation(
     [MutationKeys.createAgentEventSubscription],
@@ -78,4 +81,26 @@ export function useEventGrantMutations(id: string) {
     { onSettled: refresh },
   );
   return { confirm, revoke };
+}
+
+/** The pull requests a conversation follows. Read again on focus, since a run may add one. */
+export function useEventWatches(conversationId?: string, enabled = true) {
+  return useQuery<ListedWatch[]>(
+    [QueryKeys.agentEventWatches, conversationId],
+    () => dataService.getAgentEventWatches(conversationId ?? '').then((res) => res.watches),
+    { enabled: enabled && Boolean(conversationId), retry: false, refetchOnWindowFocus: true },
+  );
+}
+
+export function useStopWatch(conversationId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.deleteAgentEventWatch],
+    (id: string) => dataService.deleteAgentEventWatch(id),
+    {
+      onSettled: () => {
+        void queryClient.invalidateQueries([QueryKeys.agentEventWatches, conversationId]);
+      },
+    },
+  );
 }

@@ -780,6 +780,11 @@ async function startRun(
                 type: envelope.event.type,
                 occurredAt: envelope.event.occurredAt,
                 source: envelope.event.source,
+                /** A subscription's continuation carries its event for the turn, as a fire does. */
+                ...(envelope.event.source.type === SUBSCRIPTION_SOURCE &&
+                  envelope.event.payload != null && {
+                    detail: envelope.event.payload,
+                  }),
               },
             }),
           ...(completion && {

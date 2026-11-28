@@ -101,6 +101,16 @@ export interface Installation {
   suspended: boolean;
 }
 
+/** A repository an installation can read, as GitHub reports it. */
+export interface Repository {
+  /** GitHub's numeric id, which stays the same through a rename or a transfer. */
+  id: number;
+  /** `owner/name` as GitHub spells it now. */
+  name: string;
+  /** The repository's page, when it is an https address on the configured host. */
+  url?: string;
+}
+
 export interface App {
   /**
    * Whether `login` may push to `repo` (`owner/name`), asked as the installation. An account
@@ -124,6 +134,12 @@ export interface App {
    * or GitHub rejects it. Rejects with a `GitHubError` when GitHub cannot be asked.
    */
   owns(code: string, id: number): Promise<Reply<boolean>>;
+  /**
+   * The repository `repo` (`owner/name`) as installation `installation` sees it. `missing`
+   * when the installation cannot read it, including when it does not exist: GitHub answers
+   * both the same way. Rejects with a `GitHubError` when GitHub cannot be asked.
+   */
+  repository(installation: number, repo: string): Promise<Reply<Repository>>;
 }
 
 const REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
@@ -356,6 +372,67 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     throw new GitHubError('upstream', response.status);
   }
 
+  /**
+   * One attempt at reading a repository as the installation. `null` means GitHub no longer
+   * accepts the installation's token, which is dropped so the next attempt exchanges a fresh one.
+   */
+  async function read1(installation: number, path: string): Promise<Reply<Repository> | null> {
+    const bearer = await token(installation);
+    if (!bearer.ok) {
+      return bearer;
+    }
+    const response = await request(path, bearer.value, 'GET');
+    if (response.status === 404) {
+      return fail('missing');
+    }
+    if (!response.ok) {
+      const pause = await limited(installation, response);
+      if (pause != null) {
+        return pause;
+      }
+      if (response.status === 401) {
+        if (tokens.get(installation)?.token === bearer.value) {
+          tokens.delete(installation);
+        }
+        return null;
+      }
+      if (response.status === 403) {
+        return fail('forbidden');
+      }
+      throw new GitHubError('upstream', response.status);
+    }
+    const body = await read(response);
+    const id = isRecord(body) ? body.id : undefined;
+    const name = isRecord(body) ? body.full_name : undefined;
+    if (!isId(id) || typeof name !== 'string' || !REPO.test(name)) {
+      throw new GitHubError('upstream', response.status);
+    }
+    const url = page(body)?.url;
+    return { ok: true, value: { id, name, ...(url != null && { url }) } };
+  }
+
+  async function repository(installation: number, repo: string): Promise<Reply<Repository>> {
+    if (!isId(installation)) {
+      return fail('missing');
+    }
+    const [owner, name] = repo.split('/');
+    if (!REPO.test(repo) || !isPathSegment(owner) || !isPathSegment(name)) {
+      return fail('missing');
+    }
+    const resume = cooldowns.get(installation);
+    if (resume != null) {
+      const wait = resume - now();
+      if (wait > 0) {
+        return fail('limited', wait);
+      }
+      cooldowns.delete(installation);
+    }
+    const path = `/repos/${owner}/${name}`;
+    return (
+      (await read1(installation, path)) ?? (await read1(installation, path)) ?? fail('credential')
+    );
+  }
+
   async function access(installation: number, repo: string, login: string): Promise<Reply<Access>> {
     if (!isId(installation)) {
       return fail('missing');
@@ -405,7 +482,7 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     return { ok: true, value };
   }
 
-  /** The app's page, only when GitHub names one on the configured host over HTTPS. */
+  /** A page GitHub names (the app's or a repository's), only on the configured host over HTTPS. */
   function page(body: unknown): About | null {
     if (!isRecord(body) || typeof body.html_url !== 'string') {
       return null;
@@ -538,5 +615,5 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     return { ok: true, value: false };
   }
 
-  return { access, about, installation, owns };
+  return { access, about, installation, owns, repository };
 }

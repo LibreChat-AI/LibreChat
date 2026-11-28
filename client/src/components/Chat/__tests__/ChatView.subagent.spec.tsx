@@ -87,6 +87,7 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('../Input/ConversationStarters', () => () => null);
+jest.mock('../Watching', () => ({ __esModule: true, default: () => null }));
 jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode }) => (
   <>{children}</>
 ));

@@ -2465,6 +2465,7 @@ export async function createRun({
   subagentUsageSink,
   subagentTasks,
   runFiles,
+  watch,
   steering,
   activityLabel,
   activityPhase,
@@ -2583,6 +2584,8 @@ export async function createRun({
   subagentTasks?: SubagentTaskConfig;
   /** Run-scoped file authorization and child context, supplied by the host. */
   runFiles?: RunFileSession;
+  /** The `watch` and `unwatch` tools for the agent whose conversation this run continues. */
+  watch?: { agentId: string; tools: GenericTool[] };
   /**
    * The run-scoped steer-drain hook (a `PostToolBatch` callback built via
    * `createSteerDrainHook`). Registered on the run's hook registry independent
@@ -3037,6 +3040,10 @@ export async function createRun({
     };
     if (runFilesActive && runFiles != null && (isSubagent || agent.subagents?.enabled === true)) {
       graphTools = [...(graphTools ?? []), ...createRunFileTools(runFiles, agent.id, signal)];
+    }
+    // Following a pull request continues this conversation, so only its own agent is offered it.
+    if (watch != null && !isSubagent && agent.id === watch.agentId) {
+      graphTools = [...(graphTools ?? []), ...watch.tools];
     }
     if (graphTools) {
       /**

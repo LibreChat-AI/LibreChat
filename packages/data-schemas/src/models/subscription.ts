@@ -19,8 +19,10 @@ import type {
 import type { Model, Types } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
-export interface SubscriptionRecord extends Omit<Subscription, 'user' | 'suspended'> {
+export interface SubscriptionRecord extends Omit<Subscription, 'user' | 'suspended' | 'watch'> {
   user: Types.ObjectId;
+  /** Absent on a subscription stored before watching existed. */
+  watch?: boolean;
   /** Set by the server when it turns the subscription off; cleared when the owner turns it on. */
   suspended?: Omit<SubscriptionSuspension, 'at'> & { at: Date };
   /** How many of its runs have failed in a row. Absent before the first failure. */
@@ -76,6 +78,8 @@ export function createAgentEventSubscriptionModel(
         validate: within(subscriptionWindowSchema),
       },
       enabled: { type: Boolean, required: true },
+      /** Absent on a subscription stored before watching existed, which reads as `false`. */
+      watch: Boolean,
       /** Moved only by an owner's edit, so a run can tell it started under an older one. */
       revision: { type: Number, required: true },
       grant: {

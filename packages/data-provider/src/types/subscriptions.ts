@@ -81,6 +81,8 @@ export const subscriptionCreateSchema = z
     cap: subscriptionCapSchema.optional(),
     window: subscriptionWindowSchema.optional(),
     enabled: z.boolean().default(true),
+    /** Whether the agent may follow a pull request from a conversation under this subscription. */
+    watch: z.boolean().default(false),
   })
   .strict();
 export type SubscriptionCreate = z.infer<typeof subscriptionCreateSchema>;
@@ -139,6 +141,8 @@ export interface Subscription {
   cap?: SubscriptionCap;
   window?: SubscriptionWindow;
   enabled: boolean;
+  /** Whether the agent may follow a pull request from a conversation under this subscription. */
+  watch: boolean;
   /** Moves forward with every edit, so a run can tell it started under an older one. */
   revision: number;
   /** Present while the server holds it turned off. */

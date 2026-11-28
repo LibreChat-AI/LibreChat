@@ -4467,6 +4467,16 @@ export function createConversationMethods(
         await eraseResponses(wave);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
         if (result.deletedCount > 0) {
+          /** A deleted conversation can be continued by nothing, so its watches end with it. A
+           * watch left behind by a failure here refuses its next event and expires on its own. */
+          try {
+            await mongoose.models.AgentEventWatch?.deleteMany({
+              user,
+              conversationId: { $in: waveIds },
+            });
+          } catch (error) {
+            logger.error('[deleteConvos] Watch removal deferred to expiry', error);
+          }
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
            * retained conversation cannot lose a receipt-only completion. */

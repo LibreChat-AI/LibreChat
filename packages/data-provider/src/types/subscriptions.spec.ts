@@ -28,6 +28,7 @@ describe('subscriptionCreateSchema', () => {
       target: 'new',
       bots: false,
       enabled: true,
+      watch: false,
     });
   });
 
@@ -41,6 +42,7 @@ describe('subscriptionCreateSchema', () => {
       cap: { perHour: 5 },
       window: { ms: 60_000 },
       enabled: false,
+      watch: true,
     };
     expect(subscriptionCreateSchema.parse(full)).toEqual(full);
   });

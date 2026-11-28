@@ -1,8 +1,16 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { Permissions, PermissionTypes } = require('librechat-data-provider');
-const { createConnections, createSubscriptions } = require('@librechat/data-schemas');
-const { generateCheckAccess, createSubscriptionHandlers } = require('@librechat/api');
+const {
+  createWatches,
+  createConnections,
+  createSubscriptions,
+} = require('@librechat/data-schemas');
+const {
+  generateCheckAccess,
+  createWatchHandlers,
+  createSubscriptionHandlers,
+} = require('@librechat/api');
 const { resolveAgentFireAccess } = require('~/server/services/Schedules/access');
 const { requireJwtAuth } = require('~/server/middleware');
 const { getRoleByName } = require('~/models');
@@ -30,6 +38,11 @@ const handlers = createSubscriptionHandlers({
   grants: () => require('~/server/services/Events/subject').service,
 });
 
+const watches = createWatchHandlers({
+  watches: createWatches(mongoose),
+  subscriptions: createSubscriptions(mongoose),
+});
+
 router.get('/connections', checkUse, handlers.connections);
 router.get('/subscriptions', checkUse, handlers.list);
 router.post('/subscriptions', checkCreate, handlers.create);
@@ -38,5 +51,7 @@ router.delete('/subscriptions/:id', checkUse, handlers.remove);
 router.get('/subscriptions/:id/grant', checkUse, handlers.grant.get);
 router.post('/subscriptions/:id/grant', checkCreate, handlers.grant.confirm);
 router.delete('/subscriptions/:id/grant', checkUse, handlers.grant.revoke);
+router.get('/watches', checkUse, watches.list);
+router.delete('/watches/:id', checkUse, watches.remove);
 
 module.exports = router;

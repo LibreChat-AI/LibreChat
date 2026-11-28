@@ -12,6 +12,7 @@ import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from '~/agents/memory';
 import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
+import { WATCH_TOOLS } from '~/agents/events/controls';
 import { RunGrantPolicyError } from './policy';
 
 const MEMORY_TOOL_NAMES = new Set<string>([SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME]);
@@ -161,13 +162,15 @@ export function createRunPolicy(
   /**
    * Tools the host or the SDK adds to a run, which no owner selects and no grant lists. The
    * background poll is one: a run that may send work to the background must be able to ask
-   * what became of it.
+   * what became of it. Watching is another: the host offers it only when the owner let the
+   * subscription watch, and it acts only on this conversation's own watches.
    */
   const controls = new Set<string>([
     Constants.SUBAGENT,
     Constants.TOOL_SEARCH,
     ASK_USER_QUESTION_TOOL_NAME,
     CHECK_BACKGROUND_TASK_NAME,
+    ...WATCH_TOOLS,
   ]);
   /**
    * Whether the grant lists this tool of the agent's, one that is not an MCP tool. Some items

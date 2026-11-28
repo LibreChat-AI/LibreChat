@@ -108,6 +108,7 @@ describe('create', () => {
       actors: 'write',
       bots: false,
       enabled: true,
+      watch: false,
       revision: 0,
     });
     const rows = await stored();
@@ -212,6 +213,32 @@ describe('create', () => {
       await manual.connection.dropDatabase();
       await manual.disconnect();
     }
+  });
+});
+
+describe('watch', () => {
+  it('stores whether the agent may follow pull requests, reading a row without it as no', async () => {
+    const allowed = await made(owner, { watch: true });
+    expect(allowed.watch).toBe(true);
+    const plain = await made();
+    await runAsSystem(async () => Rows.updateOne({ id: plain.id }, { $unset: { watch: 1 } }));
+    expect((await read(plain.id))?.watch).toBe(false);
+  });
+
+  it('lets the owner turn it on without moving the grant behind the revision', async () => {
+    const subscription = await made();
+    await runAsSystem(async () =>
+      Rows.updateOne(
+        { id: subscription.id },
+        { $set: { grant: { scheduleRevision: subscription.revision } } },
+      ),
+    );
+    const result = await edit(subscription.id, { watch: true });
+    if (!result.ok) throw new Error('expected the edit to apply');
+    expect(result.value.watch).toBe(true);
+    const [row] = await stored();
+    expect(row.revision).toBe(1);
+    expect((row.grant as { scheduleRevision?: number } | undefined)?.scheduleRevision).toBe(1);
   });
 });
 

@@ -13,7 +13,11 @@ const {
   completePromotedSteerHandoff,
   AGENT_QUEUED_TURN_SOURCE,
   GenerationJobManager,
+  SUBSCRIPTION_SOURCE,
+  createWatchContinueResolver,
 } = require('@librechat/api');
+const mongoose = require('mongoose');
+const { createWatches, createSubscriptions } = require('@librechat/data-schemas');
 const methods = require('~/models');
 
 const getGenerationAdmissionEvidence = (userId, clientRequestId, streamId, conversationId) =>
@@ -53,6 +57,12 @@ const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupReso
   ),
   getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
+const watchContinueAdapter = createWatchContinueResolver({
+  watches: createWatches(mongoose),
+  subscriptions: createSubscriptions(mongoose),
+  getMessages: methods.getMessages,
+  getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+});
 const eventActorAdapter = createAgentEventContinueResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
@@ -86,6 +96,7 @@ service = createAgentTriggerService({
       [BACKGROUND_TOOL_COMPLETION_SOURCE, backgroundToolCompletionAdapter],
       [AGENT_QUEUED_TURN_SOURCE, queuedTurnLifecycle.prepareContinue],
     ]),
+    sources: new Map([[SUBSCRIPTION_SOURCE, watchContinueAdapter]]),
   }),
 });
 

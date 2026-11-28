@@ -5107,6 +5107,7 @@ class AgentClient extends BaseClient {
           ),
           subagentTasks: this.options.subagentTasks,
           runFiles: this.options.runFiles,
+          watch: this.options.watch,
         }).then((createdRun) => {
           if (!createdRun) {
             throw new Error('Failed to create run');
@@ -5917,6 +5918,7 @@ class AgentClient extends BaseClient {
         ),
         subagentTasks: this.options.subagentTasks,
         runFiles: this.options.runFiles,
+        watch: this.options.watch,
       });
 
       if (!run) {

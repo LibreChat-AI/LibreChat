@@ -13,18 +13,36 @@ import { AgentTriggerExecutionError } from './host';
 
 type ContinueResolver = NonNullable<AgentTriggerExecutionHostDeps['prepareContinue']>;
 
+/** What a continuation reads of the conversation's generation before it appends a turn. */
+export interface ContinueGenerationState {
+  status?: string;
+  createdAt?: number;
+  metadata?: { terminalPersistencePending?: boolean };
+}
+
+/**
+ * True while the conversation is not ready for another turn: a generation still running or
+ * waiting on approval, or one that has claimed its terminal status but not yet written its
+ * response, whose reply the history does not hold yet. `ownsTerminalWake` excuses the turn
+ * that pending persistence is waiting to wake.
+ */
+export function generationBusy(
+  active: ContinueGenerationState | null | undefined,
+  ownsTerminalWake = false,
+): boolean {
+  return (
+    active?.status === 'running' ||
+    active?.status === 'requires_action' ||
+    (active?.metadata?.terminalPersistencePending === true && !ownsTerminalWake)
+  );
+}
+
 export interface AgentEventContinueResolverDeps {
   methods: Pick<ConversationMethods, 'getAgentEventBinding' | 'getConvo'> &
     Pick<MessageMethods, 'getMessages'>;
-  getGenerationJob?: (conversationId: string) => Promise<
-    | {
-        status?: string;
-        createdAt?: number;
-        metadata?: { terminalPersistencePending?: boolean };
-      }
-    | null
-    | undefined
-  >;
+  getGenerationJob?: (
+    conversationId: string,
+  ) => Promise<ContinueGenerationState | null | undefined>;
 }
 
 function invalidBinding(message: string, retryable = false): AgentTriggerExecutionError {
@@ -121,11 +139,7 @@ export function createAgentEventContinueResolver({
       const ownsTerminalWake =
         detachedCompletion != null &&
         active?.createdAt === detachedCompletion.wakeGenerationCreatedAt;
-      if (
-        active?.status === 'running' ||
-        active?.status === 'requires_action' ||
-        (active?.metadata?.terminalPersistencePending === true && !ownsTerminalWake)
-      ) {
+      if (generationBusy(active, ownsTerminalWake)) {
         throw new AgentTriggerExecutionError('The event actor is still handling an earlier turn.', {
           mode: 'continue',
           certainty: 'definite',

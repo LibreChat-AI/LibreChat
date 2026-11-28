@@ -132,6 +132,7 @@ const { logViolation } = require('~/cache');
 const db = require('~/models');
 const { getFileStorage } = require('~/server/services/Files/operations');
 const { getAppConfig } = require('~/server/services/Config');
+const resolveWatchTools = require('~/server/services/Events/watch');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { encodeAndFormat } = require('~/server/services/Files/images/encode');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -2144,6 +2145,7 @@ const initializeClientWithProvider = async ({
     subagentAggregatorsByToolCallId,
     subagentTasks,
     runFiles: runFileBindings.session,
+    watch: await resolveWatchTools({ user: req.user, agentId: primaryConfig.id, conversationId }),
     sdkFiles: createChatSdkFileSession({
       audit: (event) => logger.warn('[agents:sdk-files]', event),
       host: req.app?.locals?.sdkFileHost,

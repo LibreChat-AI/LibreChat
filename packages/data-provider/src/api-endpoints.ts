@@ -590,6 +590,9 @@ export const agentEventSubscriptions = (agentId?: string) =>
 export const agentEventSubscription = (id: string) =>
   `${agentEvents()}/subscriptions/${encodeURIComponent(id)}`;
 export const agentEventSubscriptionGrant = (id: string) => `${agentEventSubscription(id)}/grant`;
+export const agentEventWatches = (conversationId: string) =>
+  `${agentEvents()}/watches${buildQuery({ conversationId })}`;
+export const agentEventWatch = (id: string) => `${agentEvents()}/watches/${encodeURIComponent(id)}`;
 
 /* Skills */
 export const skills = () => `${BASE_URL}/api/skills`;

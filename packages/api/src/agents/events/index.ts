@@ -5,3 +5,4 @@ export * from './provider';
 export * from './route';
 export * from './settings';
 export * from './github';
+export * from './watch';

@@ -222,6 +222,7 @@ async function callAndCapture(
     requestBody?: Parameters<typeof createRun>[0]['requestBody'];
     steering?: Parameters<typeof createRun>[0]['steering'];
     customHandlers?: Parameters<typeof createRun>[0]['customHandlers'];
+    watch?: Parameters<typeof createRun>[0]['watch'];
   } = {},
 ) {
   const agents = opts.agents ?? [makeAgent()];
@@ -244,6 +245,7 @@ async function callAndCapture(
     requestBody: opts.requestBody,
     steering: opts.steering,
     customHandlers: opts.customHandlers,
+    watch: opts.watch,
     streaming: true,
     streamUsage: true,
   });
@@ -303,6 +305,20 @@ beforeEach(() => {
   delete process.env.LANGFUSE_TRACING_ENABLED;
   delete process.env.LANGFUSE_SAMPLE_RATE;
   process.env.TENANT_ISOLATION_STRICT = 'true';
+});
+
+describe('watch tools', () => {
+  it("gives the watch tools to the conversation's own agent and to no other", async () => {
+    const tools = [{ name: 'watch' }, { name: 'unwatch' }] as never;
+    const agents = await callAndCapture({
+      agents: [makeAgent({ id: 'agent_1' }), makeAgent({ id: 'agent_2' })],
+      watch: { agentId: 'agent_1', tools },
+    });
+    const names = (agent: Record<string, unknown>) =>
+      ((agent.graphTools as Array<{ name: string }> | undefined) ?? []).map((tool) => tool.name);
+    expect(names(agents[0])).toEqual(['watch', 'unwatch']);
+    expect(names(agents[1])).toEqual([]);
+  });
 });
 
 describe('compaction semantic index forwarding', () => {

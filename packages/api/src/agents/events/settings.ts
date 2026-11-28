@@ -82,6 +82,25 @@ export function eventSettings(
   };
 }
 
+/** How a conversation may follow pull requests. */
+export interface WatchSettings {
+  /** Most items one conversation may follow at once. */
+  max: number;
+  /** How long a new or renewed watch lasts. */
+  ttlMs: number;
+}
+
+export const WATCH_DEFAULTS: WatchSettings = { max: 5, ttlMs: 14 * 24 * 60 * 60 * 1000 };
+
+/** The watch bounds `endpoints.agents.events.watch` sets, each default where it sets none. */
+export function watchSettings(config: Partial<EventConfig> | null | undefined): WatchSettings {
+  const watch = config?.watch;
+  return {
+    max: watch?.maxPerConversation ?? WATCH_DEFAULTS.max,
+    ttlMs: watch?.ttlDays != null ? watch.ttlDays * 24 * 60 * 60 * 1000 : WATCH_DEFAULTS.ttlMs,
+  };
+}
+
 /** How a subscription's runs are bounded and kept. */
 export interface RunSettings {
   /** Runs per clock hour for a subscription whose owner set no cap. */

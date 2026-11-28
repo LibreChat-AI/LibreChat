@@ -279,6 +279,48 @@ describe('createAgentTriggerExecutionHost fire adapter', () => {
     expect((await body(createFireEnvelope())).agentTrigger).not.toHaveProperty('detail');
   });
 
+  it("carries a subscription's event on a continuation a watch queued, and no other's", async () => {
+    const event = {
+      type: 'github.issue_comment.created',
+      repo: { id: 4242, name: 'acme/widgets' },
+    };
+    const continued = (source: { id: string; type: string }, payload?: typeof event) =>
+      createAgentTriggerEnvelope({
+        mode: 'continue',
+        requestId: 'request-watch',
+        deliveryId: 'delivery-watch',
+        receivedAt: 20,
+        principal: { id: 'user-1', role: 'member', tenantId: 'tenant-1' },
+        target: {
+          agentId: 'agent-1',
+          conversationId: 'conversation-1',
+          parentMessageId: 'reply-1',
+        },
+        event: { id: 'event-watch', type: event.type, occurredAt: 10, source, payload },
+        input: 'Read the comment.',
+      });
+    const body = async (sent: ReturnType<typeof continued>) => {
+      const fetcher = fetchMock(async () =>
+        response({
+          streamId: 'stream-1',
+          conversationId: 'conversation-1',
+          generationCreatedAt: 40,
+          status: 'started',
+        }),
+      );
+      await createAgentTriggerExecutionHost(deps(fetcher)).dispatch(sent);
+      const [, init] = fetcher.mock.calls[0];
+      return JSON.parse(String(init?.body)) as { agentEvent: { detail?: unknown } };
+    };
+
+    expect(
+      (await body(continued({ id: 'sub_1', type: 'subscription' }, event))).agentEvent.detail,
+    ).toEqual(event);
+    expect(
+      (await body(continued({ id: 'hook-1', type: 'webhook' }, event))).agentEvent,
+    ).not.toHaveProperty('detail');
+  });
+
   it('reuses the same generation identity when an ambiguous delivery is retried', async () => {
     const envelope = createFireEnvelope();
     const fetcher = fetchMock(
