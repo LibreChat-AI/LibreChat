@@ -406,8 +406,9 @@ function comments(text: string, serialized: boolean): Map<number, number> {
 
 /** Whether the solidus at `index` closes a `scheme://`, after which a URL authority starts. */
 function authority(text: string, index: number): boolean {
+  const limit = Math.max(0, index - MAX_PART);
   let cursor = index;
-  while (cursor > 0 && text.charCodeAt(cursor - 1) === SLASH) {
+  while (cursor > limit && text.charCodeAt(cursor - 1) === SLASH) {
     cursor--;
   }
   return cursor < index && text.charCodeAt(cursor - 1) === COLON;
@@ -489,7 +490,13 @@ function local(
     if (!(flags & LOCAL) || (encoded && flags & URL)) {
       break;
     }
-    if (point === SLASH && !encoded && authority(text, start - 1)) {
+    /** A run of solidi is checked once, at its last one: the rest were part of that check. */
+    if (
+      point === SLASH &&
+      !encoded &&
+      text.charCodeAt(start) !== SLASH &&
+      authority(text, start - 1)
+    ) {
       break;
     }
     start -= size;

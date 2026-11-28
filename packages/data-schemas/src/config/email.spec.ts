@@ -340,6 +340,8 @@ describe('maskEmails bounds', () => {
     ['backslash runs before quotes', ('\\'.repeat(1000) + '"@').repeat(100)],
     ['escaped quotes in quoted words', ('"' + 'a\\"'.repeat(1000) + '"@').repeat(50)],
     ['emoji before at signs', '😀@'.repeat(30_000)],
+    ['a solidus run before an at sign', `${'/'.repeat(MAX_PART)}@example.com`],
+    ['solidus runs before at signs', `${'/'.repeat(2000)}a@example.com `.repeat(20)],
   ])('reads each character a bounded number of times on %s', (_label, flood) => {
     expect(reads(() => maskEmails(flood))).toBeLessThan(flood.length * READS_PER_CHAR);
   });
