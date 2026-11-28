@@ -75,22 +75,12 @@
       "count": 2
     }
   },
-  "client/src/components/Chat/Input/Files/Table/ColumnVisibilityDropdown.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/Files/Table/Columns.tsx": {
-    "shadcn/no-restyle": {
-      "count": 18
-    }
-  },
   "client/src/components/Chat/Input/Files/Table/DataTable.tsx": {
     "design/disabled-recipe": {
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 9
     }
   },
   "client/src/components/Chat/Input/MCPConfigDialog.tsx": {

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { FileSources } from 'librechat-data-provider';
+import { FileContext, FileSources } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
 
@@ -22,7 +22,8 @@ const files: TFile[] = Array.from({ length: FILE_COUNT }, (_, index) => ({
   user: 'virtual-files-user',
   bytes: 100,
   object: 'file',
-  source: FileSources.local,
+  source: index === 0 ? FileSources.azure : FileSources.local,
+  context: FileContext.message_attachment,
   type: 'text/plain',
   usage: 0,
   embedded: false,
@@ -42,13 +43,15 @@ async function openMyFiles(page: Page) {
   return { dialog, table };
 }
 
-/** Wheels over the table until the last row is mounted, as a user scrolling down would. */
+/** Wheels over the table until the last row enters the viewport, as a user scrolling down would. */
 async function scrollToLastRow(page: Page, table: ReturnType<Page['getByRole']>) {
   const lastRow = table.locator(`tbody tr[aria-rowindex="${FILE_COUNT + 1}"]`);
   await table.hover();
-  for (let attempt = 0; attempt < 80 && (await lastRow.count()) === 0; attempt++) {
+  // Overscan mounts rows before they enter the visible scroll region.
+  await expect(async () => {
     await page.mouse.wheel(0, 1200);
-  }
+    await expect(lastRow).toBeInViewport({ timeout: 200 });
+  }).toPass({ intervals: [50], timeout: 15_000 });
   return lastRow;
 }
 
@@ -110,4 +113,43 @@ test('confirming deletes only the selected file after cancel @scenario:my-files-
   await confirmation.getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(row).toHaveCount(0);
   expect(requests).toEqual([[files[1].file_id]]);
+});
+
+test('filters and sorts files without scrolling the surrounding dialog @scenario:my-files-layout', async ({
+  page,
+}) => {
+  const { dialog, table } = await openMyFiles(page);
+  const search = dialog.locator('#files-filter');
+  await expect(search).toBeFocused();
+  await expect(dialog.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Filters', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Storage', exact: true })).toBeVisible();
+  await page.getByRole('menuitemcheckbox', { name: 'Azure', exact: true }).click();
+  await expect(table.getByRole('row')).toHaveCount(2);
+  await expect(table.getByRole('row').last()).toContainText(files[0].filename);
+  await dialog.getByRole('button', { name: 'Filters active: 1' }).click();
+  await page.getByRole('menuitem', { name: 'Clear filters' }).click();
+  await dialog.getByRole('button', { name: 'Sort', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Z to A' }).click();
+  await expect(table.locator('tbody tr[aria-rowindex="2"]')).toContainText(
+    files[FILE_COUNT - 1].filename,
+  );
+  await search.fill('missing-name');
+  await expect(table).toContainText('No results.');
+  await table.getByRole('button', { name: 'Clear filters' }).click();
+  const desktop = await dialog.boundingBox();
+  expect(desktop!.width).toBeLessThanOrEqual(896);
+  expect(desktop!.height).toBeLessThanOrEqual(673);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(table.getByRole('columnheader', { name: 'Size' })).toHaveCount(0);
+  await expect(table.locator('tbody tr[aria-rowindex="2"]')).toContainText('100 B');
+  const scrollers = await dialog.evaluate(
+    (node) =>
+      [node, ...node.querySelectorAll('*')].filter(
+        (el) =>
+          el.scrollHeight > el.clientHeight &&
+          /^(auto|scroll)$/.test(getComputedStyle(el).overflowY),
+      ).length,
+  );
+  expect(scrollers).toBe(1);
 });

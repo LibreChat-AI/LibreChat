@@ -1,22 +1,19 @@
-/* eslint-disable react-hooks/rules-of-hooks */
+import { useMemo } from 'react';
+import { File } from 'lucide-react';
+import { atom, useAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
-import { FileSources, FileContext } from 'librechat-data-provider';
-import { ArrowUpDown, ArrowUp, ArrowDown, Database } from 'lucide-react';
-import { ImagePreview, FilePreview, getFileType } from '@librechat/chat/components';
-import {
-  Button,
-  Checkbox,
-  useMediaQuery,
-  TooltipAnchor,
-  AzureMinimalIcon,
-  OpenAIMinimalIcon,
-} from '@librechat/client';
+import { ImagePreview } from '@librechat/chat/components';
+import { FileContext, FileSources } from 'librechat-data-provider';
+import { Checkbox, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type { ColumnDef } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
-import { TranslationKeys, useLocalize } from '~/hooks';
-import { SortFilterHeader } from './SortFilterHeader';
+import type { TranslationKeys } from '~/hooks';
+import { formatFileSize } from '~/utils';
+import { useLocalize } from '~/hooks';
 
-const contextMap: Record<any, TranslationKeys> = {
+export const labels: Partial<Record<string, TranslationKeys>> = {
+  [FileContext.agents]: 'com_ui_agents',
+  [FileContext.skill_file]: 'com_ui_skills',
   [FileContext.avatar]: 'com_ui_avatar',
   [FileContext.unknown]: 'com_ui_unknown',
   [FileContext.assistants]: 'com_ui_assistants',
@@ -24,279 +21,135 @@ const contextMap: Record<any, TranslationKeys> = {
   [FileContext.assistants_output]: 'com_ui_assistants_output',
   [FileContext.message_attachment]: 'com_ui_attachment',
   [FileContext.run_artifact]: 'com_ui_published_file',
+  [FileSources.azure]: 'com_ui_azure',
+  [FileSources.openai]: 'com_ui_openai',
+  [FileSources.local]: 'com_ui_host',
 };
 
-export const columns: ColumnDef<TFile>[] = [
-  {
-    id: 'select',
-    size: 40,
-    header: ({ table }) => {
-      const localize = useLocalize();
-      return (
+function Filename({ file, detail }: { file: TFile; detail: string }) {
+  const localize = useLocalize();
+  const image = file.type?.startsWith('image/') ? file.preview || file.filepath : undefined;
+  const failure = useMemo(() => atom<string | undefined>(undefined), []);
+  const [failedImage, setFailedImage] = useAtom(failure);
+  const contextLabel = file.context && labels[file.context];
+  const index = file.filename.lastIndexOf('.');
+  const extension = index > 0 && index < file.filename.length - 1 ? file.filename.slice(index) : '';
+  const stem = extension ? file.filename.slice(0, index) : file.filename;
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      {image && image !== failedImage ? (
+        <span className="shrink-0" onErrorCapture={() => setFailedImage(image)}>
+          <ImagePreview
+            url={image}
+            source={file.source}
+            alt={file.filename}
+            className="size-9 shrink-0"
+          />
+        </span>
+      ) : (
+        <span
+          aria-hidden="true"
+          className="bg-surface-secondary text-text-secondary flex size-9 shrink-0 items-center justify-center rounded-lg text-xs font-semibold"
+        >
+          {extension.length > 1 && extension.length <= 5 ? (
+            extension.slice(1).toUpperCase()
+          ) : (
+            <File className="size-4" />
+          )}
+        </span>
+      )}
+      <div className="min-w-0">
         <TooltipAnchor
-          description={localize('com_ui_select_all')}
-          side="top"
-          role="checkbox"
+          description={file.filename}
           render={
-            <Checkbox
-              checked={
-                table.getIsAllPageRowsSelected() ||
-                (table.getIsSomePageRowsSelected() && 'indeterminate')
-              }
-              onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
-              aria-label={localize('com_ui_select_all')}
-              className="flex"
-            />
-          }
-        />
-      );
-    },
-    cell: ({ row }) => {
-      const localize = useLocalize();
-      return (
-        <Checkbox
-          checked={row.getIsSelected()}
-          onCheckedChange={(value) => row.toggleSelected(!!value)}
-          aria-label={localize('com_ui_select_row')}
-          className="flex"
-        />
-      );
-    },
-    enableSorting: false,
-    enableHiding: false,
-  },
-  {
-    meta: {
-      size: '150px',
-    },
-    accessorKey: 'filename',
-    header: ({ column }) => {
-      const localize = useLocalize();
-      const sortState = column.getIsSorted();
-      let SortIcon = ArrowUpDown;
-      let ariaSort: 'ascending' | 'descending' | 'none' = 'none';
-      if (sortState === 'desc') {
-        SortIcon = ArrowDown;
-        ariaSort = 'descending';
-      } else if (sortState === 'asc') {
-        SortIcon = ArrowUp;
-        ariaSort = 'ascending';
-      }
-      return (
-        <TooltipAnchor
-          description={localize('com_ui_name_sort')}
-          side="top"
-          render={
-            <Button
-              variant="ghost"
-              className="px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
-              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-              aria-sort={ariaSort}
-              aria-label={localize('com_ui_name_sort')}
-              aria-hidden="true"
-              aria-current={sortState ? 'true' : 'false'}
+            <span
+              tabIndex={0}
+              aria-label={file.filename}
+              className="flex max-w-full items-baseline"
             >
-              {localize('com_ui_name')}
-              <SortIcon className="ms-2 h-3 w-4 sm:h-4 sm:w-4" />
-            </Button>
+              <span className="truncate">{stem}</span>
+              <span className="max-w-[45%] shrink-0 truncate">{extension}</span>
+            </span>
           }
         />
-      );
-    },
-    cell: ({ row }) => {
-      const file = row.original;
-      if (file.type?.startsWith('image')) {
-        return (
-          <div className="flex gap-2">
-            <ImagePreview
-              url={file.filepath}
-              className="relative h-10 w-10 shrink-0 overflow-visible rounded-md"
-              source={file.source}
-            />
-            <span className="self-center truncate">{file.filename}</span>
-          </div>
-        );
-      }
+        {file.context && file.context !== FileContext.unknown && (
+          <span className="text-text-secondary block truncate text-xs">
+            {contextLabel ? localize(contextLabel) : file.context}
+          </span>
+        )}
+        {detail && <span className="text-text-secondary block truncate text-xs">{detail}</span>}
+      </div>
+    </div>
+  );
+}
 
-      const fileType = getFileType(file.type);
-      return (
-        <div className="flex gap-2">
-          {fileType && <FilePreview fileType={fileType} className="relative" file={file} />}
-          <span className="self-center truncate">{file.filename}</span>
-        </div>
-      );
-    },
-  },
-  {
-    accessorKey: 'updatedAt',
-    header: ({ column }) => {
-      const localize = useLocalize();
-      const sortState = column.getIsSorted();
-      let SortIcon = ArrowUpDown;
-      let ariaSort: 'ascending' | 'descending' | 'none' = 'none';
-      if (sortState === 'desc') {
-        SortIcon = ArrowDown;
-        ariaSort = 'descending';
-      } else if (sortState === 'asc') {
-        SortIcon = ArrowUp;
-        ariaSort = 'ascending';
-      }
-      return (
-        <TooltipAnchor
-          description={localize('com_ui_date_sort')}
-          side="top"
-          render={
-            <Button
-              variant="ghost"
-              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-              className="px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
-              aria-sort={ariaSort}
-              aria-label={localize('com_ui_date_sort')}
-              aria-hidden="true"
-              aria-current={sortState ? 'true' : 'false'}
-            >
-              {localize('com_ui_date')}
-              <SortIcon className="ms-2 h-3 w-4 sm:h-4 sm:w-4" />
-            </Button>
-          }
-        />
-      );
-    },
-    cell: ({ row }) => {
-      const isSmallScreen = useMediaQuery('(max-width: 768px)');
-      const { i18n } = useTranslation();
-      const date = new Date(row.original.updatedAt?.toString() ?? '');
-      return Number.isNaN(date.getTime())
-        ? ''
-        : date.toLocaleDateString(i18n.language, {
-            day: 'numeric',
-            month: isSmallScreen ? 'numeric' : 'short',
-            year: isSmallScreen ? '2-digit' : 'numeric',
-          });
-    },
-  },
-  {
-    accessorKey: 'filterSource',
-    header: ({ column }) => {
-      const localize = useLocalize();
-      return (
-        <SortFilterHeader
-          column={column}
-          title={localize('com_ui_storage')}
-          ariaLabel={localize('com_ui_storage_filter_sort')}
-          filters={{
-            Storage: Object.values(FileSources).filter(
-              (value) =>
-                value === FileSources.local ||
-                value === FileSources.openai ||
-                value === FileSources.azure,
-            ),
-          }}
-          valueMap={{
-            [FileSources.azure]: 'com_ui_azure',
-            [FileSources.openai]: 'com_ui_openai',
-            [FileSources.local]: 'com_ui_host',
-          }}
-        />
-      );
-    },
-    cell: ({ row }) => {
-      const localize = useLocalize();
-      const { source } = row.original;
-      if (source === FileSources.openai) {
-        return (
-          <div className="flex flex-wrap items-center gap-2">
-            <OpenAIMinimalIcon className="icon-sm" />
-            {'OpenAI'}
-          </div>
-        );
-      } else if (source === FileSources.azure) {
-        return (
-          <div className="flex flex-wrap items-center gap-2">
-            <AzureMinimalIcon className="icon-sm" />
-            {'Azure'}
-          </div>
-        );
-      }
-      return (
-        <div className="flex flex-wrap items-center gap-2">
-          <Database className="icon-sm" aria-hidden="true" />
-          {localize('com_ui_host')}
-        </div>
-      );
-    },
-  },
-  {
-    accessorKey: 'context',
-    header: ({ column }) => {
-      const localize = useLocalize();
-      return (
-        <SortFilterHeader
-          column={column}
-          title={localize('com_ui_context')}
-          ariaLabel={localize('com_ui_context_filter_sort')}
-          filters={{
-            Context: Object.values(FileContext).filter(
-              (value) => value === FileContext[value ?? ''],
-            ),
-          }}
-          valueMap={contextMap}
-        />
-      );
-    },
-    cell: ({ row }) => {
-      const { context } = row.original;
-      const localize = useLocalize();
-      return (
-        <div className="flex flex-wrap items-center gap-2">
-          {localize(contextMap[context ?? FileContext.unknown])}
-        </div>
-      );
-    },
-  },
-  {
-    accessorKey: 'bytes',
-    header: ({ column }) => {
-      const localize = useLocalize();
-      const sortState = column.getIsSorted();
-      let SortIcon = ArrowUpDown;
-      let ariaSort: 'ascending' | 'descending' | 'none' = 'none';
-      if (sortState === 'desc') {
-        SortIcon = ArrowDown;
-        ariaSort = 'descending';
-      } else if (sortState === 'asc') {
-        SortIcon = ArrowUp;
-        ariaSort = 'ascending';
-      }
-      return (
-        <TooltipAnchor
-          description={localize('com_ui_size_sort')}
-          side="top"
-          render={
-            <Button
-              variant="ghost"
-              className="px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
-              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-              aria-sort={ariaSort}
-              aria-label={localize('com_ui_size_sort')}
-              aria-hidden="true"
-              aria-current={sortState ? 'true' : 'false'}
-            >
-              {localize('com_ui_size')}
-              <SortIcon className="ms-2 h-3 w-4 sm:h-4 sm:w-4" />
-            </Button>
-          }
-        />
-      );
-    },
-    cell: ({ row }) => {
-      const suffix = ' MB';
-      const value = Number((Number(row.original.bytes) / 1024 / 1024).toFixed(2));
-      if (value < 0.01) {
-        return '< 0.01 MB';
-      }
-
-      return `${value}${suffix}`;
-    },
-  },
-];
+export function useColumns(): ColumnDef<TFile>[] {
+  const localize = useLocalize();
+  const { i18n } = useTranslation();
+  const narrow = useMediaQuery('(max-width: 639px)');
+  return useMemo(() => {
+    const formatter = new Intl.DateTimeFormat(i18n.language, {
+      day: 'numeric',
+      month: narrow ? 'numeric' : 'short',
+      year: narrow ? '2-digit' : 'numeric',
+    });
+    function updated(file: TFile) {
+      const date = new Date(file.updatedAt ?? '');
+      return Number.isNaN(date.getTime()) ? '' : formatter.format(date);
+    }
+    return [
+      {
+        id: 'select',
+        size: 44,
+        enableSorting: false,
+        header: ({ table }) => (
+          <Checkbox
+            aria-label={localize('com_ui_select_all')}
+            checked={
+              table.getIsAllPageRowsSelected() ||
+              (table.getIsSomePageRowsSelected() && 'indeterminate')
+            }
+            onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            aria-label={localize('com_files_select_named', { 0: row.original.filename })}
+            checked={row.getIsSelected()}
+            onCheckedChange={(value) => row.toggleSelected(!!value)}
+          />
+        ),
+      },
+      {
+        accessorKey: 'filename',
+        header: localize('com_ui_name'),
+        cell: ({ row }) => (
+          <Filename
+            file={row.original}
+            detail={
+              narrow
+                ? [updated(row.original), formatFileSize(row.original.bytes)]
+                    .filter(Boolean)
+                    .join(' · ')
+                : ''
+            }
+          />
+        ),
+      },
+      {
+        accessorKey: 'updatedAt',
+        header: localize('com_ui_sort_updated'),
+        size: 145,
+        cell: ({ row }) => updated(row.original),
+      },
+      {
+        accessorKey: 'bytes',
+        header: localize('com_ui_size'),
+        size: 100,
+        cell: ({ row }) => formatFileSize(row.original.bytes),
+      },
+      { accessorKey: 'source', filterFn: 'equalsString' },
+      { accessorKey: 'context', filterFn: 'equalsString' },
+    ];
+  }, [localize, i18n.language, narrow]);
+}

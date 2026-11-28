@@ -1,5 +1,4 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import { FileContext } from 'librechat-data-provider';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   flexRender,
@@ -30,33 +29,17 @@ import {
   TableHeader,
   useMediaQuery,
 } from '@librechat/client';
-import type {
-  RowSelectionState,
-  ColumnDef,
-  SortingState,
-  VisibilityState,
-  ColumnFiltersState,
-} from '@tanstack/react-table';
+import type { RowSelectionState, SortingState, ColumnFiltersState } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
-import { ColumnVisibilityDropdown } from './ColumnVisibilityDropdown';
 import { useDeleteFilesFromTable } from '~/hooks/Files';
-import { useLocalize, TranslationKeys } from '~/hooks';
+import { useColumns } from './Columns';
+import { Controls } from './Controls';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
-interface DataTableProps<TData, TValue> {
-  columns: ColumnDef<TData, TValue>[];
-  data: TData[];
-}
+const sortLabels = { asc: 'ascending', desc: 'descending', none: undefined } as const;
 
-const ESTIMATED_ROW_HEIGHT = 52;
-
-const contextMap: Record<string, TranslationKeys> = {
-  [FileContext.filename]: 'com_ui_name',
-  [FileContext.updatedAt]: 'com_ui_date',
-  [FileContext.filterSource]: 'com_ui_storage',
-  [FileContext.context]: 'com_ui_context',
-  [FileContext.bytes]: 'com_ui_size',
-};
+const ESTIMATED_ROW_HEIGHT = 60;
 
 type Style = {
   width?: number | string;
@@ -65,10 +48,8 @@ type Style = {
   zIndex?: number;
 };
 
-export default function DataTable<TData extends TFile, TValue>({
-  columns,
-  data,
-}: DataTableProps<TData, TValue>) {
+export default function DataTable({ data }: { data: TFile[] }) {
+  const columns = useColumns();
   const localize = useLocalize();
   const [isDeleting, setIsDeleting] = useState(false);
   const [snapshot, setSnapshot] = useState<TFile[]>([]);
@@ -76,10 +57,10 @@ export default function DataTable<TData extends TFile, TValue>({
   const { deleteFiles } = useDeleteFilesFromTable();
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const [sorting, setSorting] = useState<SortingState>([{ id: 'updatedAt', desc: true }]);
+  const isSmallScreen = useMediaQuery('(max-width: 639px)');
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const table = useReactTable({
@@ -99,12 +80,16 @@ export default function DataTable<TData extends TFile, TValue>({
       setRowSelection({});
     },
     getFilteredRowModel: getFilteredRowModel(),
-    onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     state: {
       sorting,
       columnFilters,
-      columnVisibility,
+      columnVisibility: {
+        source: false,
+        context: false,
+        updatedAt: !isSmallScreen,
+        bytes: !isSmallScreen,
+      },
       rowSelection,
     },
   });
@@ -134,102 +119,106 @@ export default function DataTable<TData extends TFile, TValue>({
       : 0;
   const visibleColumnCount = table.getVisibleLeafColumns().length;
 
+  const selected = table.getFilteredSelectedRowModel().rows.length;
   return (
-    <div className="flex h-full flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-2 py-2 sm:gap-4 sm:py-4">
-        <AlertDialog
-          open={snapshot.length > 0}
-          onOpenChange={(open) =>
-            setSnapshot(
-              open ? table.getFilteredSelectedRowModel().rows.map((row) => row.original) : [],
-            )
-          }
-        >
-          <AlertDialogTrigger asChild>
-            <Button
-              variant="outline"
-              className={cn(
-                'min-w-[2.5rem] transition-all duration-200',
-                isSmallScreen && 'px-2 py-1',
-              )}
-              aria-label={localize('com_ui_delete')}
-              disabled={!table.getFilteredSelectedRowModel().rows.length || isDeleting}
-            >
-              {isDeleting ? (
-                <Spinner className="size-3.5 sm:size-4" />
-              ) : (
-                <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
-              )}
-              {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent className="w-11/12 max-w-md">
-            <AlertDialogHeader>
-              <AlertDialogTitle>{localize('com_ui_delete')}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {snapshot.length === 1
-                  ? localize('com_files_confirm_delete_named', { 0: snapshot[0].filename })
-                  : localize('com_files_confirm_delete_selection', { 0: String(snapshot.length) })}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{localize('com_ui_cancel')}</AlertDialogCancel>
-              <Button
-                variant="destructive"
-                disabled={isDeleting}
-                onClick={async () => {
-                  setSnapshot([]);
-                  setIsDeleting(true);
-                  setHasFailure(false);
-                  try {
-                    const failed = await deleteFiles(snapshot);
-                    setHasFailure(failed.size > 0);
-                    setRowSelection((current) => {
-                      const next = { ...current };
-                      for (const file of snapshot) {
-                        if (!failed.has(file.file_id)) {
-                          delete next[file.file_id];
-                        }
-                      }
-                      return next;
-                    });
-                  } finally {
-                    setIsDeleting(false);
-                  }
-                }}
-              >
-                {localize('com_ui_delete')}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <FilterInput
           inputId="files-filter"
           label={localize('com_files_filter')}
           value={(table.getColumn('filename')?.getFilterValue() as string | undefined) ?? ''}
           onChange={(event) => table.getColumn('filename')?.setFilterValue(event.target.value)}
           surface="dialog"
-          containerClassName="flex-1"
+          containerClassName="min-w-0 flex-1 basis-full sm:basis-0"
         />
-        <div className="relative focus-within:z-[100]">
-          <ColumnVisibilityDropdown
-            table={table}
-            contextMap={contextMap}
-            isSmallScreen={isSmallScreen}
-          />
-        </div>
+        <Controls table={table} />
       </div>
+      {(selected > 0 || snapshot.length > 0 || isDeleting) && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-text-secondary text-sm" role="status">
+            {localize('com_ui_selected_count', { count: selected })}
+          </span>
+          <Button variant="ghost" size="sm" onClick={() => setRowSelection({})}>
+            {localize('com_ui_clear')}
+          </Button>
+          <AlertDialog
+            open={snapshot.length > 0}
+            onOpenChange={(open) =>
+              setSnapshot(
+                open ? table.getFilteredSelectedRowModel().rows.map((row) => row.original) : [],
+              )
+            }
+          >
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={localize('com_ui_delete')}
+                disabled={!table.getFilteredSelectedRowModel().rows.length || isDeleting}
+              >
+                {isDeleting ? (
+                  <Spinner className="size-3.5 sm:size-4" />
+                ) : (
+                  <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
+                )}
+                {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent className="w-11/12 max-w-md">
+              <AlertDialogHeader>
+                <AlertDialogTitle>{localize('com_ui_delete')}</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {snapshot.length === 1
+                    ? localize('com_files_confirm_delete_named', { 0: snapshot[0].filename })
+                    : localize('com_files_confirm_delete_selection', {
+                        0: String(snapshot.length),
+                      })}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{localize('com_ui_cancel')}</AlertDialogCancel>
+                <Button
+                  variant="destructive"
+                  disabled={isDeleting}
+                  onClick={async () => {
+                    setSnapshot([]);
+                    setIsDeleting(true);
+                    setHasFailure(false);
+                    try {
+                      const failed = await deleteFiles(snapshot);
+                      setHasFailure(failed.size > 0);
+                      setRowSelection((current) => {
+                        const next = { ...current };
+                        for (const file of snapshot) {
+                          if (!failed.has(file.file_id)) {
+                            delete next[file.file_id];
+                          }
+                        }
+                        return next;
+                      });
+                    } finally {
+                      setIsDeleting(false);
+                    }
+                  }}
+                >
+                  {localize('com_ui_delete')}
+                </Button>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      )}
       {hasFailure && <Alert variant="error">{localize('com_ui_delete_partial_failure')}</Alert>}
       <div
         ref={scrollRef}
-        className="relative grid h-full max-h-[calc(100vh-20rem)] min-h-[calc(100vh-20rem)] w-full flex-1 overflow-hidden overflow-x-auto overflow-y-auto rounded-md"
+        className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-md"
       >
         {/* Unwrapped: this div is the scroller the virtualizer observes, so the table
             must not add its own scrolling wrapper inside it. */}
         <Table
           unwrapped
           aria-rowcount={rows.length > 0 ? rows.length + 1 : undefined}
-          className="w-full min-w-[18.75rem] border-separate border-spacing-0"
+          className="w-full table-fixed border-separate border-spacing-0"
         >
           <TableHeader sticky>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -243,6 +232,7 @@ export default function DataTable<TData extends TFile, TValue>({
                   return (
                     <TableHead
                       key={header.id}
+                      aria-sort={sortLabels[header.column.getIsSorted() || 'none']}
                       size="sm"
                       className="px-2 whitespace-nowrap sm:px-4"
                       style={{ ...style }}
@@ -289,7 +279,7 @@ export default function DataTable<TData extends TFile, TValue>({
                             size="compact"
                             className={cn(
                               'px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
-                              cell.column.id === 'select' ? 'overflow-visible' : 'overflow-x-auto',
+                              cell.column.id === 'select' ? 'overflow-visible' : 'overflow-hidden',
                             )}
                             style={style}
                           >
@@ -308,29 +298,20 @@ export default function DataTable<TData extends TFile, TValue>({
               </>
             ) : (
               <TableRow>
-                <TableCell colSpan={columns.length} className="h-24 text-center">
-                  {localize('com_files_no_results')}
+                <TableCell colSpan={visibleColumnCount} className="h-24 text-center">
+                  {data.length
+                    ? localize('com_files_no_results')
+                    : localize('com_files_empty_library')}
+                  {data.length > 0 && (
+                    <Button variant="link" onClick={() => table.resetColumnFilters()}>
+                      {localize('com_ui_clear_filters')}
+                    </Button>
+                  )}
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 py-4">
-        <div className="text-text-secondary ms-2 flex-1 truncate text-xs sm:ms-4 sm:text-sm">
-          <span className="hidden sm:inline">
-            {localize('com_files_number_selected', {
-              0: `${table.getFilteredSelectedRowModel().rows.length}`,
-              1: `${table.getFilteredRowModel().rows.length}`,
-            })}
-          </span>
-          <span className="sm:hidden">
-            {`${table.getFilteredSelectedRowModel().rows.length}/${
-              table.getFilteredRowModel().rows.length
-            }`}
-          </span>
-        </div>
       </div>
     </div>
   );
