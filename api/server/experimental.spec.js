@@ -170,7 +170,7 @@ describe('Experimental server configuration', () => {
         'initializeGitHubSkillSync(appConfig);',
         'startSkillDeletionSweep(appConfig.skillDeletion);',
         'await performStartupChecks(appConfig);',
-        'await configureSocialLogins(app, appConfig);',
+        'await configureSocialLogins(app, appConfig, openIdReadiness);',
       ]) {
         expect(entrypoint.indexOf(consumer)).toBeGreaterThan(readIndex);
       }

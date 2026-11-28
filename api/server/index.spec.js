@@ -169,10 +169,20 @@ describe('Startup readiness wiring', () => {
       ['experimental.js', experimental],
     ]) {
       const appConfigIndex = contents.indexOf('const appConfig = await getAppConfig(');
-      const socialLoginsIndex = contents.indexOf('await configureSocialLogins(app, appConfig);');
+      const socialLoginsIndex = contents.indexOf(
+        'await configureSocialLogins(app, appConfig, openIdReadiness);',
+      );
 
       expect([name, appConfigIndex > -1]).toEqual([name, true]);
       expect([name, socialLoginsIndex > appConfigIndex]).toEqual([name, true]);
+    }
+  });
+
+  it('delegates readiness settings to the TypeScript helper in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const contents of [source, experimental]) {
+      expect(contents).toMatch(/createServerReadinessSettings\(\s*appConfig\?\.config,/);
     }
   });
 

@@ -1,3 +1,6 @@
+import { logger } from '@librechat/data-schemas';
+import { serverReadinessChecksSchema } from 'librechat-data-provider';
+import type { TCustomConfig, TServerReadinessChecks } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
 import type { RedisClientType } from '@redis/client';
 import type { Redis, Cluster } from 'ioredis';
@@ -15,6 +18,67 @@ export type RedisReadinessClients = {
   ioredis: Pick<Redis | Cluster, 'status'> | null;
   keyv: NodeRedisReadiness | NodeRedisClusterReadiness | null;
 };
+
+export type ReadinessOptions = {
+  checks?: Partial<TServerReadinessChecks>;
+  isOpenIdReady?: () => boolean;
+};
+
+export type OpenIdReadinessState = {
+  markReady: () => void;
+  isReady: () => boolean;
+};
+
+export type OpenIdReadinessSettings = {
+  socialLoginEnabled: boolean;
+  clientId?: string;
+  clientSecret?: string;
+  issuer?: string;
+  scope?: string;
+  sessionSecret?: string;
+  usePkce: boolean;
+};
+
+export type ServerReadinessSettings = {
+  checks: TServerReadinessChecks;
+  openIdReadiness: OpenIdReadinessState;
+};
+
+/** Resolves YAML checks and OpenID applicability for the server entrypoint. */
+export function createServerReadinessSettings(
+  config: TCustomConfig | undefined,
+  openId: OpenIdReadinessSettings,
+): ServerReadinessSettings {
+  const checks = serverReadinessChecksSchema.parse(config?.server?.readiness?.checks ?? {});
+  const openIdConfigured = Boolean(
+    openId.socialLoginEnabled &&
+      openId.clientId &&
+      (openId.usePkce || openId.clientSecret?.trim()) &&
+      openId.issuer &&
+      openId.scope &&
+      openId.sessionSecret,
+  );
+  const shouldGateOnOpenId = checks.oidc && openIdConfigured;
+  if (checks.oidc && !shouldGateOnOpenId) {
+    logger.warn(
+      '[readiness] The OIDC readiness check is enabled, but OpenID login is disabled or not configured; skipping the check.',
+    );
+  }
+
+  return { checks, openIdReadiness: createOpenIdReadiness(shouldGateOnOpenId) };
+}
+
+/** Tracks this process's OpenID registration without relying on Passport's internal strategy map. */
+export function createOpenIdReadiness(enabled: boolean): OpenIdReadinessState {
+  let ready = !enabled;
+
+  return {
+    markReady: () => {
+      ready = true;
+    },
+    isReady: () => ready,
+  };
+}
 
 /**
  * A Node Redis cluster stays `isOpen` while an individual master reconnects, and every
@@ -48,6 +112,19 @@ export function isRedisReady({ useRedis, ioredis, keyv }: RedisReadinessClients)
   return isKeyvReady(keyv);
 }
 
+function areReadinessChecksPassing(
+  redis: RedisReadinessClients,
+  { checks, isOpenIdReady }: ReadinessOptions,
+): boolean {
+  if (checks?.redis !== false && !isRedisReady(redis)) {
+    return false;
+  }
+  if (checks?.oidc === true && !isOpenIdReady?.()) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * `/readyz` handler: 503 until startup completes, and again whenever Redis is configured
  * but disconnected, so readiness-gated orchestration stops routing to a pod that cannot
@@ -55,9 +132,9 @@ export function isRedisReady({ useRedis, ioredis, keyv }: RedisReadinessClients)
  * trigger a liveness restart loop.
  */
 export const createReadinessHandler =
-  (isServerReady: () => boolean, redis: RedisReadinessClients) =>
+  (isServerReady: () => boolean, redis: RedisReadinessClients, options: ReadinessOptions = {}) =>
   (_req: Request, res: Response): void => {
-    if (!isServerReady() || !isRedisReady(redis)) {
+    if (!isServerReady() || !areReadinessChecksPassing(redis, options)) {
       res.status(503).send('NOT_READY');
       return;
     }
@@ -65,14 +142,17 @@ export const createReadinessHandler =
   };
 
 /** Per-worker readiness: a healthy sibling must not admit work to an initializing worker. */
-export function createStartupReadiness(redis: RedisReadinessClients): {
+export function createStartupReadiness(
+  redis: RedisReadinessClients,
+  options: ReadinessOptions = {},
+): {
   handler: RequestHandler;
   gate: RequestHandler;
   markReady: () => void;
 } {
   let initialized = false;
   const gate: RequestHandler = (_req, res, next) => {
-    if (initialized && isRedisReady(redis)) {
+    if (initialized && areReadinessChecksPassing(redis, options)) {
       next();
       return;
     }
@@ -83,7 +163,7 @@ export function createStartupReadiness(redis: RedisReadinessClients): {
     });
   };
   return {
-    handler: createReadinessHandler(() => initialized, redis),
+    handler: createReadinessHandler(() => initialized, redis, options),
     gate,
     markReady: () => {
       initialized = true;

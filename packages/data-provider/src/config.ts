@@ -203,6 +203,8 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'fileConfig.skills.deletionCleanupConcurrency': 'operator',
   'registration.openidDiscovery': 'startup',
   'registration.oauthStateTtlMs': 'startup',
+  'server.readiness.checks.redis': 'startup',
+  'server.readiness.checks.oidc': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
   'endpoints.agents.events': 'operator',
@@ -5044,9 +5046,29 @@ export const persistenceConfigSchema = z
 export const DEFAULT_CONFIG_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_CONFIG_CACHE_MAX_ENTRIES = 1000;
 
+export const serverReadinessChecksSchema = z
+  .object({
+    redis: z.boolean().default(true),
+    oidc: z.boolean().default(false),
+  })
+  .strict();
+
+const serverConfigSchema = z
+  .object({
+    readiness: z
+      .object({ checks: serverReadinessChecksSchema.default({ redis: true, oidc: false }) })
+      .strict()
+      .default({ checks: { redis: true, oidc: false } }),
+  })
+  .strict()
+  .default({ readiness: { checks: { redis: true, oidc: false } } });
+
+export type TServerReadinessChecks = z.infer<typeof serverReadinessChecksSchema>;
+
 export const configSchema = z.object({
   persistence: persistenceConfigSchema,
   version: z.string(),
+  server: serverConfigSchema,
   telemetry: telemetrySchema.optional(),
   clientLimits: clientLimitsSchema.optional(),
   permissions: z

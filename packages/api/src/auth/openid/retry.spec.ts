@@ -47,14 +47,22 @@ describe('registerOpenIdWithRetry', () => {
   it('makes one startup attempt by default, then recovers in the background', async () => {
     const setupOpenId = jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(openIdConfig);
     const registerJwtStrategy = jest.fn();
+    const onRegistrationReady = jest.fn();
 
-    await registerOpenIdWithRetry({ setupOpenId, registerJwtStrategy, reuseTokens: true });
+    await registerOpenIdWithRetry({
+      setupOpenId,
+      registerJwtStrategy,
+      reuseTokens: true,
+      onRegistrationReady,
+    });
     expect(setupOpenId).toHaveBeenCalledTimes(1);
     expect(registerJwtStrategy).not.toHaveBeenCalled();
+    expect(onRegistrationReady).not.toHaveBeenCalled();
 
     await jest.advanceTimersByTimeAsync(5000);
     expect(setupOpenId).toHaveBeenCalledTimes(2);
     expect(registerJwtStrategy).toHaveBeenCalledWith(openIdConfig);
+    expect(onRegistrationReady).toHaveBeenCalledTimes(1);
 
     await jest.advanceTimersByTimeAsync(20000);
     expect(setupOpenId).toHaveBeenCalledTimes(2);
@@ -62,17 +70,20 @@ describe('registerOpenIdWithRetry', () => {
 
   it('retries during startup when more attempts are configured', async () => {
     const setupOpenId = jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(openIdConfig);
+    const onRegistrationReady = jest.fn();
 
     const done = registerOpenIdWithRetry({
       setupOpenId,
       registerJwtStrategy: jest.fn(),
       reuseTokens: false,
+      onRegistrationReady,
       discovery: { startupAttempts: 2, retryDelayMs: 1000 },
     });
     await jest.advanceTimersByTimeAsync(1000);
     await done;
 
     expect(setupOpenId).toHaveBeenCalledTimes(2);
+    expect(onRegistrationReady).toHaveBeenCalledTimes(1);
     expect(logger.error).not.toHaveBeenCalled();
   });
 

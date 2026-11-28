@@ -60,6 +60,7 @@ const {
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
   createReadinessHandler,
+  createServerReadinessSettings,
   keyvRedisClient,
   ioredisClient,
   cacheConfig,
@@ -270,6 +271,18 @@ const startServer = async () => {
   await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  const { checks: readinessChecks, openIdReadiness } = createServerReadinessSettings(
+    appConfig?.config,
+    {
+      socialLoginEnabled: isEnabled(ALLOW_SOCIAL_LOGIN),
+      clientId: process.env.OPENID_CLIENT_ID,
+      clientSecret: process.env.OPENID_CLIENT_SECRET,
+      issuer: process.env.OPENID_ISSUER,
+      scope: process.env.OPENID_SCOPE,
+      sessionSecret: process.env.OPENID_SESSION_SECRET,
+      usePkce: isEnabled(process.env.OPENID_USE_PKCE),
+    },
+  );
   /* One ceiling for every idle recovery loop below; each keeps its own default while it is unset. */
   const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;
   startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });
@@ -402,11 +415,15 @@ const startServer = async () => {
   app.get('/livez', (_req, res) => res.status(200).send('OK'));
   app.get(
     '/readyz',
-    createReadinessHandler(() => serverReady, {
-      useRedis: cacheConfig.USE_REDIS,
-      ioredis: ioredisClient,
-      keyv: keyvRedisClient,
-    }),
+    createReadinessHandler(
+      () => serverReady,
+      {
+        useRedis: cacheConfig.USE_REDIS,
+        ioredis: ioredisClient,
+        keyv: keyvRedisClient,
+      },
+      { checks: readinessChecks, isOpenIdReady: openIdReadiness.isReady },
+    ),
   );
 
   /* Middleware */
@@ -466,7 +483,7 @@ const startServer = async () => {
   }
 
   if (isEnabled(ALLOW_SOCIAL_LOGIN)) {
-    await configureSocialLogins(app, appConfig);
+    await configureSocialLogins(app, appConfig, openIdReadiness);
   }
 
   /* Per-request capability cache — must be registered before any route that calls hasCapability */

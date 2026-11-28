@@ -2,11 +2,19 @@ import IoRedis from 'ioredis';
 import express from 'express';
 import request from 'supertest';
 import { createClient } from '@keyv/redis';
+import { logger } from '@librechat/data-schemas';
 import type { RedisClientType } from '@redis/client';
 import type { Request, Response } from 'express';
 import type { RespServer } from '~/cache/__tests__/resp.helper';
 import type { RedisReadinessClients } from './readiness';
-import { createReadinessHandler, createStartupReadiness, isRedisReady } from './readiness';
+import type { ReadinessOptions } from './readiness';
+import {
+  createOpenIdReadiness,
+  createReadinessHandler,
+  createServerReadinessSettings,
+  createStartupReadiness,
+  isRedisReady,
+} from './readiness';
 import { startRespServer, waitFor } from '~/cache/__tests__/resp.helper';
 
 const clients = (overrides: Partial<RedisReadinessClients> = {}): RedisReadinessClients => ({
@@ -96,8 +104,11 @@ describe('createReadinessHandler', () => {
     handler({} as Request, res as unknown as Response);
     return { code: res.status.mock.calls[0][0], body: res.send.mock.calls[0][0] };
   };
-  const probe = (serverReady: boolean, redis: RedisReadinessClients) =>
-    respond(createReadinessHandler(() => serverReady, redis));
+  const probe = (
+    serverReady: boolean,
+    redis: RedisReadinessClients,
+    options: ReadinessOptions = {},
+  ) => respond(createReadinessHandler(() => serverReady, redis, options));
 
   it('returns 503 before startup completes', () => {
     expect(probe(false, clients())).toEqual({ code: 503, body: 'NOT_READY' });
@@ -121,6 +132,21 @@ describe('createReadinessHandler', () => {
     });
   });
 
+  it('can opt out of Redis and gate readiness on OIDC', () => {
+    expect(
+      probe(true, clients({ ioredis: { status: 'reconnecting' } }), {
+        checks: { redis: false, oidc: true },
+        isOpenIdReady: () => false,
+      }),
+    ).toEqual({ code: 503, body: 'NOT_READY' });
+    expect(
+      probe(true, clients({ ioredis: { status: 'reconnecting' } }), {
+        checks: { redis: false, oidc: true },
+        isOpenIdReady: () => true,
+      }),
+    ).toEqual({ code: 200, body: 'OK' });
+  });
+
   it('re-evaluates readiness on every request', () => {
     const keyv = { isReady: true };
     const handler = createReadinessHandler(() => true, clients({ keyv }));
@@ -132,9 +158,62 @@ describe('createReadinessHandler', () => {
   });
 });
 
+describe('OpenID readiness state', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('remains unready during registration and becomes ready after recovery', () => {
+    const readiness = createOpenIdReadiness(true);
+    expect(readiness.isReady()).toBe(false);
+    readiness.markReady();
+    expect(readiness.isReady()).toBe(true);
+  });
+
+  it('warns and passes when OpenID is not configured', () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const { checks, openIdReadiness } = createServerReadinessSettings(
+      { server: { readiness: { checks: { oidc: true } } } },
+      { socialLoginEnabled: true, usePkce: false },
+    );
+
+    expect(checks).toEqual({ redis: true, oidc: true });
+    expect(openIdReadiness.isReady()).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      '[readiness] The OIDC readiness check is enabled, but OpenID login is disabled or not configured; skipping the check.',
+    );
+  });
+
+  it('uses configured checks and waits for OpenID registration when login is configured', () => {
+    const settings = createServerReadinessSettings(
+      { server: { readiness: { checks: { redis: false, oidc: true } } } },
+      {
+        socialLoginEnabled: true,
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        issuer: 'https://issuer.example.com',
+        scope: 'openid profile email',
+        sessionSecret: 'session-secret',
+        usePkce: false,
+      },
+    );
+
+    expect(settings.checks).toEqual({ redis: false, oidc: true });
+    expect(settings.openIdReadiness.isReady()).toBe(false);
+    settings.openIdReadiness.markReady();
+    expect(settings.openIdReadiness.isReady()).toBe(true);
+  });
+
+  it('does not gate readiness when OIDC is not selected', () => {
+    const readiness = createOpenIdReadiness(false);
+    expect(readiness.isReady()).toBe(true);
+  });
+});
+
 describe('worker startup readiness', () => {
-  const worker = (redis: RedisReadinessClients = clients({ useRedis: false })) => {
-    const readiness = createStartupReadiness(redis);
+  const worker = (
+    redis: RedisReadinessClients = clients({ useRedis: false }),
+    options: ReadinessOptions = {},
+  ) => {
+    const readiness = createStartupReadiness(redis, options);
     const app = express();
     app.get('/readyz', readiness.handler);
     app.use('/api', readiness.gate);
@@ -177,5 +256,21 @@ describe('worker startup readiness', () => {
     keyv.isReady = true;
     await request(app).get('/readyz').expect(200);
     await request(app).get('/api/work').expect(200);
+  });
+
+  it('keeps API work closed until selected OIDC readiness recovers', async () => {
+    const openIdReadiness = createOpenIdReadiness(true);
+    const { app, readiness } = worker(clients({ useRedis: false }), {
+      checks: { redis: true, oidc: true },
+      isOpenIdReady: openIdReadiness.isReady,
+    });
+    readiness.markReady();
+
+    expect((await request(app).get('/readyz')).status).toBe(503);
+    expect((await request(app).get('/api/work')).status).toBe(503);
+
+    openIdReadiness.markReady();
+    expect((await request(app).get('/readyz')).status).toBe(200);
+    expect((await request(app).get('/api/work')).status).toBe(200);
   });
 });
