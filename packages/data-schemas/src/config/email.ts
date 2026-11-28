@@ -280,10 +280,28 @@ function quoted(text: string, close: number, bound: number): Word | undefined {
   return level > 0 ? { start: 0, open: false } : undefined;
 }
 
+/** Index of the quote closing a quoted string inside a comment, or `open` when there is none. */
+function closingQuote(text: string, open: number): number {
+  const limit = Math.min(text.length, open + 1 + MAX_PART);
+  for (let cursor = open + 1; cursor < limit; cursor++) {
+    const code = text.charCodeAt(cursor);
+    if (code === QUOTE) {
+      return cursor;
+    }
+    if (code === CR || code === LF) {
+      return open;
+    }
+    if (code === BACKSLASH) {
+      cursor++;
+    }
+  }
+  return open;
+}
+
 /**
- * The opening parenthesis of every closing one, nested comments included, in one forward pass.
- * A comment may hold an at sign or whitespace but not a quote or a line break, so it never
- * pairs parentheses across JSON strings or lines.
+ * The opening parenthesis of every closing one, in one forward pass over RFC 5322 comments: they
+ * nest, may hold whitespace, at signs and quoted strings, and a backslash escapes the character
+ * after it. A line break ends every open comment.
  */
 function comments(text: string): Map<number, number> {
   const pairs = new Map<number, number>();
@@ -297,8 +315,12 @@ function comments(text: string): Map<number, number> {
       if (open !== undefined) {
         pairs.set(index, open);
       }
-    } else if (code === QUOTE || code === CR || code === LF) {
+    } else if (code === CR || code === LF) {
       opens.length = 0;
+    } else if (opens.length > 0 && code === QUOTE) {
+      index = closingQuote(text, index);
+    } else if (opens.length > 0 && code === BACKSLASH) {
+      index++;
     }
   }
   return pairs;
