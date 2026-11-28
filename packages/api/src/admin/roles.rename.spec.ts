@@ -93,9 +93,9 @@ function createHandlers(overrides: Partial<AdminRolesDeps> = {}) {
     deleteRoleByName: methods.deleteRoleByName,
     findUser: methods.findUser,
     updateUser: methods.updateUser,
-    updateUsersByRole: methods.updateUsersByRole,
-    findUserIdsByRole: methods.findUserIdsByRole,
-    updateUsersRoleByIds: methods.updateUsersRoleByIds,
+    prepareRoleMembers: methods.prepareRoleMembers,
+    reserveRoleRename: methods.reserveRoleRename,
+    settleRoleRename: methods.settleRoleRename,
     listUsersByRole: methods.listUsersByRole,
     countUsersByRole: methods.countUsersByRole,
     deleteConfig: methods.deleteConfig,
@@ -226,6 +226,48 @@ async function keyedBy(name: string) {
 const nothing = { role: null, members: [], profile: null, grants: [], aclEntries: [] };
 
 describe('role rename moves what is keyed by the role name', () => {
+  it('@scenario:acknowledged-members-follow-renames carries a membership acknowledged before the role document changes name', async () => {
+    await methods.createRoleByName({ name: 'editor', permissions: {} });
+    const user = await methods.createUser(
+      { email: 'late@example.com', provider: 'local' },
+      undefined,
+      true,
+    );
+    const handlers = createHandlers({
+      updateRoleByName: async (...args) => {
+        const added = mockRes();
+        await createHandlers().addRoleMember(
+          {
+            params: { name: 'editor' },
+            body: { userId: user.toString() },
+            user: { _id: new Types.ObjectId(), role: 'ADMIN' },
+          } as Partial<ServerRequest> as ServerRequest,
+          added,
+        );
+        expect(added.statusCode).toBe(200);
+        return methods.updateRoleByName(...args);
+      },
+    });
+    expect((await rename(handlers, 'editor', { name: 'writer' })).statusCode).toBe(200);
+    expect(await methods.findUserIdsByRole('writer')).toEqual([user.toString()]);
+  });
+
+  it('@scenario:unconfirmed-grants-keep-the-old-name-reserved returns 409 on creation after an unconfirmed cascade expires', async () => {
+    const { userId } = await seedRole('editor');
+    const token = await methods.reserveRoleRename('editor', 'writer');
+    if (!token) throw new Error('Missing rename reservation');
+    await methods.updateRoleByName('editor', { name: 'writer' }, { renameToken: token });
+    await mongoose.models.Role.updateOne(
+      { name: 'writer' },
+      { $set: { 'rename.expires': new Date(0) } },
+    );
+    const res = mockRes();
+    await createHandlers().createRole({ body: { name: 'editor' } } as ServerRequest, res);
+    expect(res.statusCode).toBe(409);
+    expect(await methods.getPartitionRole('editor')).toBeNull();
+    expect((await keyedBy('editor')).members).toEqual([userId]);
+  });
+
   it('moves the profile, grants and ACL entries with the role and its members', async () => {
     const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
     const invalidateConfigCaches = jest.fn().mockResolvedValue(undefined);

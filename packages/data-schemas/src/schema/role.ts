@@ -94,6 +94,14 @@ const rolePermissionsSchema = new Schema(
 const roleSchema: Schema<IRole> = new Schema({
   name: { type: String, required: true, index: true },
   description: { type: String, default: '' },
+  names: { type: [String], default: undefined, select: false },
+  rename: {
+    type: new Schema(
+      { from: String, to: String, token: String, expires: Date, owner: String, pending: Boolean },
+      { _id: false },
+    ),
+    select: false,
+  },
   permissions: {
     type: rolePermissionsSchema,
   },
@@ -104,5 +112,7 @@ const roleSchema: Schema<IRole> = new Schema({
 });
 
 roleSchema.index({ name: 1, tenantId: 1 }, { unique: true });
+
+roleSchema.index({ names: 1 }, { unique: true, sparse: true });
 
 export default roleSchema;
