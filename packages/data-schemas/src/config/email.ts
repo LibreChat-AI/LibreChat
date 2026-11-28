@@ -31,7 +31,8 @@ export const MAX_SPAN: number = 2 * MAX_PART + 3 + 2 * MAX_ENCODING;
 
 export type Span = { start: number; end: number };
 
-type Part = { start: number; units: number };
+/** Where a local part starts, how many words it holds, and whether an escape stopped it. */
+type Part = { start: number; words: number; stuck: boolean };
 /** End of the last encoded fallback domain without a dot; a run starting inside it has none. */
 type Scan = { skip: number };
 type Word = { start: number; open: boolean };
@@ -351,8 +352,9 @@ function authority(text: string, index: number): boolean {
 /**
  * Where the local part that ends at `at` starts. Plain characters are read back to `floor` (the
  * previous at sign or mask) and at most MAX_PART units; a quoted word or a comment (`opening`
- * gives its opening parenthesis) may reach further, since either can hold an at sign. `units`
- * counts what was read besides format characters, so 0 means the part is empty.
+ * gives its opening parenthesis) may reach further, since either can hold an at sign. A comment
+ * is no word, so a part of comments alone counts none; `stuck` is set when a backslash escape the
+ * grammar cannot read ends the part, as in serialized text.
  */
 function local(
   text: string,
@@ -365,7 +367,7 @@ function local(
   /** Once a quoted word or comment reads past the floor, the part may run on to the bound. */
   let limit = Math.max(floor, bound);
   let start = at;
-  let units = 0;
+  let words = 0;
   /** A quoted word may close here: at the at sign or before a dot. */
   let wordEnd = true;
   /** After a quoted word only a dot continues the part (RFC 5322 obs-local-part). */
@@ -391,7 +393,7 @@ function local(
       }
       start = word.start;
       limit = start < limit ? bound : limit;
-      units++;
+      words++;
       if (!word.open) {
         break;
       }
@@ -406,7 +408,6 @@ function local(
       }
       start = open;
       limit = start < limit ? bound : limit;
-      units++;
       wordEnd = true;
       needDot = false;
       continue;
@@ -414,10 +415,10 @@ function local(
     if (point === BACKSLASH) {
       /** `\uXXXX` and `\/` were read as atext; their backslash belongs to the part. */
       if (escape(text, start - 1) === 0 && text.charCodeAt(start) !== SLASH) {
-        break;
+        return { start, words, stuck: true };
       }
       start -= 1;
-      units++;
+      words++;
       wordEnd = false;
       continue;
     }
@@ -428,11 +429,11 @@ function local(
       break;
     }
     start -= size;
-    units++;
+    words++;
     wordEnd = point === DOT;
     needDot = false;
   }
-  return { start, units };
+  return { start, words, stuck: false };
 }
 
 /**
@@ -665,27 +666,26 @@ export function findEmails(text: string): Span[] {
     const floor = masked ? (last?.end ?? 0) : mark;
     const part = local(text, index, floor, encoded, opening);
     let start = part.start;
-    let units = part.units;
-    /** Nothing the grammar reads as a local part (a stray parenthesis, a nested comment, a colon):
-     * the token before the at sign stays masked, as the earlier patterns masked it. */
-    if (units === 0) {
+    let read = part.words > 0;
+    /** No word the grammar reads (a stray parenthesis, a comment alone, a colon), or an escape it
+     * cannot read: the token before the at sign stays masked, as the earlier patterns masked it. */
+    if (!read || part.stuck) {
       const fallback = token(text, index, Math.max(floor, index - MAX_PART), encoded);
       if (fallback < index) {
-        start = fallback;
-        units = 1;
+        start = Math.min(start, fallback);
+        read = true;
       }
     }
     if (start === floor && floor > 0) {
       if (!masked) {
         start = Math.max(origin, index - MAX_PART);
-        units++;
+        read = true;
       } else if (last !== undefined && classify(before(text, floor)) & LOCAL) {
         start = last.start;
-        units++;
+        read = true;
       }
     }
-    const stop =
-      units > 0 && !(size === 1 && scope(text, index)) ? domain(text, end, encoded, scan) : 0;
+    const stop = read && !(size === 1 && scope(text, index)) ? domain(text, end, encoded, scan) : 0;
     mark = end;
     if (stop === 0) {
       /** Text glued to the next at sign inherits this start, so reach back as far as the token. */

@@ -213,6 +213,21 @@ describe('maskEmails coverage contract', () => {
     ['a parenthesis quoted in a comment', 'jane("wo)rk")@example.com ok', `${MASK} ok`],
     ['an escaped parenthesis in a comment', 'jane(wo\\)rk)@example.com ok', `${MASK} ok`],
     ['a serialized comment', '{"to":"jane(\\"work\\")@example.com"}', `{"to":"${MASK}"}`],
+    [
+      'an escaped parenthesis in a serialized comment',
+      JSON.stringify('alice(\\(work)@example.com'),
+      `"${MASK}"`,
+    ],
+    [
+      'an escaped parenthesis before an atom',
+      JSON.stringify('alice(\\(work)x@example.com'),
+      `"${MASK}"`,
+    ],
+    [
+      'a comment alone after a stray parenthesis',
+      'id alice)(work)@example.com ok',
+      `id ${MASK} ok`,
+    ],
     ['a colon before an at sign glued to the next', 'alice:work@home)@example.com', MASK],
   ])('never leaves text glued to an address outside the mask: %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
