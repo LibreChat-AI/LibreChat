@@ -1,4 +1,5 @@
 import { MAX_PART, MAX_SPAN, findEmails, hasAtSign, maskEmails, maskSpans } from './email';
+import { READS_PER_CHAR, reads } from './test-helpers';
 
 const MASK = '[REDACTED_EMAIL]';
 
@@ -339,10 +340,8 @@ describe('maskEmails bounds', () => {
     ['backslash runs before quotes', ('\\'.repeat(1000) + '"@').repeat(100)],
     ['escaped quotes in quoted words', ('"' + 'a\\"'.repeat(1000) + '"@').repeat(50)],
     ['emoji before at signs', '😀@'.repeat(30_000)],
-  ])('stays linear on %s', (_label, flood) => {
-    const started = Date.now();
-    maskEmails(flood);
-    expect(Date.now() - started).toBeLessThan(1000);
+  ])('reads each character a bounded number of times on %s', (_label, flood) => {
+    expect(reads(() => maskEmails(flood))).toBeLessThan(flood.length * READS_PER_CHAR);
   });
 });
 

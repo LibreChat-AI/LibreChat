@@ -6,6 +6,7 @@ import {
   redactMessage,
   stripHeavyErrorFields,
 } from './parsers';
+import { READS_PER_CHAR, reads } from './test-helpers';
 
 const SPLAT_SYMBOL = Symbol.for('splat');
 const MESSAGE_SYMBOL = Symbol.for('message');
@@ -253,9 +254,7 @@ describe('redactMessage', () => {
     expect(redactMessage('-redis://:pw0rd@redis:6379')).not.toContain('pw0rd');
     expect(redactMessage('...postgresql://user:pw0rd@db/database')).not.toContain('pw0rd');
     for (const input of ['a-'.repeat(50000), '\\"a'.repeat(30000), 'u@['.repeat(30000)]) {
-      const started = Date.now();
-      redactMessage(input);
-      expect(Date.now() - started).toBeLessThan(500);
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
     }
   });
 
@@ -485,10 +484,9 @@ describe('redactMessage', () => {
     expect(redactMessage('GET /v1?email=jane%40example.com&x=1')).toBe(
       'GET /v1?email=[REDACTED_EMAIL]&x=1',
     );
-    const started = Date.now();
-    redactMessage('a'.repeat(100000));
-    redactMessage('a%40'.repeat(30000));
-    expect(Date.now() - started).toBeLessThan(500);
+    for (const input of ['a'.repeat(100000), 'a%40'.repeat(30000)]) {
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
+    }
     const wide = Object.fromEntries(
       Array.from({ length: 20000 }, (_, index) => [`n${index}`, index]),
     );
@@ -553,10 +551,9 @@ describe('redactMessage', () => {
     expect(redactMessage(`?e=${'a'.repeat(400)}%40${'b'.repeat(300)}.com&x=1`)).toBe(
       '?e=[REDACTED_EMAIL]&x=1',
     );
-    const started = Date.now();
-    redactMessage('a%40'.repeat(50000));
-    redactMessage('a'.repeat(100000));
-    expect(Date.now() - started).toBeLessThan(500);
+    for (const input of ['a%40'.repeat(50000), 'a'.repeat(100000)]) {
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
+    }
     const out = runRedactFormat({
       level: 'info',
       message: 'm',
@@ -619,11 +616,9 @@ describe('redactMessage', () => {
   });
 
   it('keeps encoded-email matching linear at repeated URL boundaries', () => {
-    const started = Date.now();
-    redactMessage('?a%40'.repeat(30000));
-    redactMessage('&a%40'.repeat(30000));
-    redactMessage('/a%40'.repeat(30000));
-    expect(Date.now() - started).toBeLessThan(500);
+    for (const input of ['?a%40'.repeat(30000), '&a%40'.repeat(30000), '/a%40'.repeat(30000)]) {
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
+    }
   });
 
   it('shadows an inherited throwing serializer getter on nested errors', () => {
@@ -697,7 +692,7 @@ describe('redactMessage', () => {
     expect(JSON.stringify(out)).not.toContain('secretcanary');
   });
 
-  it('stays fast on adversarial 100k inputs for every redaction path', () => {
+  it('keeps adversarial 100k inputs linear on every redaction path', () => {
     const inputs = [
       'a@'.repeat(50000),
       `a@${'a.'.repeat(50000)}`,
@@ -708,10 +703,12 @@ describe('redactMessage', () => {
       'Bearer '.repeat(14000),
     ];
     for (const input of inputs) {
-      const started = Date.now();
-      runRedactFormat({ level: 'info', message: input });
-      runRedactFormat({ level: 'info', message: 'm', [input]: 1, nested: { [input]: input } });
-      expect(Date.now() - started).toBeLessThan(1000);
+      const work = reads(() => {
+        runRedactFormat({ level: 'info', message: input });
+        runRedactFormat({ level: 'info', message: 'm', [input]: 1, nested: { [input]: input } });
+      });
+      /** The message, both keys and the nested value: four copies of the input at most. */
+      expect(work).toBeLessThan(4 * input.length * READS_PER_CHAR);
     }
   });
 
