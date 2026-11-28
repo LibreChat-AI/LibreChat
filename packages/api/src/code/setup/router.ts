@@ -321,15 +321,22 @@ export function createCodeSetupRouter(deps: SetupRouterDependencies): Router {
   router.use(browser);
 
   // The timer only schedules work. Mongo owns intent, deadlines, leases and retry progress.
+  // Without a readable deployment policy there is nothing to reconcile against,
+  // so the sweep falls back to the slowest cadence an operator can configure
+  // (reconcileIntervalMs max, 60_000) instead of the 10s default.
+  const UNAVAILABLE_SETUP_SWEEP_INTERVAL_MS = 60_000;
   const timer = setInterval(() => {
     if (sweeping || !deps.backend.isConnected() || Date.now() < nextSweep) return;
     sweeping = true;
     void runAsSystem(async () => {
       const current = getRuntime();
       // Cleanup must keep running after an operator withdraws the capability.
-      let interval = 10_000;
+      let interval = UNAVAILABLE_SETUP_SWEEP_INTERVAL_MS;
       try {
-        interval = (await current.policy.deployment()).config.reconcileIntervalMs;
+        // The sweep only needs the configured interval: read it from the cached
+        // base config instead of forcing a full reload on every sweep.
+        interval = (await current.policy.deployment({ refresh: false })).config
+          .reconcileIntervalMs;
       } catch {
         /* Frozen cleanup destinations remain server-owned durable intent. */
       }
