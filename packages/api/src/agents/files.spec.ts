@@ -278,7 +278,11 @@ describe('Agent Management file handlers', () => {
     expect(next).not.toHaveBeenCalled();
     expect(deps.deleteTempFile).not.toHaveBeenCalled();
     expect(deps.processUpload).not.toHaveBeenCalled();
+    expect(deps.checkPermission).not.toHaveBeenCalled();
     expect(response.status).toHaveBeenCalledWith(404);
+    expect(response.json).toHaveBeenCalledWith({
+      error: { code: 'not_found', message: 'Agent not found' },
+    });
   });
 
   it('reports cleanup failures with the management error contract', async () => {
@@ -612,7 +616,28 @@ describe('Agent Management file handlers', () => {
     );
 
     expect(response.status).toHaveBeenCalledWith(404);
+    expect(response.json).toHaveBeenCalledWith({
+      error: { code: 'not_found', message: 'Agent not found' },
+    });
     expect(deps.getFiles).not.toHaveBeenCalled();
+    expect(deps.checkPermission).not.toHaveBeenCalled();
+  });
+
+  it('returns not_found when unlinking from an Agent outside the authenticated tenant', async () => {
+    const deps = makeDeps({ getAgentWithVersionCount: jest.fn().mockResolvedValue(null) });
+    const response = makeResponse();
+
+    await createAgentManagementFileHandlers(deps).remove(
+      makeRequest({ id: 'agent-other-tenant', fileId: 'file-shared' }),
+      response,
+    );
+
+    expect(response.status).toHaveBeenCalledWith(404);
+    expect(response.json).toHaveBeenCalledWith({
+      error: { code: 'not_found', message: 'Agent not found' },
+    });
+    expect(deps.checkPermission).not.toHaveBeenCalled();
+    expect(deps.removeAgentResourceFiles).not.toHaveBeenCalled();
   });
 
   it('requires EDIT access unless the caller has the management capability', async () => {

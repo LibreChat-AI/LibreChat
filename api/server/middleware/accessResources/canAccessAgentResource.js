@@ -1,58 +1,30 @@
-const { ResourceType } = require('librechat-data-provider');
-const { canAccessResource } = require('./canAccessResource');
+const { createAgentAccessMiddleware } = require('@librechat/api');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const { checkPermission } = require('~/server/services/PermissionService');
 const { getAgent } = require('~/models');
 
-/**
- * Agent ID resolver function
- * Resolves custom agent ID (e.g., "agent_abc123") to MongoDB ObjectId
- *
- * @param {string} agentCustomId - Custom agent ID from route parameter
- * @returns {Promise<Object|null>} Agent document with _id field, or null if not found
- */
-const resolveAgentId = async (agentCustomId) => {
-  return await getAgent({ id: agentCustomId });
+const deps = {
+  getAgent: (agentId) => getAgent({ id: agentId }),
+  hasCapability,
+  checkPermission,
 };
 
 /**
- * Agent-specific middleware factory that creates middleware to check agent access permissions.
- * This middleware extends the generic canAccessResource to handle agent custom ID resolution.
+ * Agent route middleware. It authorizes `req.user` on the agent named by a route
+ * parameter through `authorizeAgent` in `@librechat/api`.
  *
  * @param {Object} options - Configuration options
- * @param {number} options.requiredPermission - The permission bit required (1=view, 2=edit, 4=delete, 8=share)
+ * @param {number} options.requiredPermission - The permission bits required (1=view, 2=edit, 4=delete, 8=share)
  * @param {string} [options.resourceIdParam='id'] - The name of the route parameter containing the agent custom ID
  * @returns {Function} Express middleware function
  *
  * @example
- * // Basic usage for viewing agents
- * router.get('/agents/:id',
- *   canAccessAgentResource({ requiredPermission: 1 }),
- *   getAgent
- * );
- *
- * @example
- * // Custom resource ID parameter and edit permission
  * router.patch('/agents/:agent_id',
- *   canAccessAgentResource({
- *     requiredPermission: 2,
- *     resourceIdParam: 'agent_id'
- *   }),
+ *   canAccessAgentResource({ requiredPermission: 2, resourceIdParam: 'agent_id' }),
  *   updateAgent
  * );
  */
-const canAccessAgentResource = (options) => {
-  const { requiredPermission, resourceIdParam = 'id' } = options;
-
-  if (!requiredPermission || typeof requiredPermission !== 'number') {
-    throw new Error('canAccessAgentResource: requiredPermission is required and must be a number');
-  }
-
-  return canAccessResource({
-    resourceType: ResourceType.AGENT,
-    requiredPermission,
-    resourceIdParam,
-    idResolver: resolveAgentId,
-  });
-};
+const canAccessAgentResource = (options) => createAgentAccessMiddleware(options, deps);
 
 module.exports = {
   canAccessAgentResource,

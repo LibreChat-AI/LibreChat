@@ -1,6 +1,6 @@
 import { PermissionBits, ResourceType } from 'librechat-data-provider';
 import type { IUser, SystemCapability } from '@librechat/data-schemas';
-import { hasManageAgentsCapability } from './reads';
+import { hasManageAgentsCapability } from './access';
 
 /** ACL implementations may return either plain IDs or objects with a string representation. */
 type ResourceId = string | { toString(): string };

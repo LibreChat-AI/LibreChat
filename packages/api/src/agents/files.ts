@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { logger, ResourceCapabilityMap } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
 import {
   EToolResources,
   PermissionBits,
@@ -11,8 +11,12 @@ import type { IRole, IUser, SystemCapability } from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
 import type { Types } from 'mongoose';
 import type { AgentManagementProjectionSource } from './management';
+import {
+  mapAgentManagementError,
+  toAgentManagementAccessCode,
+  authorizeAgentManagementTarget,
+} from './management';
 import { checkAccessWithRequestCache } from '../middleware/access';
-import { mapAgentManagementError } from './management';
 
 type AgentUploadPurpose =
   | EToolResources.context
@@ -270,35 +274,6 @@ async function canUseAgents(
   });
 }
 
-async function hasManageAgentsCapability(user: IUser, deps: AgentManagementFileDeps) {
-  const capability = ResourceCapabilityMap[ResourceType.AGENT];
-  try {
-    return capability != null && (await deps.hasCapability(user, capability));
-  } catch (error) {
-    logger.warn(
-      `[AgentManagement] Agent capability check failed, denying file access bypass: ${(error as Error).message}`,
-    );
-    return false;
-  }
-}
-
-async function canEditAgentFiles(
-  user: IUser,
-  agent: AgentManagementFileAgent,
-  deps: AgentManagementFileDeps,
-) {
-  if (await hasManageAgentsCapability(user, deps)) {
-    return true;
-  }
-  return await deps.checkPermission({
-    userId: user.id,
-    role: user.role,
-    resourceType: ResourceType.AGENT,
-    resourceId: agent._id,
-    requiredPermission: PermissionBits.EDIT,
-  });
-}
-
 function getFilePurposes(agent: AgentManagementFileAgent): Map<string, AgentFilePurpose[]> {
   const purposes = new Map<string, AgentFilePurpose[]>();
   for (const purpose of FILE_PURPOSES) {
@@ -339,16 +314,17 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
       return { allowed: false as const, code: 'permission_denied' as const };
     }
 
-    const agent = await deps.getAgentWithVersionCount({
-      id: req.params.id,
-      tenantId: user.tenantId,
-    });
-    if (!agent) {
-      return { allowed: false as const, code: 'not_found' as const };
+    const authorization = await authorizeAgentManagementTarget(
+      { user, tenantId: user.tenantId, agentId: req.params.id, required: 'EDIT' },
+      deps,
+    );
+    if (!authorization.ok) {
+      return {
+        allowed: false as const,
+        code: toAgentManagementAccessCode(authorization.error.code),
+      };
     }
-    if (!(await canEditAgentFiles(user, agent, deps))) {
-      return { allowed: false as const, code: 'permission_denied' as const };
-    }
+    const { agent } = authorization.value;
     return { allowed: true as const, agent, user, tenantId: user.tenantId };
   }
 

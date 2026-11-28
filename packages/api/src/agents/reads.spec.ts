@@ -347,6 +347,69 @@ describe('Agent Management read handlers', () => {
     expect(response.status).toHaveBeenCalledWith(403);
     expect(deps.findAccessibleResources).not.toHaveBeenCalled();
   });
+
+  it('denies GET without AGENTS:USE even when the ACL check fails', async () => {
+    const unhandled = jest.fn();
+    process.on('unhandledRejection', unhandled);
+    const deps = makeDeps({
+      getRoleByName: jest.fn().mockResolvedValue({
+        permissions: { [PermissionTypes.AGENTS]: { [Permissions.USE]: false } },
+      } as never),
+      checkPermission: jest.fn().mockRejectedValue(new Error('ACL store unavailable')),
+    });
+    const response = makeResponse();
+
+    try {
+      await createAgentManagementReadHandlers(deps).get(
+        makeRequest({ params: { id: 'agent-one' } }),
+        response,
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+
+    expect(deps.checkPermission).toHaveBeenCalled();
+    expect(response.status).toHaveBeenCalledWith(403);
+    expect(response.json).toHaveBeenCalledWith({
+      error: { code: 'permission_denied', message: 'Permission denied' },
+    });
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('returns the safe internal error when the role lookup fails on GET', async () => {
+    const deps = makeDeps({
+      getRoleByName: jest.fn().mockRejectedValue(new Error('role store unavailable')),
+    });
+    const response = makeResponse();
+
+    await createAgentManagementReadHandlers(deps).get(
+      makeRequest({ params: { id: 'agent-one' } }),
+      response,
+    );
+
+    expect(response.status).toHaveBeenCalledWith(500);
+    expect(response.json).toHaveBeenCalledWith({
+      error: { code: 'internal_error', message: 'Internal server error' },
+    });
+  });
+
+  it('returns the safe internal error when the ACL check fails for an AGENTS:USE holder', async () => {
+    const deps = makeDeps({
+      checkPermission: jest.fn().mockRejectedValue(new Error('ACL store unavailable')),
+    });
+    const response = makeResponse();
+
+    await createAgentManagementReadHandlers(deps).get(
+      makeRequest({ params: { id: 'agent-one' } }),
+      response,
+    );
+
+    expect(response.status).toHaveBeenCalledWith(500);
+    expect(response.json).toHaveBeenCalledWith({
+      error: { code: 'internal_error', message: 'Internal server error' },
+    });
+  });
 });
 
 it.each([false, true])(

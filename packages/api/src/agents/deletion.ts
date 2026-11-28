@@ -1,4 +1,4 @@
-import { logger, ResourceCapabilityMap } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
 import {
   PermissionBits,
   Permissions,
@@ -9,7 +9,12 @@ import type { IAgent, IRole, IUser, SystemCapability } from '@librechat/data-sch
 import type { Request, Response } from 'express';
 import type { Types } from 'mongoose';
 import type { AgentManagementProjectionSource } from './management';
-import { agentManagementDeleteResponseSchema, mapAgentManagementError } from './management';
+import {
+  mapAgentManagementError,
+  toAgentManagementAccessCode,
+  authorizeAgentManagementTarget,
+  agentManagementDeleteResponseSchema,
+} from './management';
 import { checkAccessWithRequestCache } from '../middleware/access';
 
 type AgentManagementRecord = AgentManagementProjectionSource & { _id: Types.ObjectId };
@@ -36,18 +41,6 @@ function sendError(res: Response, code: Parameters<typeof mapAgentManagementErro
   return res.status(mapped.status).json(mapped.body);
 }
 
-async function hasManageAgentsCapability(user: IUser, deps: AgentManagementDeleteDeps) {
-  const capability = ResourceCapabilityMap[ResourceType.AGENT];
-  try {
-    return capability != null && (await deps.hasCapability(user, capability));
-  } catch (error) {
-    logger.warn(
-      `[AgentManagement] Agent capability check failed, denying bypass: ${(error as Error).message}`,
-    );
-    return false;
-  }
-}
-
 /** Authorize a tenant-scoped deletion, then reuse the Agent model's existing cleanup path. */
 export function createAgentManagementDeleteHandler(
   deps: AgentManagementDeleteDeps,
@@ -70,26 +63,12 @@ export function createAgentManagementDeleteHandler(
         return sendError(res, 'permission_denied');
       }
 
-      const agent = await deps.getAgentWithVersionCount({
-        id: req.params.id,
-        tenantId: user.tenantId,
-      });
-      if (!agent) {
-        return sendError(res, 'not_found');
-      }
-
-      const canManageAll = await hasManageAgentsCapability(user, deps);
-      if (
-        !canManageAll &&
-        !(await deps.checkPermission({
-          userId: user.id,
-          role: user.role,
-          resourceType: ResourceType.AGENT,
-          resourceId: agent._id,
-          requiredPermission: PermissionBits.DELETE,
-        }))
-      ) {
-        return sendError(res, 'permission_denied');
+      const authorization = await authorizeAgentManagementTarget(
+        { user, tenantId: user.tenantId, agentId: req.params.id, required: 'DELETE' },
+        deps,
+      );
+      if (!authorization.ok) {
+        return sendError(res, toAgentManagementAccessCode(authorization.error.code));
       }
 
       const deleted = await deps.deleteAgent({ id: req.params.id, tenantId: user.tenantId });
