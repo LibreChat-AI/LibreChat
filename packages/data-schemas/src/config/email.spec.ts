@@ -228,6 +228,22 @@ describe('maskEmails coverage contract', () => {
       'id alice)(work)@example.com ok',
       `id ${MASK} ok`,
     ],
+    [
+      'an escaped parenthesis and a space in a serialized comment',
+      JSON.stringify('alice(a\\) b)@example.com'),
+      `"${MASK}"`,
+    ],
+    ['a raw escaped backslash closing a comment', 'id qzq.(\\\\)x@example.com ok', `id ${MASK} ok`],
+    [
+      'a serialized quoted string holding a parenthesis in a comment',
+      JSON.stringify('qzq.(x y."a)b")x@example.com'),
+      `"${MASK}"`,
+    ],
+    [
+      'a doubly serialized comment',
+      JSON.stringify(JSON.stringify('alice(a\\) b "c")@example.com')),
+      JSON.stringify(`"${MASK}"`),
+    ],
     ['a colon before an at sign glued to the next', 'alice:work@home)@example.com', MASK],
   ])('never leaves text glued to an address outside the mask: %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
@@ -299,6 +315,9 @@ describe('maskEmails bounds', () => {
       `${'(a@'.repeat(30_000)})@example.com`,
       `${'('.repeat(30_000)}${')@'.repeat(30_000)}`,
       `(${'"x'.repeat(30_000)})@example.com`,
+      `${('(\\"' + 'x'.repeat(10)).repeat(10_000)})@example.com`,
+      `${('(' + '\\\\\\"'.repeat(500) + '\\"').repeat(40)})@x.com`,
+      `(${'\\'.repeat(100_000)})@example.com`,
       `${'("'.repeat(30_000)}`,
       'a%40'.repeat(50_000),
       '?a%40'.repeat(30_000),

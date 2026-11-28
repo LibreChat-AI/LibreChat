@@ -313,11 +313,33 @@ function closingQuote(text: string, open: number): number {
 }
 
 /**
- * The opening parenthesis of every closing one, in one forward pass over RFC 5322 comments: they
- * nest, may hold whitespace, at signs and quoted strings, and a backslash escapes the character
- * after it. A line break ends every open comment.
+ * Index of the quote that closes a serialized quoted string opened at `open`: the next quote at the
+ * same escape depth (`level`), or `open` when the line or the bound ends first.
  */
-function comments(text: string): Map<number, number> {
+function closingRun(text: string, open: number, level: number): number {
+  const limit = Math.min(text.length, open + 1 + MAX_PART);
+  let run = 0;
+  for (let cursor = open + 1; cursor < limit; cursor++) {
+    const code = text.charCodeAt(cursor);
+    if (code === QUOTE && depth(run) === level) {
+      return cursor;
+    }
+    if (code === CR || code === LF) {
+      return open;
+    }
+    run = code === BACKSLASH ? run + 1 : 0;
+  }
+  return open;
+}
+
+/**
+ * The opening parenthesis of every closing one, in one forward pass over RFC 5322 comments: they
+ * nest and may hold whitespace, at signs and quoted strings, and a line break ends every open one.
+ * Raw text reads a backslash as escaping the one character after it; `serialized` reads a run of
+ * backslashes and the character after it as content, as JSON escaping doubles them, except that an
+ * odd run before a quote opens a quoted string one level down.
+ */
+function comments(text: string, serialized: boolean): Map<number, number> {
   const pairs = new Map<number, number>();
   const opens: number[] = [];
   for (let index = 0; index < text.length; index++) {
@@ -334,7 +356,16 @@ function comments(text: string): Map<number, number> {
     } else if (opens.length > 0 && code === QUOTE) {
       index = closingQuote(text, index);
     } else if (opens.length > 0 && code === BACKSLASH) {
-      index++;
+      let run = 1;
+      while (serialized && text.charCodeAt(index + run) === BACKSLASH) {
+        run++;
+      }
+      const next = index + run;
+      if (serialized && run % 2 === 1 && text.charCodeAt(next) === QUOTE) {
+        index = closingRun(text, next, depth(run));
+      } else {
+        index = serialized ? next : index + 1;
+      }
     }
   }
   return pairs;
@@ -353,8 +384,8 @@ function authority(text: string, index: number): boolean {
  * Where the local part that ends at `at` starts. Plain characters are read back to `floor` (the
  * previous at sign or mask) and at most MAX_PART units; a quoted word or a comment (`opening`
  * gives its opening parenthesis) may reach further, since either can hold an at sign. A comment
- * is no word, so a part of comments alone counts none; `stuck` is set when a backslash escape the
- * grammar cannot read ends the part, as in serialized text.
+ * is no word, so a part of comments alone counts none; `stuck` is set when a closing parenthesis
+ * or a backslash escape the grammar cannot read ends the part, as in a serialized comment.
  */
 function local(
   text: string,
@@ -404,7 +435,7 @@ function local(
     if (point === CLOSE) {
       const open = opening(start - 1);
       if (open < bound) {
-        break;
+        return { start, words, stuck: true };
       }
       start = open;
       limit = start < limit ? bound : limit;
@@ -644,10 +675,13 @@ export function findEmails(text: string): Span[] {
     return spans;
   }
   const scan: Scan = { skip: 0 };
-  let pairs: Map<number, number> | undefined;
+  /** A comment's escapes may be raw or serialized: of the two pairings, the wider one is masked. */
+  let pairs: Array<Map<number, number>> | undefined;
   const opening = (close: number): number => {
-    pairs ??= comments(text);
-    return pairs.get(close) ?? -1;
+    pairs ??= [comments(text, false), comments(text, true)];
+    const raw = pairs[0].get(close) ?? -1;
+    const serialized = pairs[1].get(close) ?? -1;
+    return raw < 0 || serialized < 0 ? Math.max(raw, serialized) : Math.min(raw, serialized);
   };
   /** End of the previous at sign, the start of its local part, and whether it was masked. */
   let mark = 0;
