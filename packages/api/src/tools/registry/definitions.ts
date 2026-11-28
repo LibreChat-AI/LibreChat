@@ -4,6 +4,11 @@ import {
   GitHubCompareToolDefinition,
 } from '@librechat/agents';
 import type { ExtendedJsonSchema } from './schema';
+import {
+  manageAgentSchema,
+  MANAGE_AGENT_TOOL_NAME,
+  MANAGE_AGENT_DESCRIPTION,
+} from '~/agents/builder';
 import { AskUserQuestionToolDefinition } from '~/agents/hitl/askUserQuestionTool';
 import { geminiToolkit } from '~/tools/toolkits/gemini';
 import { oaiToolkit } from '~/tools/toolkits/oai';
@@ -425,6 +430,12 @@ const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
     name: AskUserQuestionToolDefinition.name,
     description: AskUserQuestionToolDefinition.description,
     schema: AskUserQuestionToolDefinition.schema as ExtendedJsonSchema,
+    toolType: 'builtin',
+  },
+  [MANAGE_AGENT_TOOL_NAME]: {
+    name: MANAGE_AGENT_TOOL_NAME,
+    description: MANAGE_AGENT_DESCRIPTION,
+    schema: manageAgentSchema,
     toolType: 'builtin',
   },
 };

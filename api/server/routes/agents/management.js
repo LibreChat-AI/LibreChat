@@ -10,12 +10,9 @@ const {
 } = require('librechat-data-provider');
 const {
   createAgentUploadLock,
-  createAgentManagementCreateHandler,
   createAgentManagementDeleteHandler,
   createAgentManagementFileHandlers,
   createAgentManagementUploadResponse,
-  createAgentManagementReadHandlers,
-  createAgentManagementUpdateHandler,
   ioredisClient,
   mapAgentManagementError,
   restoreTenantContextFromReq,
@@ -29,34 +26,19 @@ const {
   requireTermsAcceptance,
 } = require('~/server/middleware');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
-const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
+const {
+  readHandlers,
+  createHandler,
+  updateHandler,
+} = require('~/server/services/Agents/management');
+const { checkPermission } = require('~/server/services/PermissionService');
 const { createMulterInstance } = require('~/server/routes/files/multer');
 const { handleFileUpload } = require('~/server/routes/files/files');
 const { checkCapability, getEndpointsConfig } = require('~/server/services/Config');
-const v1 = require('~/server/controllers/agents/v1');
 const db = require('~/models');
 const { requireAgentManagementAuth } = require('./middleware');
 
 const router = express.Router();
-const readHandlers = createAgentManagementReadHandlers({
-  getRoleByName: db.getRoleByName,
-  getAgentWithVersionCount: db.getAgentWithVersionCount,
-  getAgentManagementListByAccess: db.getAgentManagementListByAccess,
-  findAccessibleResources,
-  checkPermission,
-  hasCapability,
-});
-const createHandler = createAgentManagementCreateHandler({
-  getRoleByName: db.getRoleByName,
-  createAgent: v1.createAgent,
-});
-const updateHandler = createAgentManagementUpdateHandler({
-  getRoleByName: db.getRoleByName,
-  getAgentWithVersionCount: db.getAgentWithVersionCount,
-  checkPermission,
-  hasCapability,
-  updateAgent: v1.updateAgent,
-});
 const deleteHandler = createAgentManagementDeleteHandler({
   getRoleByName: db.getRoleByName,
   getAgentWithVersionCount: db.getAgentWithVersionCount,

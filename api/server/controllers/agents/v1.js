@@ -58,6 +58,7 @@ const {
   authorizeAgentRestore,
   applySdkAgentBindingWrite,
   getSdkAgentWriteErrorStatus,
+  MANAGE_AGENT_TOOL_NAME,
 } = require('@librechat/api');
 const {
   resolveSubagents,
@@ -112,6 +113,7 @@ const systemTools = {
   [Tools.file_search]: true,
   [Tools.web_search]: true,
   [Tools.memory]: true,
+  [MANAGE_AGENT_TOOL_NAME]: true,
 };
 
 const MAX_SEARCH_LEN = 100;
