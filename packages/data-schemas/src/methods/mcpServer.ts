@@ -112,6 +112,10 @@ export function createMCPServerMethods(
     serverName: string,
     updateData: { config?: MCPOptions },
   ) => Promise<MCPServerDocument | null>;
+  replaceMCPServerConfig: (
+    serverName: string,
+    config: MCPOptions,
+  ) => Promise<{ previous: MCPServerDocument; next: MCPServerDocument } | null>;
   deleteMCPServer: (serverName: string) => Promise<MCPServerDocument | null>;
   findUserErasableMCPServers: (userId: string) => Promise<ErasableMCPServer[]>;
   deleteMCPServersWithAcl: (ids: string[]) => Promise<number>;
@@ -389,6 +393,26 @@ export function createMCPServerMethods(
     ).lean<MCPServerDocument>();
   }
 
+  /** The projection applies the same literal replacement to the returned pre-image. */
+  async function replaceMCPServerConfig(serverName: string, config: MCPOptions) {
+    const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
+    const replacement = { config, updatedAt: new Date() };
+    return await MCPServer.findOneAndUpdate(
+      { serverName },
+      { $set: replacement },
+      {
+        returnDocument: 'before',
+        timestamps: false,
+        runValidators: true,
+        projection: {
+          _id: 0,
+          previous: '$$ROOT',
+          next: { $mergeObjects: ['$$ROOT', { $literal: replacement }] },
+        },
+      },
+    ).lean<{ previous: MCPServerDocument; next: MCPServerDocument } | null>();
+  }
+
   /**
    * Delete an MCP server
    * @param serverName - The MCP server ID
@@ -597,6 +621,7 @@ export function createMCPServerMethods(
     getListMCPServersByIds,
     getListMCPServersByNames,
     updateMCPServer,
+    replaceMCPServerConfig,
     deleteMCPServer,
   };
 }

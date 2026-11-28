@@ -25,7 +25,7 @@ jest.mock('~/server/services/GraphApiService', () => ({
 const mockRegistryInstance = {
   getServerConfig: jest.fn(),
   inspectServerUpdate: jest.fn(),
-  commitServerUpdate: jest.fn(),
+  commitDBServerUpdate: jest.fn(),
   updateServer: jest.fn(),
   removeServer: jest.fn(),
   resolveAllowlists: jest.fn(),
@@ -123,7 +123,7 @@ beforeEach(async () => {
   mockResolveAllMcpConfigs.mockReset();
   mockRegistryInstance.getServerConfig.mockReset();
   mockRegistryInstance.inspectServerUpdate.mockReset();
-  mockRegistryInstance.commitServerUpdate.mockReset();
+  mockRegistryInstance.commitDBServerUpdate.mockReset();
   mockRegistryInstance.updateServer.mockReset();
   mockRegistryInstance.removeServer.mockReset();
   mockRegistryInstance.resolveAllowlists.mockReset().mockResolvedValue({
@@ -362,7 +362,10 @@ describe('DB-backed server mutation fencing', () => {
       createDbConfig(new mongoose.Types.ObjectId()),
     );
     mockRegistryInstance.inspectServerUpdate.mockResolvedValue(updatedConfig);
-    mockRegistryInstance.commitServerUpdate.mockResolvedValue(updatedConfig);
+    mockRegistryInstance.commitDBServerUpdate.mockResolvedValue({
+      previous: {},
+      next: updatedConfig,
+    });
     const res = createRes();
 
     await updateMCPServerController(
@@ -378,9 +381,9 @@ describe('DB-backed server mutation fencing', () => {
       invalidateCachedTools.mock.invocationCallOrder[0],
     );
     expect(invalidateCachedTools.mock.invocationCallOrder[0]).toBeLessThan(
-      mockRegistryInstance.commitServerUpdate.mock.invocationCallOrder[0],
+      mockRegistryInstance.commitDBServerUpdate.mock.invocationCallOrder[0],
     );
-    expect(mockRegistryInstance.commitServerUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockRegistryInstance.commitDBServerUpdate.mock.invocationCallOrder[0]).toBeLessThan(
       invalidateCachedTools.mock.invocationCallOrder[1],
     );
     expect(invalidateCachedTools.mock.invocationCallOrder[1]).toBeLessThan(
@@ -412,7 +415,7 @@ describe('DB-backed server mutation fencing', () => {
     );
 
     expect(require('~/server/services/Config').invalidateCachedTools).not.toHaveBeenCalled();
-    expect(mockRegistryInstance.commitServerUpdate).not.toHaveBeenCalled();
+    expect(mockRegistryInstance.commitDBServerUpdate).not.toHaveBeenCalled();
     expect(mockMcpManager.disconnectUserConnection).not.toHaveBeenCalled();
     expect(mockMaybeUninstallOAuthMCP).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(500);
@@ -436,7 +439,7 @@ describe('DB-backed server mutation fencing', () => {
 
     expect(mockMcpManager.disconnectUserConnection).not.toHaveBeenCalled();
     expect(mockMaybeUninstallOAuthMCP).not.toHaveBeenCalled();
-    expect(mockRegistryInstance.commitServerUpdate).not.toHaveBeenCalled();
+    expect(mockRegistryInstance.commitDBServerUpdate).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(500);
   });
 
@@ -446,7 +449,7 @@ describe('DB-backed server mutation fencing', () => {
     const retainedTools = { retained: { function: { name: 'retained' } } };
     mockRegistryInstance.getServerConfig.mockResolvedValue(existingConfig);
     mockRegistryInstance.inspectServerUpdate.mockResolvedValue(updatedConfig);
-    mockRegistryInstance.commitServerUpdate.mockRejectedValue(new Error('database unavailable'));
+    mockRegistryInstance.commitDBServerUpdate.mockRejectedValue(new Error('database unavailable'));
     require('~/server/services/Config').getMCPServerTools.mockResolvedValue(retainedTools);
     const res = createRes();
 
@@ -473,7 +476,10 @@ describe('DB-backed server mutation fencing', () => {
     );
     mockMcpManager.disconnectUserConnection.mockRejectedValue(new Error('dispose failed'));
     mockRegistryInstance.inspectServerUpdate.mockResolvedValue(updatedConfig);
-    mockRegistryInstance.commitServerUpdate.mockResolvedValue(updatedConfig);
+    mockRegistryInstance.commitDBServerUpdate.mockResolvedValue({
+      previous: {},
+      next: updatedConfig,
+    });
     const res = createRes();
 
     await updateMCPServerController(
@@ -481,7 +487,7 @@ describe('DB-backed server mutation fencing', () => {
       res,
     );
 
-    expect(mockRegistryInstance.commitServerUpdate).toHaveBeenCalled();
+    expect(mockRegistryInstance.commitDBServerUpdate).toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(200);
   });
 
@@ -491,7 +497,10 @@ describe('DB-backed server mutation fencing', () => {
       createDbConfig(new mongoose.Types.ObjectId()),
     );
     mockRegistryInstance.inspectServerUpdate.mockResolvedValue(updatedConfig);
-    mockRegistryInstance.commitServerUpdate.mockResolvedValue(updatedConfig);
+    mockRegistryInstance.commitDBServerUpdate.mockResolvedValue({
+      previous: {},
+      next: updatedConfig,
+    });
     require('~/server/services/Config')
       .invalidateCachedTools.mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('Redis MOVED'))

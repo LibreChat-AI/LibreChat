@@ -28,7 +28,7 @@ const mockRegistryInstance = {
   ensureConfigServers: jest.fn().mockResolvedValue({}),
   addServer: jest.fn(),
   inspectServerUpdate: jest.fn(),
-  commitServerUpdate: jest.fn(),
+  commitDBServerUpdate: jest.fn(),
   updateServer: jest.fn(),
   removeServer: jest.fn(),
   getAllowedDomains: jest.fn().mockReturnValue(null),
@@ -344,7 +344,7 @@ describe('MCP Routes', () => {
     mockRegistryInstance.getServerConfig.mockReset().mockResolvedValue(undefined);
     mockRegistryInstance.addServer.mockReset();
     mockRegistryInstance.inspectServerUpdate.mockReset();
-    mockRegistryInstance.commitServerUpdate.mockReset();
+    mockRegistryInstance.commitDBServerUpdate.mockReset();
     mockRegistryInstance.updateServer.mockReset();
     mockRegistryInstance.removeServer.mockReset();
     const cacheService = require('~/server/services/Config');
@@ -4998,7 +4998,10 @@ describe('MCP Routes', () => {
           ...oboConfig,
           title: 'Renamed OBO Server',
         });
-        mockRegistryInstance.commitServerUpdate.mockResolvedValue(undefined);
+        mockRegistryInstance.commitDBServerUpdate.mockImplementation(async (_, next) => ({
+          previous: {},
+          next,
+        }));
 
         const response = await request(app)
           .patch('/api/mcp/servers/obo-server')
@@ -5011,7 +5014,7 @@ describe('MCP Routes', () => {
           });
 
         expect(response.status).toBe(200);
-        expect(mockRegistryInstance.commitServerUpdate).toHaveBeenCalled();
+        expect(mockRegistryInstance.commitDBServerUpdate).toHaveBeenCalled();
       });
 
       it('rejects PATCH that removes OBO from an existing OBO server without CONFIGURE_OBO', async () => {
@@ -5184,7 +5187,10 @@ describe('MCP Routes', () => {
         ...updatedConfig,
         source: 'user',
       });
-      mockRegistryInstance.commitServerUpdate.mockResolvedValue(undefined);
+      mockRegistryInstance.commitDBServerUpdate.mockImplementation(async (_, next) => ({
+        previous: {},
+        next,
+      }));
 
       const response = await request(app)
         .patch('/api/mcp/servers/test-server')
@@ -5221,7 +5227,10 @@ describe('MCP Routes', () => {
       };
       mockRegistryInstance.getServerConfig.mockResolvedValueOnce(existing);
       mockRegistryInstance.inspectServerUpdate.mockResolvedValue({ ...updated, source: 'user' });
-      mockRegistryInstance.commitServerUpdate.mockResolvedValue({ ...updated, source: 'user' });
+      mockRegistryInstance.commitDBServerUpdate.mockResolvedValue({
+        previous: existing,
+        next: { ...updated, source: 'user' },
+      });
 
       const response = await request(app)
         .patch('/api/mcp/servers/test-server')
@@ -5240,7 +5249,7 @@ describe('MCP Routes', () => {
       expect(JSON.stringify(input)).not.toContain('secret');
     });
 
-    it('audits the config this write persisted, not a later overlapping write', async () => {
+    it('@scenario:audit-fields records changes between the two snapshots of this write', async () => {
       const { recordAuditEntry } = require('~/models');
       recordAuditEntry.mockClear();
       const existing = { type: 'sse', url: 'https://old.example.com/sse', title: 'Same Title' };
@@ -5252,7 +5261,10 @@ describe('MCP Routes', () => {
       });
       mockRegistryInstance.getServerConfig.mockResolvedValueOnce(existing);
       mockRegistryInstance.inspectServerUpdate.mockResolvedValue({ ...submitted, source: 'user' });
-      mockRegistryInstance.commitServerUpdate.mockResolvedValue({ ...submitted, source: 'user' });
+      mockRegistryInstance.commitDBServerUpdate.mockResolvedValue({
+        previous: { ...existing, title: 'Intervening Title' },
+        next: { ...submitted, source: 'user' },
+      });
 
       const response = await request(app)
         .patch('/api/mcp/servers/test-server')
@@ -5262,7 +5274,7 @@ describe('MCP Routes', () => {
       expect(recordAuditEntry).toHaveBeenCalledWith(
         expect.objectContaining({
           target: { type: 'mcp_server', id: 'test-server', name: 'Same Title' },
-          metadata: { source: 'DB', fields: 'url' },
+          metadata: { source: 'DB', fields: 'title,url' },
         }),
       );
     });
@@ -5275,8 +5287,11 @@ describe('MCP Routes', () => {
       const submitted = { ...existing, url: 'https://new.example.com/sse' };
       mockRegistryInstance.getServerConfig.mockResolvedValueOnce(existing);
       mockRegistryInstance.inspectServerUpdate.mockResolvedValue({ ...submitted, source: 'user' });
-      mockRegistryInstance.commitServerUpdate.mockRejectedValueOnce(
-        new MCPCommittedWriteError({ ...submitted, source: 'user' }, new Error('redis down')),
+      mockRegistryInstance.commitDBServerUpdate.mockRejectedValueOnce(
+        new MCPCommittedWriteError(
+          { previous: existing, next: { ...submitted, source: 'user' } },
+          new Error('redis down'),
+        ),
       );
 
       const response = await request(app)
@@ -5306,7 +5321,10 @@ describe('MCP Routes', () => {
         headers: { Authorization: 'Bearer internal-token' },
         env: { DATABASE_URL: 'postgres://admin:pass@localhost/db' },
       });
-      mockRegistryInstance.commitServerUpdate.mockResolvedValue(undefined);
+      mockRegistryInstance.commitDBServerUpdate.mockImplementation(async (_, next) => ({
+        previous: {},
+        next,
+      }));
 
       const response = await request(app)
         .patch('/api/mcp/servers/test-server')

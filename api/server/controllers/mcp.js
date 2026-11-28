@@ -599,7 +599,7 @@ const updateMCPServerController = async (req, res) => {
     let settled;
     try {
       settled = await settleMCPCommit(() =>
-        registry.commitServerUpdate(serverName, parsedConfig, 'DB', userId),
+        registry.commitDBServerUpdate(serverName, parsedConfig, userId),
       );
     } catch (error) {
       await restoreRetainedServerCatalog({
@@ -610,7 +610,7 @@ const updateMCPServerController = async (req, res) => {
       });
       throw error;
     }
-    const committedConfig = settled.committed ?? parsedConfig;
+    const { previous, next: committedConfig } = settled.committed;
     /** Fence connections another replica could have created from the old DB
      * config between the pre-commit fence and the committed update. */
     await auditMCPServer(
@@ -618,7 +618,7 @@ const updateMCPServerController = async (req, res) => {
       {
         action: 'mcp_server.updated',
         serverName,
-        previous: existingConfig,
+        previous,
         next: committedConfig,
         postWriteFailed: settled.postWriteError != null,
       },

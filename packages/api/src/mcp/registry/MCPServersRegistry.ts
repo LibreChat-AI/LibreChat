@@ -1330,6 +1330,18 @@ export class MCPServersRegistry {
     return persisted;
   }
 
+  public async commitDBServerUpdate(
+    serverName: string,
+    parsedConfig: t.ParsedServerConfig,
+    userId: string,
+  ): Promise<{ previous: t.ParsedServerConfig; next: t.ParsedServerConfig }> {
+    const change = await this.dbConfigsRepo.updateWithPrevious(serverName, parsedConfig, userId);
+    await this.invalidateCommitted(change, () =>
+      this.invalidateServerReadCaches(serverName, userId, 'DB'),
+    );
+    return change;
+  }
+
   public async updateServer(
     serverName: string,
     config: t.MCPOptions,
