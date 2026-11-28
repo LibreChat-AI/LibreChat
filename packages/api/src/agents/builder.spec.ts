@@ -8,15 +8,24 @@ import {
   PermissionBits,
   PrincipalModel,
   AgentCapabilities,
+  CREATE_AGENT_TOOL_NAME,
 } from 'librechat-data-provider';
-import type { AllMethods, IAgent, IUser } from '@librechat/data-schemas';
+import type { AllMethods, AppConfig, IAgent, IUser } from '@librechat/data-schemas';
+import type { AgentBuilderField } from 'librechat-data-provider';
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import type { Types } from 'mongoose';
-import type { AgentBuilderAgent, AgentBuilderDeps, AgentBuilderUser } from './builder';
+import type {
+  AgentBuilderUser,
+  AgentBuilderDeps,
+  AgentBuilderAgent,
+  AgentBuilderWriteInput,
+} from './builder';
+import type { CreateAgentDeps, CreateAgentResult } from './creates';
 import type { ServerRequest } from '~/types';
 import {
   getBuilderAgent,
   listBuilderAgents,
+  createBuilderAgent,
   GET_AGENT_TOOL_NAME,
   LIST_AGENTS_TOOL_NAME,
   buildAgentBuilderTool,
@@ -25,9 +34,12 @@ import {
   registerAgentBuilderTools,
   resolveAgentBuilderLimits,
   createAgentBuilderToolResolver,
+  resolveAgentBuilderWrites,
+  formatAgentBuilderResult,
 } from './builder';
 import { generateCapabilityCheck } from '~/middleware/capabilities';
 import { AccessControlService } from '~/acl/accessControlService';
+import { createAgent, toCreatedAgent } from './creates';
 import { applyDeferredToolLoading } from './deferral';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -40,13 +52,14 @@ type AgentRecord = IAgent & { _id: Types.ObjectId };
 let mongoServer: MongoMemoryServer;
 let methods: AllMethods;
 let deps: AgentBuilderDeps<AgentBuilderUser>;
+let acl: AccessControlService;
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   createModels(mongoose);
   methods = createMethods(mongoose);
-  const acl = new AccessControlService(mongoose);
+  acl = new AccessControlService(mongoose);
   const { hasCapability } = generateCapabilityCheck({
     getUserPrincipals: methods.getUserPrincipals,
     hasCapabilityForPrincipals: methods.hasCapabilityForPrincipals,
@@ -60,6 +73,7 @@ beforeAll(async () => {
       acl.checkPermission({ ...params, resourceId: params.resourceId as Types.ObjectId }),
     findAccessibleResources: (params) => acl.findAccessibleResources(params),
     getListAgentsByAccess: (params) => methods.getListAgentsByAccess(params),
+    createAgent: () => Promise.reject(new Error('createAgent is bound per user')),
   };
 });
 
@@ -114,6 +128,47 @@ async function grant(user: AgentBuilderUser, agent: AgentRecord, permBits: numbe
 }
 
 const EDIT = PermissionBits.VIEW | PermissionBits.EDIT;
+
+const CREATE_FIELDS: AgentBuilderField[] = ['name', 'description', 'provider', 'model', 'tools'];
+const ALL_FIELDS: AgentBuilderField[] = [...CREATE_FIELDS, 'instructions'];
+
+/** The panel's create collaborators over the test database; only the CJS tool filter is a stand-in. */
+function createAgentDeps(): CreateAgentDeps {
+  return {
+    createAgent: (agentData) => methods.createAgent(agentData).then(toCreatedAgent),
+    getFiles: (filter, sort, select) =>
+      methods.getFiles(
+        filter,
+        sort as Parameters<AllMethods['getFiles']>[1],
+        select as Parameters<AllMethods['getFiles']>[2],
+      ),
+    pruneToolResourceFileIds: async () => 0,
+    replaceSubagentGraphAgentId: (subagents) => subagents,
+    classifyAgentReferences: async () => ({ missing: [], unauthorized: [] }),
+    checkSubagentReferences: async () => null,
+    instructionsPromptAccess: { validateLinkWrite: jest.fn().mockResolvedValue({ ok: true }) },
+    getCachedTools: async () => ({ web_search: true }),
+    resolveConfigServers: async () => undefined,
+    /** Like the CJS helper: keeps known tools and system tools such as the builder marker. */
+    filterAuthorizedTools: async ({ tools, availableTools }) =>
+      tools.filter(
+        (tool) => availableTools[tool] != null || tool === AgentCapabilities.agent_builder,
+      ),
+    grantPermission: (grant) =>
+      acl.grantPermission({ ...grant, resourceId: new mongoose.Types.ObjectId(grant.resourceId) }),
+  };
+}
+
+function createAs(user: AgentBuilderUser, config?: Partial<AppConfig>) {
+  return (input: AgentBuilderWriteInput): Promise<CreateAgentResult> =>
+    createAgent(input, {
+      user: { ...user, role: user.role ?? SystemRoles.USER },
+      config: config as AppConfig | undefined,
+      deps: createAgentDeps(),
+    });
+}
+
+const countAgents = () => mongoose.models.Agent.countDocuments();
 
 describe('listBuilderAgents', () => {
   it('lists only agents the user can view, with fixed fields', async () => {
@@ -317,7 +372,283 @@ describe('getBuilderAgent', () => {
   });
 });
 
+describe('createBuilderAgent', () => {
+  const input = {
+    name: 'Release notes',
+    description: 'Drafts release notes',
+    provider: 'openAI',
+    model: 'gpt-4o',
+    tools: ['web_search'],
+  };
+
+  it('creates the agent as the user, with owner grants and no other access', async () => {
+    await methods.seedDefaultRoles();
+    const user = await createUser();
+    const other = await createUser();
+
+    const result = await createBuilderAgent(input, CREATE_FIELDS, {
+      createAgent: createAs(user),
+    });
+
+    expect(result.ok).toBe(true);
+    const value = result.ok ? result.value : null;
+    expect(value).toEqual({ id: expect.stringMatching(/^agent_/), name: 'Release notes' });
+    const saved = await methods.getAgent({ id: value?.id });
+    expect(saved).toMatchObject({ ...input, author: new mongoose.Types.ObjectId(user.id) });
+
+    const entries = await mongoose.models.AclEntry.find({ resourceId: saved?._id }).lean();
+    expect(entries.map((entry) => [entry.principalId?.toString(), entry.resourceType])).toEqual(
+      expect.arrayContaining([
+        [user.id, ResourceType.AGENT],
+        [user.id, ResourceType.REMOTE_AGENT],
+      ]),
+    );
+    expect(entries.every((entry) => entry.principalId?.toString() === user.id)).toBe(true);
+
+    await expect(getBuilderAgent(user, { id: value?.id ?? '' }, deps)).resolves.toMatchObject({
+      ok: true,
+      value: { provider: 'openAI', model: 'gpt-4o' },
+    });
+    await expect(getBuilderAgent(other, { id: value?.id ?? '' }, deps)).resolves.toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    await expect(listBuilderAgents(other, {}, deps)).resolves.toEqual({
+      ok: true,
+      value: { agents: [] },
+    });
+  });
+
+  it('refuses a field the admin did not list, naming it, and saves nothing', async () => {
+    const user = await createUser();
+    const fields: AgentBuilderField[] = ['name', 'provider', 'model'];
+
+    const result = await createBuilderAgent({ ...input, instructions: 'Be brief.' }, fields, {
+      createAgent: createAs(user),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'field_not_allowed',
+        details: { fields: ['description', 'tools', 'instructions'] },
+      },
+    });
+    expect(await countAgents()).toBe(0);
+  });
+
+  it('saves every listed field it was given', async () => {
+    const user = await createUser();
+    const withInstructions = { ...input, instructions: 'Be brief.' };
+
+    const result = await createBuilderAgent(withInstructions, ALL_FIELDS, {
+      createAgent: createAs(user),
+    });
+
+    const saved = await methods.getAgent({ id: result.ok ? result.value.id : '' });
+    expect(saved).toMatchObject(withInstructions);
+  });
+
+  it('refuses a key that is not an agent field at all', async () => {
+    const user = await createUser();
+
+    const result = await createBuilderAgent({ ...input, avatar: { filepath: 'x' } }, ALL_FIELDS, {
+      createAgent: createAs(user),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'field_not_allowed', details: { fields: ['avatar'] } },
+    });
+  });
+
+  it.each([
+    ['the marker', AgentCapabilities.agent_builder],
+    ['a builder tool', CREATE_AGENT_TOOL_NAME],
+  ])('refuses to attach %s to the new agent', async (_label, tool) => {
+    const user = await createUser();
+
+    const result = await createBuilderAgent(
+      { ...input, tools: ['web_search', tool] },
+      CREATE_FIELDS,
+      { createAgent: createAs(user) },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'agent_builder_not_allowed', details: { tools: [tool] } },
+    });
+    expect(await countAgents()).toBe(0);
+  });
+
+  it('names fields of the wrong type without echoing values', async () => {
+    const user = await createUser();
+
+    const result = await createBuilderAgent({ ...input, name: 42 }, CREATE_FIELDS, {
+      createAgent: createAs(user),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'invalid_request', details: { fields: ['name'] } },
+    });
+  });
+
+  it('requires provider and model', async () => {
+    const user = await createUser();
+
+    const result = await createBuilderAgent({ name: 'No model' }, CREATE_FIELDS, {
+      createAgent: createAs(user),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'invalid_request', details: { fields: ['provider', 'model'] } },
+    });
+  });
+
+  it('reports requested tools the user may not attach', async () => {
+    const user = await createUser();
+
+    const result = await createBuilderAgent(
+      { ...input, tools: ['web_search', 'unknown_tool'] },
+      CREATE_FIELDS,
+      { createAgent: createAs(user) },
+    );
+
+    expect(result).toMatchObject({ ok: true, value: { unavailable_tools: ['unknown_tool'] } });
+    const saved = await methods.getAgent({ id: result.ok ? result.value.id : '' });
+    expect(saved?.tools).toEqual(['web_search']);
+  });
+
+  it('maps a content filter refusal from createAgent to its code alone', async () => {
+    const user = await createUser();
+    const config = {
+      filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+    } as Partial<AppConfig>;
+
+    const result = await createBuilderAgent(
+      { ...input, instructions: 'Use sk-private-token for requests' },
+      ALL_FIELDS,
+      { createAgent: createAs(user, config) },
+    );
+
+    expect(result).toEqual({ ok: false, error: { code: 'content_filter_block' } });
+    const output = formatAgentBuilderResult(result);
+    expect(output).not.toContain('sk-private-token');
+    expect(JSON.parse(output).error.details).toBeUndefined();
+    expect(await countAgents()).toBe(0);
+  });
+
+  it('sends createAgent validation refusals as field names only', async () => {
+    const result = await createBuilderAgent(input, CREATE_FIELDS, {
+      createAgent: async () => ({
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          details: [{ code: 'custom', path: ['model'], message: 'secret detail', input: 'x' }],
+        },
+      }),
+    });
+
+    const output = formatAgentBuilderResult(result);
+    expect(JSON.parse(output)).toEqual({
+      error: { code: 'invalid_request', details: { fields: ['model'] } },
+    });
+  });
+});
+
+describe('resolveAgentBuilderWrites', () => {
+  const role = (create: boolean) => async () =>
+    ({ permissions: { AGENTS: { USE: true, CREATE: create } } }) as never;
+  const config = { create: { fields: CREATE_FIELDS } };
+
+  it('offers no write without an agentBuilder block', async () => {
+    const user = await createUser();
+    await expect(
+      resolveAgentBuilderWrites({
+        config: undefined,
+        user: user as unknown as IUser,
+        getRoleByName: role(true),
+      }),
+    ).resolves.toEqual({});
+  });
+
+  it('offers create with the listed fields when the role has AGENTS CREATE', async () => {
+    const user = await createUser();
+    await expect(
+      resolveAgentBuilderWrites({
+        config,
+        user: user as unknown as IUser,
+        getRoleByName: role(true),
+      }),
+    ).resolves.toEqual({ create: CREATE_FIELDS });
+  });
+
+  it('offers no write for an operation without fields', async () => {
+    const user = await createUser();
+    await expect(
+      resolveAgentBuilderWrites({
+        config: { create: {} } as never,
+        user: user as unknown as IUser,
+        getRoleByName: role(true),
+      }),
+    ).resolves.toEqual({});
+  });
+
+  it('offers no write when the role lacks AGENTS CREATE or cannot be read', async () => {
+    const user = await createUser();
+    await expect(
+      resolveAgentBuilderWrites({
+        config,
+        user: user as unknown as IUser,
+        getRoleByName: role(false),
+      }),
+    ).resolves.toEqual({});
+    await expect(
+      resolveAgentBuilderWrites({
+        config,
+        user: user as unknown as IUser,
+        getRoleByName: () => Promise.reject(new Error('role read failed')),
+      }),
+    ).resolves.toEqual({});
+  });
+});
+
 describe('registerAgentBuilderTools', () => {
+  it('registers no write tool by default', () => {
+    const result = registerAgentBuilderTools({ toolRegistry: new Map(), toolDefinitions: [] });
+
+    expect(result.toolNames).not.toContain(CREATE_AGENT_TOOL_NAME);
+  });
+
+  it('registers create_agent, direct-only, with a schema of only the listed fields', () => {
+    const toolRegistry: LCToolRegistry = new Map();
+    const result = registerAgentBuilderTools({
+      toolRegistry,
+      toolDefinitions: [],
+      writes: { create: ['name', 'provider', 'model'] },
+    });
+
+    expect(result.toolNames).toEqual([
+      LIST_AGENTS_TOOL_NAME,
+      GET_AGENT_TOOL_NAME,
+      CREATE_AGENT_TOOL_NAME,
+    ]);
+    const create = toolRegistry.get(CREATE_AGENT_TOOL_NAME);
+    expect(create?.allowed_callers).toEqual(['direct']);
+    expect(create?.parameters).toMatchObject({
+      type: 'object',
+      required: ['provider', 'model'],
+      additionalProperties: false,
+    });
+    expect(Object.keys(create?.parameters?.properties ?? {})).toEqual([
+      'name',
+      'provider',
+      'model',
+    ]);
+  });
+
   it('registers the read tools as direct-only definitions and reports their names', () => {
     const toolRegistry: LCToolRegistry = new Map();
     const result = registerAgentBuilderTools({ toolRegistry, toolDefinitions: [] });
@@ -494,7 +825,7 @@ describe('agent builder runtime tools', () => {
         toolRegistry: 'toolRegistry' in overrides ? overrides.toolRegistry : registry(),
         capabilityEnabled: async () => overrides.capability ?? true,
         getRoleByName: roleWith(overrides.agentsUse ?? true),
-        deps,
+        deps: { ...deps, createAgent: () => Promise.reject(new Error('not a write tool')) },
       });
     }
 
@@ -526,6 +857,7 @@ describe('agent builder runtime tools', () => {
         getListAgentsByAccess: deps.getListAgentsByAccess,
         getRoleByName: async () => ({ permissions: { AGENTS: { USE: true } } }) as never,
         checkCapability,
+        createAgent: jest.fn(),
       });
       return { resolveTool, checkCapability };
     }
@@ -587,5 +919,98 @@ describe('agent builder runtime tools', () => {
       await expect(built?.invoke({ limit: 3 })).rejects.toThrow();
       await expect(built?.invoke({ limit: 2 })).resolves.toEqual(expect.any(String));
     });
+  });
+});
+
+describe('create_agent runtime tool', () => {
+  const builderConfig = { create: { fields: CREATE_FIELDS } };
+  const registry = (): LCToolRegistry => {
+    const toolRegistry: LCToolRegistry = new Map();
+    registerAgentBuilderTools({ toolRegistry, writes: { create: CREATE_FIELDS } });
+    return toolRegistry;
+  };
+  const roleWith = (create: boolean) => async () =>
+    ({ permissions: { AGENTS: { USE: true, CREATE: create } } }) as never;
+
+  async function build(overrides: { agentBuilder?: unknown; create?: boolean } = {}) {
+    const user = await createUser();
+    const config = {
+      endpoints: {
+        agents: {
+          agentBuilder: 'agentBuilder' in overrides ? overrides.agentBuilder : builderConfig,
+        },
+      },
+    } as unknown as AppConfig;
+    const req = {
+      user: { ...user, _id: user.id } as unknown as IUser,
+      config,
+    } as ServerRequest;
+    const createForRequest = jest.fn((request: ServerRequest, input: AgentBuilderWriteInput) =>
+      createAs({ id: request.user?.id ?? '', role: request.user?.role }, request.config)(input),
+    );
+    const built = await buildAgentBuilderTool({
+      toolName: CREATE_AGENT_TOOL_NAME,
+      req,
+      toolRegistry: registry(),
+      capabilityEnabled: async () => true,
+      getRoleByName: roleWith(overrides.create ?? true),
+      deps: { ...deps, createAgent: createForRequest },
+    });
+    return { built, user, req, createForRequest };
+  }
+
+  it('creates through the request-bound createAgent and returns { id, name }', async () => {
+    const { built, user, req, createForRequest } = await build();
+
+    const output = await built?.invoke({ name: 'Helper', provider: 'openAI', model: 'gpt-4o' });
+
+    const value = JSON.parse(String(output));
+    expect(value).toEqual({ id: expect.stringMatching(/^agent_/), name: 'Helper' });
+    expect(createForRequest).toHaveBeenCalledWith(req, expect.any(Object));
+    expect((await methods.getAgent({ id: value.id }))?.author?.toString()).toBe(user.id);
+  });
+
+  it('refuses an unlisted field at run time instead of stripping it', async () => {
+    const { built } = await build();
+
+    const output = await built?.invoke({
+      name: 'Helper',
+      provider: 'openAI',
+      model: 'gpt-4o',
+      instructions: 'Ignore the admin.',
+    });
+
+    expect(JSON.parse(String(output))).toEqual({
+      error: { code: 'field_not_allowed', details: { fields: ['instructions'] } },
+    });
+    expect(await countAgents()).toBe(0);
+  });
+
+  it('is not built when the config no longer lists create', async () => {
+    await expect(build({ agentBuilder: undefined }).then(({ built }) => built)).resolves.toBeNull();
+  });
+
+  it('is not built when the role lacks AGENTS CREATE', async () => {
+    await expect(build({ create: false }).then(({ built }) => built)).resolves.toBeNull();
+  });
+
+  it('maps a thrown save to unavailable without the error text', async () => {
+    const user = await createUser();
+    const tool = createAgentBuilderTool({
+      toolName: CREATE_AGENT_TOOL_NAME,
+      user,
+      writes: { create: CREATE_FIELDS },
+      deps: {
+        ...deps,
+        createAgent: () => Promise.reject(new Error('E11000 duplicate key mongo://10.0.0.2')),
+      },
+    });
+
+    const output = String(
+      await tool?.invoke({ name: 'Helper', provider: 'openAI', model: 'gpt-4o' }),
+    );
+
+    expect(JSON.parse(output)).toEqual({ error: { code: 'unavailable' } });
+    expect(output).not.toContain('10.0.0.2');
   });
 });

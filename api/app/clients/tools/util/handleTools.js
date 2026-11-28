@@ -84,6 +84,7 @@ const {
 } = require('~/models');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const agentsController = require('~/server/controllers/agents/v1');
 
 const resolveAgentBuilderTool = createAgentBuilderToolResolver({
   getAgent,
@@ -93,6 +94,7 @@ const resolveAgentBuilderTool = createAgentBuilderToolResolver({
   getListAgentsByAccess,
   getRoleByName,
   checkCapability,
+  createAgent: (req, input) => agentsController.createAgentForRequest(req, input),
 });
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */

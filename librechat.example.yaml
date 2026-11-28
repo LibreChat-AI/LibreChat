@@ -978,11 +978,20 @@ endpoints:
   #   # The following capabilities are opt-in and must be added explicitly:
   #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents", "subagent_graphs", "agent_builder"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
-  #   # (optional) Page sizes for the Agent Builder's list_agents tool ("agent_builder" capability).
-  #   # Both accept 1-100; defaultLimit must not be greater than maxLimit.
-  #   # An omitted defaultLimit is 20, or maxLimit when that is smaller.
+  #   # (optional) Settings for the Agent Builder tools ("agent_builder" capability).
   #   agentBuilder:
+  #     # Page sizes for list_agents. Both accept 1-100; defaultLimit must not be greater than
+  #     # maxLimit. An omitted defaultLimit is 20, or maxLimit when that is smaller.
   #     list: { defaultLimit: 20, maxLimit: 50 }
+  #     # Write tools. With no write operation listed, the builder is read-only. An operation
+  #     # that is not listed is not offered, and its tool schema holds only the listed fields.
+  #     # "fields" is required and may name only name, description, instructions, provider,
+  #     # model and tools; create needs provider and model. Writes run as the user, with the
+  #     # same checks as a save in the agent panel; created agents are private to the user.
+  #     # Recommended: ask before each write, with
+  #     # toolApproval: { enabled: true, ask: ["create_agent", "update_agent"] }
+  #     create:
+  #       fields: ["name", "description", "instructions", "provider", "model", "tools"]
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
   #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
