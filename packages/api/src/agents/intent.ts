@@ -24,12 +24,17 @@
  */
 
 import { logger } from '@librechat/data-schemas';
-import { Tools, Constants, CREATE_AGENT_TOOL_NAME } from 'librechat-data-provider';
 import {
   Constants as AgentConstants,
   INTENT_LABEL_MARKER,
   INTENT_DESCRIPTION,
 } from '@librechat/agents';
+import {
+  Tools,
+  Constants,
+  CREATE_AGENT_TOOL_NAME,
+  UPDATE_AGENT_TOOL_NAME,
+} from 'librechat-data-provider';
 import type { LCTool, LCToolRegistry, JsonSchemaType } from '@librechat/agents';
 import type { AgentToolOptions } from 'librechat-data-provider';
 import type { CapabilityToolNames } from './selection';
@@ -62,6 +67,7 @@ export const NATIVE_INTENT_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   SET_MEMORY_TOOL_NAME,
   DELETE_MEMORY_TOOL_NAME,
   CREATE_AGENT_TOOL_NAME,
+  UPDATE_AGENT_TOOL_NAME,
 ]);
 
 /**

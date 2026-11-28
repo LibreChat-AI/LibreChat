@@ -35,6 +35,7 @@ import type {
 import type { InstructionsPromptLinkErrorResponse } from './instructions/errors';
 import type { AgentManagementProjectionSource } from './management';
 import type { AgentCodeEnvironmentError } from './workspace';
+import type { AgentToolFilterDeps } from './attachable';
 import {
   agentManagementCreateSchema,
   mapAgentManagementError,
@@ -47,6 +48,7 @@ import { checkAccessWithRequestCache } from '../middleware/access';
 import { normalizeToolResourceFiles } from './orphans';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { getAgentRouteErrorResponse } from './errors';
+import { filterAttachableTools } from './attachable';
 import { validateHandoffReferences } from './specs';
 import { applyAgentInferenceInput } from './input';
 import { applySdkAgentBindingWrite } from './sdk';
@@ -178,7 +180,7 @@ export interface CreateAgentGrant {
 }
 
 /** Request-bound collaborators supplied by the caller; this module reads no app state. */
-export interface CreateAgentDeps {
+export interface CreateAgentDeps extends AgentToolFilterDeps {
   /** Saves the agent; the caller adapts the stored record with `toCreatedAgent`. */
   createAgent: (agentData: Record<string, unknown>) => Promise<CreatedAgent>;
   getFiles: GetAgentContentFiles;
@@ -204,15 +206,6 @@ export interface CreateAgentDeps {
     allowedMissingIds: Set<string>,
   ) => Promise<AgentReferenceCheck | null>;
   instructionsPromptAccess: Pick<InstructionsPromptAccess, 'validateLinkWrite'>;
-  getCachedTools: () => Promise<Record<string, unknown> | null | undefined>;
-  resolveConfigServers: () => Promise<Record<string, unknown> | undefined>;
-  /** Returns the subset of `tools` the user may attach and records resolved MCP server names. */
-  filterAuthorizedTools: (params: {
-    tools: string[];
-    availableTools: Record<string, unknown>;
-    configServers?: Record<string, unknown>;
-    resolvedServerNames: Set<string>;
-  }) => Promise<string[]>;
   grantPermission: (grant: CreateAgentGrant) => Promise<unknown>;
 }
 
@@ -385,19 +378,10 @@ async function runCreateAgent(input: unknown, ctx: CreateAgentContext): Promise<
   }
 
   const hasMCPTools = tools.some((tool) => tool?.includes(Constants.mcp_delimiter));
-  const [availableTools, configServers] = await Promise.all([
-    deps.getCachedTools().then((cached) => cached ?? {}),
-    hasMCPTools ? deps.resolveConfigServers() : Promise.resolve(undefined),
-  ]);
   /** Resolved during authorization, so persistence indexes the real server rather
    *  than a suffix guess. */
   const resolvedServerNames = new Set<string>();
-  const authorizedTools = await deps.filterAuthorizedTools({
-    tools,
-    availableTools,
-    configServers,
-    resolvedServerNames,
-  });
+  const authorizedTools = await filterAttachableTools(tools, deps, resolvedServerNames);
   const persisted: Record<string, unknown> = {
     ...agentRecord,
     author: user.id,

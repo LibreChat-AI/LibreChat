@@ -651,6 +651,24 @@ const pruneToolResourceFileIdsForAgent = async ({
 };
 
 /**
+ * The collaborators that decide which tools this request's user may attach.
+ * @param {ServerRequest} req
+ * @param {ReturnType<typeof createMCPPermissionContext>} mcpPermissionContext
+ */
+const getAgentToolFilterDeps = (req, mcpPermissionContext) => ({
+  getCachedTools: () => getCachedTools(),
+  resolveConfigServers: () => resolveConfigServers(req),
+  filterAuthorizedTools: (params) =>
+    filterAuthorizedTools({
+      ...params,
+      userId: req.user.id,
+      role: req.user.role,
+      user: req.user,
+      mcpPermissionContext,
+    }),
+});
+
+/**
  * Runs the shared creation service with this request's user, config and CJS collaborators.
  * @param {ServerRequest} req
  * @param {unknown} input - Agent create payload.
@@ -670,16 +688,7 @@ const createAgentForRequest = (req, input) =>
       checkSubagentReferences: (subagents, allowedMissingIds) =>
         checkSubagentReferences(subagents, req, allowedMissingIds),
       instructionsPromptAccess,
-      getCachedTools: () => getCachedTools(),
-      resolveConfigServers: () => resolveConfigServers(req),
-      filterAuthorizedTools: (params) =>
-        filterAuthorizedTools({
-          ...params,
-          userId: req.user.id,
-          role: req.user.role,
-          user: req.user,
-          mcpPermissionContext: createMCPPermissionContext(req),
-        }),
+      ...getAgentToolFilterDeps(req, createMCPPermissionContext(req)),
       grantPermission: (grant) => grantPermission(grant),
     },
   });
@@ -852,17 +861,8 @@ const updateAgentForRequest = (req, authorized, input) => {
       checkSubagentReferences: (subagents, allowedMissingIds) =>
         checkSubagentReferences(subagents, req, allowedMissingIds),
       instructionsPromptAccess,
-      getCachedTools: () => getCachedTools(),
-      resolveConfigServers: () => resolveConfigServers(req),
+      ...getAgentToolFilterDeps(req, mcpPermissionContext),
       canUseMCPServers: () => mcpPermissionContext.canUseServers(req.user),
-      filterAuthorizedTools: (params) =>
-        filterAuthorizedTools({
-          ...params,
-          userId: req.user.id,
-          role: req.user.role,
-          user: req.user,
-          mcpPermissionContext,
-        }),
       attachOwnerContacts,
     },
   });
@@ -1757,6 +1757,7 @@ module.exports = {
   createAgent: createAgentHandler,
   createAgentForRequest,
   updateAgentForRequest,
+  getAgentToolFilterDeps,
   getAgent: (req, res) => getAgentHandler(req, res, false),
   getAgentExpanded: (req, res) => getAgentHandler(req, res, true),
   getAgentVersions: getAgentVersionsHandler,

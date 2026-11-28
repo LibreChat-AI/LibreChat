@@ -4,10 +4,11 @@
  * An agent that carries the marker in `tools` gets the builder tools when the deployment
  * lists `agent_builder` in `endpoints.agents.capabilities`. Every call runs as the user who
  * sent the message, with the same checks as the agent side panel: `list_agents` reads through
- * the panel's listing ACL, `get_agent` authorizes through `authorizeAgent`, and `create_agent`
- * saves through `createAgent`, the panel's create service. Write tools are offered only for the
- * operations `endpoints.agents.agentBuilder` lists, with a schema of the listed fields. Results
- * send only fixed fields, stable error codes and safe details to the model.
+ * the panel's listing ACL, `get_agent` authorizes through `authorizeAgent`, `create_agent`
+ * saves through `createAgent`, the panel's create service, and `update_agent` authorizes for
+ * EDIT and saves through `updateAgent`, the panel's update service. Write tools are offered only
+ * for the operations `endpoints.agents.agentBuilder` lists, with a schema of the listed fields.
+ * Results send only fixed fields, stable error codes and safe details to the model.
  *
  * @module packages/api/src/agents/builder
  */
@@ -22,6 +23,7 @@ import {
   AgentCapabilities,
   AGENT_BUILDER_FIELDS,
   CREATE_AGENT_TOOL_NAME,
+  UPDATE_AGENT_TOOL_NAME,
   AGENT_BUILDER_LIST_MAX_LIMIT,
   AGENT_BUILDER_LIST_DEFAULT_LIMIT,
   AGENT_BUILDER_CREATE_REQUIRED_FIELDS,
@@ -30,13 +32,20 @@ import type { AgentBuilderField, TAgentBuilderConfig } from 'librechat-data-prov
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import type { IRole } from '@librechat/data-schemas';
-import type { AgentAccessRecord, AgentAccessUser, AuthorizeAgentDeps } from './access';
+import type {
+  AuthorizedAgent,
+  AgentAccessUser,
+  AgentAccessRecord,
+  AuthorizeAgentDeps,
+} from './access';
 import type { CheckAccessParams } from '~/middleware/access';
+import type { AgentToolFilterDeps } from './attachable';
 import type { AgentListAccessDeps } from './listing';
 import type { ServerRequest } from '~/types';
 import { checkAccess, checkAccessWithRequestCache } from '~/middleware/access';
 import { AGENT_SORT_CURSOR_ERROR_CODE } from './marketplace';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { filterAttachableTools } from './attachable';
 import { toToolParameters } from '~/tools/schema';
 import { getAgentListAccess } from './listing';
 import { authorizeAgent } from './access';
@@ -54,8 +63,8 @@ const MAX_DETAIL_NAMES = 20;
 
 /** Role permissions a read tool needs: the same `AGENTS.USE` the agent routes require. */
 const READ_ROLE_PERMISSIONS: Permissions[] = [Permissions.USE];
-/** Role permissions `create_agent` needs: the same as the panel's create route. */
-const CREATE_ROLE_PERMISSIONS: Permissions[] = [Permissions.USE, Permissions.CREATE];
+/** Role permissions a write tool needs: the same as the panel's create and update routes. */
+const WRITE_ROLE_PERMISSIONS: Permissions[] = [Permissions.USE, Permissions.CREATE];
 
 /**
  * Builder tools are called by the model directly, never from code. Programmatic calls skip
@@ -65,7 +74,9 @@ const CREATE_ROLE_PERMISSIONS: Permissions[] = [Permissions.USE, Permissions.CRE
 const BUILDER_ALLOWED_CALLERS: LCTool['allowed_callers'] = ['direct'];
 
 /** A write operation `endpoints.agents.agentBuilder` can list. */
-export type AgentBuilderOperation = 'create';
+export type AgentBuilderOperation = 'create' | 'update';
+
+const AGENT_BUILDER_OPERATIONS: readonly AgentBuilderOperation[] = ['create', 'update'];
 
 /** The fields each offered write operation may set. An absent operation is not offered. */
 export type AgentBuilderWrites = Partial<
@@ -80,7 +91,11 @@ export type AgentBuilderErrorCode =
   /** The call sets a field the admin did not list for the operation. */
   | 'field_not_allowed'
   /** A builder tool may not attach the Agent Builder to an agent. */
-  | 'agent_builder_not_allowed';
+  | 'agent_builder_not_allowed'
+  /** `update_agent` may not detach the Agent Builder from the agent that runs it. */
+  | 'agent_builder_removal_not_allowed'
+  /** The agent's instructions come from a linked prompt, so `instructions` cannot be set. */
+  | 'instructions_linked';
 
 /** Safe details: names the model sent, never stored data or error text. */
 export interface AgentBuilderErrorDetails {
@@ -95,8 +110,8 @@ export interface AgentBuilderError {
 }
 
 /**
- * A refusal from the save service (`createAgent`). `invalid_request` carries zod issues;
- * only their top-level paths reach the model.
+ * A refusal from a save service (`createAgent`, `updateAgent`). `invalid_request` carries zod
+ * issues; only their top-level paths reach the model.
  */
 export interface AgentBuilderSaveRefusal {
   code: string;
@@ -117,9 +132,15 @@ export interface AgentBuilderUser extends AgentAccessUser {
   idOnTheSource?: string;
 }
 
-/** Stored agent fields the builder reads. `_id` is the ACL resource ID. */
+/**
+ * Agent fields the builder reads, in the plain form `toUpdatableAgent` produces: string
+ * `_id` (the ACL resource ID) and string `author`, which `updateAgent` compares to the
+ * user ID to choose the owner's rules.
+ */
 export interface AgentBuilderAgent extends AgentAccessRecord {
+  _id: string;
   id: string;
+  author?: string | null;
   name?: string | null;
   description?: string | null;
   provider?: string | null;
@@ -139,6 +160,27 @@ export interface AgentListPage {
 export interface AgentBuilderWriteDeps {
   /** `createAgent` bound to the calling request's user, config and collaborators. */
   createAgent: (input: AgentBuilderWriteInput) => Promise<AgentBuilderSaveResult>;
+  /** `updateAgent` bound the same way; it saves the agent that `authorized` loaded. */
+  updateAgent: (
+    authorized: AuthorizedAgent<'EDIT', AgentBuilderAgent>,
+    input: AgentBuilderWriteInput,
+  ) => Promise<AgentBuilderSaveResult>;
+  /** Returns the subset of `tools` the user may attach, with the panel's create rules. */
+  filterTools: (tools: string[]) => Promise<string[]>;
+}
+
+/** Write deps that still take the request; {@link buildAgentBuilderTool} binds them to it. */
+export interface AgentBuilderRequestWriteDeps {
+  createAgent: (
+    req: ServerRequest,
+    input: AgentBuilderWriteInput,
+  ) => Promise<AgentBuilderSaveResult>;
+  updateAgent: (
+    req: ServerRequest,
+    authorized: AuthorizedAgent<'EDIT', AgentBuilderAgent>,
+    input: AgentBuilderWriteInput,
+  ) => Promise<AgentBuilderSaveResult>;
+  getToolFilterDeps: (req: ServerRequest) => AgentToolFilterDeps;
 }
 
 export interface AgentBuilderDeps<U extends AgentBuilderUser = AgentBuilderUser>
@@ -356,6 +398,15 @@ export interface AgentBuilderCreatedAgent {
   unavailable_tools?: string[];
 }
 
+/** `update_agent` input: the agent id, the listed scalar fields and the tool changes. */
+export interface AgentBuilderUpdateInput extends Omit<AgentBuilderWriteInput, 'tools'> {
+  id: string;
+  add_tools?: string[];
+  remove_tools?: string[];
+}
+
+export type AgentBuilderUpdatedAgent = AgentBuilderCreatedAgent;
+
 const AGENT_BUILDER_FIELD_SCHEMAS: Record<AgentBuilderField, z.ZodTypeAny> = {
   name: z.string().min(1).describe('Display name.'),
   description: z.string().describe('One or two sentences on what the agent is for.'),
@@ -370,21 +421,59 @@ const AGENT_BUILDER_FIELD_SCHEMAS: Record<AgentBuilderField, z.ZodTypeAny> = {
     .describe('Tool ids to attach. Ids the user may not use come back as `unavailable_tools`.'),
 };
 
+/** `update_agent` sets tools through these two keys, offered when `tools` is listed. */
+const TOOL_CHANGE_SCHEMAS = {
+  add_tools: z
+    .array(z.string().min(1))
+    .describe('Tool ids to attach. Ids the user may not use come back as `unavailable_tools`.'),
+  remove_tools: z.array(z.string().min(1)).describe('Tool ids to detach.'),
+};
+
+type WriteSchema = z.ZodObject<Record<string, z.ZodTypeAny>>;
+
 /**
- * Builds the strict schema of a write tool from the fields the admin listed, in the order of
+ * The listed fields' schemas, in the order of `AGENT_BUILDER_FIELDS`. Listed `required` fields
+ * are required; the others are optional. `skip` leaves out a field the caller replaces.
+ */
+function buildFieldShape(
+  fields: readonly AgentBuilderField[],
+  required: readonly AgentBuilderField[],
+  skip?: AgentBuilderField,
+): Record<string, z.ZodTypeAny> {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const field of AGENT_BUILDER_FIELDS) {
+    if (field === skip || !fields.includes(field)) {
+      continue;
+    }
+    const schema = AGENT_BUILDER_FIELD_SCHEMAS[field];
+    shape[field] = required.includes(field) ? schema : schema.optional();
+  }
+  return shape;
+}
+
+/**
+ * Builds the strict schema of `create_agent` from the fields the admin listed, in the order of
  * `AGENT_BUILDER_FIELDS`. Listed `required` fields are required; the others are optional.
  */
 export function buildAgentBuilderWriteSchema(
   fields: readonly AgentBuilderField[],
   required: readonly AgentBuilderField[] = [],
-): z.ZodObject<Record<string, z.ZodTypeAny>> {
-  const shape: Record<string, z.ZodTypeAny> = {};
-  for (const field of AGENT_BUILDER_FIELDS) {
-    if (!fields.includes(field)) {
-      continue;
-    }
-    const schema = AGENT_BUILDER_FIELD_SCHEMAS[field];
-    shape[field] = required.includes(field) ? schema : schema.optional();
+): WriteSchema {
+  return z.object(buildFieldShape(fields, required)).strict();
+}
+
+/**
+ * Builds the strict schema of `update_agent`: the required agent `id`, the listed fields as
+ * optional, and `add_tools` / `remove_tools` in place of `tools` when `tools` is listed.
+ */
+export function buildAgentBuilderUpdateSchema(fields: readonly AgentBuilderField[]): WriteSchema {
+  const shape: Record<string, z.ZodTypeAny> = {
+    id: z.string().min(1).describe('Id of the agent to change, as returned by list_agents.'),
+    ...buildFieldShape(fields, [], 'tools'),
+  };
+  if (fields.includes('tools')) {
+    shape.add_tools = TOOL_CHANGE_SCHEMAS.add_tools.optional();
+    shape.remove_tools = TOOL_CHANGE_SCHEMAS.remove_tools.optional();
   }
   return z.object(shape).strict();
 }
@@ -399,7 +488,42 @@ function limitNames(names: Iterable<string>): string[] {
 }
 
 /**
- * Checks a write call against the fields the admin listed. A key outside `fields` is
+ * Checks a write call against its schema. A key outside the schema is `field_not_allowed` and
+ * nothing is dropped; a wrong type is `invalid_request`. Details name only the offending keys.
+ */
+function parseWriteInput<T>(input: unknown, schema: WriteSchema): AgentBuilderResult<T> {
+  if (input == null || typeof input !== 'object' || Array.isArray(input)) {
+    return { ok: false, error: { code: 'invalid_request' } };
+  }
+  const allowed = new Set(Object.keys(schema.shape));
+  const unlisted = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unlisted.length > 0) {
+    return {
+      ok: false,
+      error: { code: 'field_not_allowed', details: { fields: limitNames(unlisted) } },
+    };
+  }
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: toInvalidRequest(parsed.error.issues) };
+  }
+  return { ok: true, value: parsed.data as T };
+}
+
+/** Refuses a call that would attach the Agent Builder to an agent, naming the tool ids. */
+function refuseBuilderTools(
+  tools: readonly string[] | undefined,
+  code: 'agent_builder_not_allowed' | 'agent_builder_removal_not_allowed',
+): AgentBuilderResult<never> | null {
+  const builderTools = getBuilderToolNames(tools);
+  if (builderTools.length === 0) {
+    return null;
+  }
+  return { ok: false, error: { code, details: { tools: limitNames(builderTools) } } };
+}
+
+/**
+ * Checks a `create_agent` call against the fields the admin listed. A key outside `fields` is
  * `field_not_allowed` and nothing is dropped; a wrong type is `invalid_request`; adding the
  * Agent Builder to an agent is `agent_builder_not_allowed`. Details name only the offending
  * keys or tool ids from the call.
@@ -409,30 +533,33 @@ export function checkAgentBuilderWrite(
   fields: readonly AgentBuilderField[],
   required: readonly AgentBuilderField[] = [],
 ): AgentBuilderResult<AgentBuilderWriteInput> {
-  if (input == null || typeof input !== 'object' || Array.isArray(input)) {
-    return { ok: false, error: { code: 'invalid_request' } };
+  const parsed = parseWriteInput<AgentBuilderWriteInput>(
+    input,
+    buildAgentBuilderWriteSchema(fields, required),
+  );
+  if (!parsed.ok) {
+    return parsed;
   }
-  const allowed = new Set<string>(fields);
-  const unlisted = Object.keys(input).filter((key) => !allowed.has(key));
-  if (unlisted.length > 0) {
-    return {
-      ok: false,
-      error: { code: 'field_not_allowed', details: { fields: limitNames(unlisted) } },
-    };
+  return refuseBuilderTools(parsed.value.tools, 'agent_builder_not_allowed') ?? parsed;
+}
+
+/**
+ * Checks an `update_agent` call against the fields the admin listed, with the rules of
+ * {@link checkAgentBuilderWrite}. `tools` is not a key: tool changes come through `add_tools`
+ * and `remove_tools`, and adding the Agent Builder is `agent_builder_not_allowed`.
+ */
+export function checkAgentBuilderUpdate(
+  input: unknown,
+  fields: readonly AgentBuilderField[],
+): AgentBuilderResult<AgentBuilderUpdateInput> {
+  const parsed = parseWriteInput<AgentBuilderUpdateInput>(
+    input,
+    buildAgentBuilderUpdateSchema(fields),
+  );
+  if (!parsed.ok) {
+    return parsed;
   }
-  const parsed = buildAgentBuilderWriteSchema(fields, required).safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: toInvalidRequest(parsed.error.issues) };
-  }
-  const value = parsed.data as AgentBuilderWriteInput;
-  const builderTools = getBuilderToolNames(value.tools);
-  if (builderTools.length > 0) {
-    return {
-      ok: false,
-      error: { code: 'agent_builder_not_allowed', details: { tools: limitNames(builderTools) } },
-    };
-  }
-  return { ok: true, value };
+  return refuseBuilderTools(parsed.value.add_tools, 'agent_builder_not_allowed') ?? parsed;
 }
 
 /** Names only the top-level fields at fault, never the values or messages. */
@@ -454,6 +581,24 @@ function toBuilderError(error: AgentBuilderSaveRefusal): AgentBuilderError {
 }
 
 /**
+ * The model-facing result of a save: the agent's id and name, plus the requested tools that
+ * are not on the saved agent (`refused` lists ones dropped before the save).
+ */
+function toSavedAgent(
+  result: Extract<AgentBuilderSaveResult, { ok: true }>,
+  requested: readonly string[] | undefined,
+  refused: readonly string[] = [],
+): AgentBuilderCreatedAgent {
+  const saved = new Set(result.value.tools ?? []);
+  const agent: AgentBuilderCreatedAgent = { id: result.value.id, name: result.value.name ?? '' };
+  const unavailable = [...refused, ...(requested ?? []).filter((tool) => !saved.has(tool))];
+  if (unavailable.length > 0) {
+    agent.unavailable_tools = limitNames(unavailable);
+  }
+  return agent;
+}
+
+/**
  * Creates an agent through `createAgent`, the side panel's create service, so the call gets
  * the panel's validation, tool authorization, content filters, workspace rules and owner
  * grants. The agent is private to the user who sent the message.
@@ -461,7 +606,7 @@ function toBuilderError(error: AgentBuilderSaveRefusal): AgentBuilderError {
 export async function createBuilderAgent(
   input: unknown,
   fields: readonly AgentBuilderField[],
-  deps: AgentBuilderWriteDeps,
+  deps: Pick<AgentBuilderWriteDeps, 'createAgent'>,
 ): Promise<AgentBuilderResult<AgentBuilderCreatedAgent>> {
   const checked = checkAgentBuilderWrite(input, fields, AGENT_BUILDER_CREATE_REQUIRED_FIELDS);
   if (!checked.ok) {
@@ -471,13 +616,84 @@ export async function createBuilderAgent(
   if (!result.ok) {
     return { ok: false, error: toBuilderError(result.error) };
   }
-  const saved = new Set(result.value.tools ?? []);
-  const created: AgentBuilderCreatedAgent = { id: result.value.id, name: result.value.name ?? '' };
-  const unavailable = (checked.value.tools ?? []).filter((tool) => !saved.has(tool));
-  if (unavailable.length > 0) {
-    created.unavailable_tools = limitNames(unavailable);
+  return { ok: true, value: toSavedAgent(result, checked.value.tools) };
+}
+
+/** `(stored ∪ add) − remove`, keeping the stored order and appending new tools. */
+function getNextTools(
+  stored: readonly string[],
+  add: readonly string[],
+  remove: readonly string[],
+): string[] {
+  const removed = new Set(remove);
+  return [...new Set([...stored, ...add])].filter((tool) => !removed.has(tool));
+}
+
+/**
+ * Updates an agent the user may edit. `authorizeAgent` loads and authorizes it at EDIT, and
+ * `updateAgent`, the side panel's update service, saves that same record with the panel's
+ * validation, content filters, MCP rules and versioning. Next tools are
+ * `(stored ∪ add_tools) − remove_tools`; added tools the user may not attach are left off and
+ * returned as `unavailable_tools`. The builder may not be detached from the agent that runs it
+ * (`agentId`; an unknown one protects every agent), and linked instructions refuse an
+ * `instructions` change.
+ */
+export async function updateBuilderAgent<U extends AgentBuilderUser>(
+  user: U,
+  input: unknown,
+  fields: readonly AgentBuilderField[],
+  deps: AuthorizeAgentDeps<AgentBuilderAgent, U> &
+    Pick<AgentBuilderWriteDeps, 'updateAgent' | 'filterTools'>,
+  agentId?: string,
+): Promise<AgentBuilderResult<AgentBuilderUpdatedAgent>> {
+  const checked = checkAgentBuilderUpdate(input, fields);
+  if (!checked.ok) {
+    return checked;
   }
-  return { ok: true, value: created };
+  const { id, add_tools, remove_tools, ...values } = checked.value;
+  if (agentId == null || agentId === id) {
+    const selfRemoval = refuseBuilderTools(remove_tools, 'agent_builder_removal_not_allowed');
+    if (selfRemoval) {
+      return selfRemoval;
+    }
+  }
+
+  const authorized = await authorizeAgent({ user, agentId: id, required: 'EDIT' }, deps);
+  if (!authorized.ok) {
+    return { ok: false, error: { code: authorized.error.code } };
+  }
+  const agent = authorized.value.agent;
+  if (values.instructions !== undefined && agent.instructionsPrompt != null) {
+    return {
+      ok: false,
+      error: { code: 'instructions_linked', details: { fields: ['instructions'] } },
+    };
+  }
+
+  const write: AgentBuilderWriteInput = values;
+  const removed = new Set(remove_tools ?? []);
+  const requested = (add_tools ?? []).filter((tool) => !removed.has(tool));
+  let refused: string[] = [];
+  if (add_tools !== undefined || remove_tools !== undefined) {
+    const stored = agent.tools ?? [];
+    const storedSet = new Set(stored);
+    const added = [...new Set(requested)].filter((tool) => !storedSet.has(tool));
+    const attachable = new Set<string>(added.length > 0 ? await deps.filterTools(added) : []);
+    refused = added.filter((tool) => !attachable.has(tool));
+    write.tools = getNextTools(
+      stored,
+      added.filter((tool) => attachable.has(tool)),
+      remove_tools ?? [],
+    );
+  }
+
+  const result = await deps.updateAgent(authorized.value, write);
+  if (!result.ok) {
+    return { ok: false, error: toBuilderError(result.error) };
+  }
+  const refusedSet = new Set(refused);
+  const kept = requested.filter((tool) => !refusedSet.has(tool));
+  return { ok: true, value: toSavedAgent(result, kept, refused) };
 }
 
 /** What a builder tool's schema and run take from the request's config. */
@@ -485,6 +701,8 @@ export interface AgentBuilderToolContext {
   limits: AgentBuilderListLimits;
   /** The fields a write tool may set; empty for a read tool. */
   fields: readonly AgentBuilderField[];
+  /** The agent that runs the tool. Unknown means no builder tool may be detached from any agent. */
+  agentId?: string;
 }
 
 interface AgentBuilderToolSpec {
@@ -543,8 +761,23 @@ const AGENT_BUILDER_TOOLS: readonly AgentBuilderToolSpec[] = [
     operation: 'create',
     schema: ({ fields }) =>
       buildAgentBuilderWriteSchema(fields, AGENT_BUILDER_CREATE_REQUIRED_FIELDS),
-    rolePermissions: CREATE_ROLE_PERMISSIONS,
+    rolePermissions: WRITE_ROLE_PERMISSIONS,
     run: (_user, input, deps, { fields }) => createBuilderAgent(input, fields, deps),
+  },
+  {
+    name: UPDATE_AGENT_TOOL_NAME,
+    description:
+      'Change an agent the user can edit, with the same checks as saving it in the agent ' +
+      'panel. Set only the fields in this schema; omitted fields keep their values. ' +
+      '`add_tools` and `remove_tools` change the tool list. Returns `{ id, name }`; ' +
+      '`unavailable_tools` lists added tools the user may not attach. Never add ' +
+      '`agent_builder`, and never remove it from the agent you are running as. Agents with ' +
+      '`instructions_source: "linked"` refuse an `instructions` change.',
+    operation: 'update',
+    schema: ({ fields }) => buildAgentBuilderUpdateSchema(fields),
+    rolePermissions: WRITE_ROLE_PERMISSIONS,
+    run: (user, input, deps, { fields, agentId }) =>
+      updateBuilderAgent(user, input, fields, deps, agentId),
   },
 ];
 
@@ -600,7 +833,8 @@ export function getAgentBuilderToolDefinitions(
 
 /**
  * Resolves the write operations to offer one user: those the config lists, when the role
- * also has what the operation's tool needs. A failed role read offers no write tool.
+ * also has AGENTS USE and CREATE, as the panel's create and update routes require. A failed
+ * role read offers no write tool.
  */
 export async function resolveAgentBuilderWrites({
   config,
@@ -613,26 +847,29 @@ export async function resolveAgentBuilderWrites({
   user?: CheckAccessParams['user'] | null;
   getRoleByName?: CheckAccessParams['getRoleByName'];
 }): Promise<AgentBuilderWrites> {
-  const writes: AgentBuilderWrites = {};
-  const createFields = getAgentBuilderFields(config, 'create');
-  if (!createFields || !user || !getRoleByName) {
-    return writes;
+  const listed: AgentBuilderWrites = {};
+  for (const operation of AGENT_BUILDER_OPERATIONS) {
+    const fields = getAgentBuilderFields(config, operation);
+    if (fields) {
+      listed[operation] = fields;
+    }
+  }
+  if (Object.keys(listed).length === 0 || !user || !getRoleByName) {
+    return {};
   }
   try {
-    const canCreate = await checkAccessWithRequestCache({
+    const canWrite = await checkAccessWithRequestCache({
       req,
       user,
       permissionType: PermissionTypes.AGENTS,
-      permissions: CREATE_ROLE_PERMISSIONS,
+      permissions: WRITE_ROLE_PERMISSIONS,
       getRoleByName,
     });
-    if (canCreate) {
-      writes.create = createFields;
-    }
+    return canWrite ? listed : {};
   } catch (error) {
     logger.error('[agentBuilder] Role permission check failed', getSafeErrorMetadata(error));
+    return {};
   }
-  return writes;
 }
 
 /**
@@ -686,6 +923,7 @@ export function createAgentBuilderTool<U extends AgentBuilderUser>({
   deps,
   writes = {},
   limits = resolveAgentBuilderLimits(),
+  agentId,
 }: {
   toolName: string;
   user: U;
@@ -693,13 +931,15 @@ export function createAgentBuilderTool<U extends AgentBuilderUser>({
   /** Write operations this call may perform. A write tool not listed here is not created. */
   writes?: AgentBuilderWrites;
   limits?: AgentBuilderListLimits;
+  /** The agent that runs the tool; see {@link AgentBuilderToolContext}. */
+  agentId?: string;
 }): DynamicStructuredTool | null {
   const spec = toolSpecs.get(toolName);
   const fields = spec ? getOfferedFields(spec, writes) : undefined;
   if (!spec || !fields) {
     return null;
   }
-  const context: AgentBuilderToolContext = { limits, fields };
+  const context: AgentBuilderToolContext = { limits, fields, agentId };
   return tool(
     async (input: unknown) => {
       try {
@@ -726,6 +966,7 @@ export function createAgentBuilderTool<U extends AgentBuilderUser>({
 export async function buildAgentBuilderTool({
   toolName,
   req,
+  agentId,
   toolRegistry,
   capabilityEnabled,
   getRoleByName,
@@ -733,6 +974,8 @@ export async function buildAgentBuilderTool({
 }: {
   toolName: string;
   req: ServerRequest;
+  /** The executing agent; `update_agent` may not detach the builder from it. */
+  agentId?: string;
   /** The executing agent's registry from initialization. */
   toolRegistry?: LCToolRegistry;
   /** Whether `agent_builder` is in the run's enabled agent capabilities. */
@@ -782,21 +1025,26 @@ export async function buildAgentBuilderTool({
     user: builderUser,
     writes,
     limits: resolveAgentBuilderLimits(config),
-    deps: { ...deps, createAgent: (input) => deps.createAgent(req, input) },
+    agentId,
+    deps: {
+      ...deps,
+      createAgent: (input) => deps.createAgent(req, input),
+      updateAgent: (authorized, input) => deps.updateAgent(req, authorized, input),
+      filterTools: (tools) => filterAttachableTools(tools, deps.getToolFilterDeps(req)),
+    },
   });
 }
 
-/** Builder deps whose `createAgent` still takes the request; it is bound per request. */
-export type AgentBuilderRequestDeps = Omit<AgentBuilderDeps<AgentBuilderUser>, 'createAgent'> & {
-  createAgent: (
-    req: ServerRequest,
-    input: AgentBuilderWriteInput,
-  ) => Promise<AgentBuilderSaveResult>;
-};
+/** Builder deps whose write collaborators still take the request; they are bound per request. */
+export type AgentBuilderRequestDeps = Omit<
+  AgentBuilderDeps<AgentBuilderUser>,
+  keyof AgentBuilderWriteDeps
+> &
+  AgentBuilderRequestWriteDeps;
 
 /** Methods the tool loader supplies to build builder tools. */
 export interface AgentBuilderLoaderDeps extends Omit<AgentBuilderRequestDeps, 'getAgent'> {
-  /** The agent model's lookup by filter (`getAgent({ id })`). */
+  /** The agent model's lookup by filter (`getAgent({ id })`), normalized by `toUpdatableAgent`. */
   getAgent: (filter: { id: string }) => Promise<AgentBuilderAgent | null>;
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
   /** Whether a capability is in the request's enabled agent capabilities. */
@@ -819,13 +1067,15 @@ export function createAgentBuilderToolResolver({
 }: AgentBuilderLoaderDeps): (params: {
   tool: string;
   req?: ServerRequest;
+  /** The executing agent; see {@link buildAgentBuilderTool}. */
+  agentId?: string;
   toolRegistry?: LCToolRegistry;
 }) => AgentBuilderToolFactory | null {
   const deps: AgentBuilderRequestDeps = {
     ...access,
     getAgent: (agentId) => getAgent({ id: agentId }),
   };
-  return ({ tool: toolName, req, toolRegistry }) => {
+  return ({ tool: toolName, req, agentId, toolRegistry }) => {
     if (!isAgentBuilderToolName(toolName)) {
       return null;
     }
@@ -836,6 +1086,7 @@ export function createAgentBuilderToolResolver({
       return buildAgentBuilderTool({
         toolName,
         req,
+        agentId,
         toolRegistry,
         capabilityEnabled: () => checkCapability(req, AGENT_BUILDER_MARKER),
         getRoleByName,

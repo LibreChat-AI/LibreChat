@@ -18,6 +18,7 @@ const {
   findShadowedServerNames,
   isNormalizationSensitiveName,
   buildInlineMemoryTool,
+  toUpdatableAgent,
   createAgentBuilderToolResolver,
   getCodeApiAuthHeaders,
   buildImageToolContext,
@@ -87,7 +88,7 @@ const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const agentsController = require('~/server/controllers/agents/v1');
 
 const resolveAgentBuilderTool = createAgentBuilderToolResolver({
-  getAgent,
+  getAgent: (filter) => getAgent(filter).then(toUpdatableAgent),
   hasCapability,
   checkPermission,
   findAccessibleResources,
@@ -95,6 +96,10 @@ const resolveAgentBuilderTool = createAgentBuilderToolResolver({
   getRoleByName,
   checkCapability,
   createAgent: (req, input) => agentsController.createAgentForRequest(req, input),
+  updateAgent: (req, authorized, input) =>
+    agentsController.updateAgentForRequest(req, authorized, input),
+  getToolFilterDeps: (req) =>
+    agentsController.getAgentToolFilterDeps(req, createMCPPermissionContext(req)),
 });
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
@@ -344,6 +349,7 @@ const loadTools = async ({
     const agentBuilderTool = resolveAgentBuilderTool({
       tool,
       req: options.req,
+      agentId: agent?.id,
       toolRegistry: options.toolRegistry,
     });
     if (agentBuilderTool) {

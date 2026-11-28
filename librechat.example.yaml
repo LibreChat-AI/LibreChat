@@ -988,10 +988,14 @@ endpoints:
   #     # "fields" is required and may name only name, description, instructions, provider,
   #     # model and tools; create needs provider and model. Writes run as the user, with the
   #     # same checks as a save in the agent panel; created agents are private to the user.
-  #     # Recommended: ask before each write, with
+  #     # update changes agents the user can edit; listing "tools" lets it add and remove
+  #     # tools. It cannot change linked instructions, attach the builder to an agent, or
+  #     # remove it from the agent that runs it. Recommended: ask before each write, with
   #     # toolApproval: { enabled: true, ask: ["create_agent", "update_agent"] }
   #     create:
   #       fields: ["name", "description", "instructions", "provider", "model", "tools"]
+  #     update:
+  #       fields: ["description", "instructions", "tools"]
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
   #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
