@@ -63,12 +63,18 @@ export interface AssistantRunIds {
  * and the means to keep detached work inside the account-deletion drain.
  */
 export interface AssistantRunHandle {
-  /** Fires when account deletion, delete-all or shutdown stops the run. */
+  /**
+   * Fires when account deletion, delete-all or shutdown stops the run, and also once the run
+   * settles: completing its job aborts the same signal.
+   */
   readonly signal: AbortSignal;
   readonly stopped: boolean;
   /** Throws the cancellation the error handlers answer with a bare `res.end()`, once stopped. */
   throwIfStopped: () => void;
-  /** Cancels the provider run when this run is stopped, at once if it already was. */
+  /**
+   * Cancels the provider run when this run is stopped from outside, at once if it already was.
+   * A run its own request settles is left alone: it already ended or was recovered.
+   */
   cancelOnStop: (openai: AssistantsRunClient, ids: AssistantRunIds) => void;
   /**
    * Keeps `work` inside the drain: settlement waits for it, including for work it tracks in turn.
@@ -131,8 +137,16 @@ export class AssistantRun implements AssistantRunHandle {
     return this.signal.aborted;
   }
 
+  /**
+   * Runs `cancel` when the run is stopped from outside, at once if it already was. Settling
+   * completes the job, which aborts the signal too; by then the request has ended or recovered its
+   * provider run, so a settling run skips the cancel.
+   */
   onStop(cancel: () => unknown): void {
     const run = (): void => {
+      if (this.settling) {
+        return;
+      }
       void Promise.resolve()
         .then(() => cancel())
         .catch((error: unknown) => {
