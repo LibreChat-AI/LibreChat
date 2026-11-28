@@ -168,8 +168,8 @@ export default function DataTable<TData extends TFile, TValue>({
               <AlertDialogTitle>{localize('com_ui_delete')}</AlertDialogTitle>
               <AlertDialogDescription>
                 {snapshot.length === 1
-                  ? localize('com_files_confirm_delete_one', { 0: snapshot[0].filename })
-                  : localize('com_files_confirm_delete_many', { 0: String(snapshot.length) })}
+                  ? localize('com_files_confirm_delete_named', { 0: snapshot[0].filename })
+                  : localize('com_files_confirm_delete_selection', { 0: String(snapshot.length) })}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
