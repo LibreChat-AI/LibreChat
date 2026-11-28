@@ -367,6 +367,7 @@ describe('role rename moves what is keyed by the role name', () => {
     expect(writer.role).toBeNull();
     expect(writer.grants).toEqual([]);
     expect(writer.aclEntries).toEqual([]);
+    expect((await rename(createHandlers(), 'editor', { name: 'another' })).statusCode).toBe(200);
   });
 
   it('reports a profile move that kept losing races as a failed rename, not a conflict', async () => {

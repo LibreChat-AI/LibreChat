@@ -541,7 +541,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     newName: string,
     token: string,
     extraUpdates?: Partial<IRole>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const revert: Partial<IRole> = { name: currentName };
     if (extraUpdates?.description !== undefined) {
       const renamed = await getRoleByName(newName).catch(() => null);
@@ -550,12 +550,18 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
     }
     try {
-      await updateRoleByName(newName, revert, { ...roleIdentity(existing), renameToken: token });
+      return (
+        (await updateRoleByName(newName, revert, {
+          ...roleIdentity(existing),
+          renameToken: token,
+        })) != null
+      );
     } catch (revertError) {
       logger.error(
         `[adminRoles] CRITICAL: rename rollback failed for role "${currentName}" is still named "${newName}"`,
         getSafeErrorMetadata(revertError),
       );
+      return false;
     }
   }
 
@@ -571,7 +577,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     tenantId: string | undefined,
   ): Promise<
     | { ok: true; moved: RoleDependentsMoved }
-    | { ok: false; code: 'ROLE_CONFIG_CONFLICT' | 'ROLE_RENAME_FAILED' }
+    | { ok: false; code: 'ROLE_CONFIG_CONFLICT' | 'ROLE_RENAME_FAILED'; restored: boolean }
   > {
     let configConflict = false;
     const steps: CascadeStep[] = [];
@@ -633,7 +639,11 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     const cascade = await runCascade(steps, '[adminRoles] rename');
     if (cascade.failed.length > 0) {
       await cascade.compensate();
-      return { ok: false, code: configConflict ? 'ROLE_CONFIG_CONFLICT' : 'ROLE_RENAME_FAILED' };
+      return {
+        ok: false,
+        code: configConflict ? 'ROLE_CONFIG_CONFLICT' : 'ROLE_RENAME_FAILED',
+        restored: configConflict && cascade.failed.length === 1 && !cascade.compensationIncomplete,
+      };
     }
     const { config, grants, acl } = cascade.removed as {
       config?: ConfigRecord | null;
@@ -724,7 +734,14 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       const dependents = await moveRoleDependents(currentName, newName, tenantId);
       confirmed = dependents.ok;
       if (!dependents.ok) {
-        await revertRoleUpdate(existing, currentName, newName, token, extraUpdates);
+        const reverted = await revertRoleUpdate(
+          existing,
+          currentName,
+          newName,
+          token,
+          extraUpdates,
+        );
+        confirmed = reverted && dependents.restored;
       }
       return dependents.ok ? { ok: true, role, moved: dependents.moved } : dependents;
     } finally {
