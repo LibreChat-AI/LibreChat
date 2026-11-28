@@ -9,6 +9,7 @@ describe('maskEmails coverage contract', () => {
     ['a tagged address', 'login for jane.doe+tag@example.co.uk | ok', `login for ${MASK} | ok`],
     ['two addresses', 'a@b.com and c@d.org', `${MASK} and ${MASK}`],
     ['RFC atext punctuation', 'user customer/dept=ship@example.com ok', `user ${MASK} ok`],
+    ['a double solidus outside a URL', 'user customer//dept@example.com ok', `user ${MASK} ok`],
     ['an apostrophe', "mary.jane'o_connor@example.com", MASK],
     ['a one-character final label', 'user@example.c ok', `${MASK} ok`],
     ['a trailing full stop', 'mail jane@example.com.', `mail ${MASK}.`],
@@ -39,6 +40,7 @@ describe('maskEmails coverage contract', () => {
     ['a quoted word before a dot', '"jane doe".smith@example.com', MASK],
     ['a key before it', 'key="jane doe"@x.com', `key=${MASK}`],
     ['a stray quote before it', 'note: " and "jane doe"@example.com', `note: " and ${MASK}`],
+    ['an escaped opening quote', 'id \\"jane doe"@example.com', `id ${MASK}`],
     ['a comment', 'user(comment)@blocked.example ok', `${MASK} ok`],
   ])('masks a raw quoted local part with %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
@@ -111,7 +113,10 @@ describe('maskEmails coverage contract', () => {
       `"{\\"to\\":\\"${MASK}\\"}"`,
     ],
     ['URI userinfo', 'https://user@example.com/path?x=1', `https://${MASK}/path?x=1`],
+    ['a file URL', 'file:///home/jane@example.com/x', `file:///${MASK}/x`],
     ['a port', 'smtp jane@example.com:587', `smtp ${MASK}:587`],
+    ['a path after a slash-ending local part', 'customer/@example.com/profile', `${MASK}/profile`],
+    ['a handle in a URL path', 'https://social.example/@jane.doe/123', `https://${MASK}/123`],
   ])('masks a wrapped address in place: %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
   });
@@ -143,6 +148,7 @@ describe('maskEmails coverage contract', () => {
     ['a semicolon', 'jane@exa;mple.com', MASK],
     ['an apostrophe', "jane@exa'mple.com", MASK],
     ['a bracketed identifier', '[Identifier: user@exa,mple.com]', `[Identifier: ${MASK}]`],
+    ['a comma and another at sign', 'id user@exa,mple.com@x ok', `id ${MASK}@x ok`],
   ])('masks a domain with %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
   });

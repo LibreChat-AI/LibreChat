@@ -18,7 +18,7 @@
  *
  * What is not masked: obfuscated text (`jane at example dot com`), names, phone numbers, other
  * encodings of the at sign (`&#64;`, `\u0040`, `＠`), an empty local part (`@handle`), a domain
- * without a dot (`user@localhost`), and an at sign between path separators (`/@scope/pkg/`).
+ * without a dot (`user@localhost`), and a package scope in a path (`node_modules/@scope/pkg`).
  */
 
 export const REDACTED_EMAIL = '[REDACTED_EMAIL]';
@@ -32,6 +32,8 @@ export const MAX_SPAN: number = 2 * MAX_PART + 3 + 2 * MAX_ENCODING;
 export type Span = { start: number; end: number };
 
 type Part = { start: number; units: number };
+/** End of the last encoded fallback domain without a dot; a run starting inside it has none. */
+type Scan = { skip: number };
 type Word = { start: number; open: boolean };
 
 const KNOWN = 1;
@@ -55,6 +57,7 @@ const BACKSLASH = 0x5c;
 const SLASH = 0x2f;
 const DOT = 0x2e;
 const COMMA = 0x2c;
+const COLON = 0x3a;
 const SEMICOLON = 0x3b;
 const OPEN = 0x28;
 const CLOSE = 0x29;
@@ -237,7 +240,8 @@ function depth(slashes: number): number {
 /**
  * The quoted word whose closing quote is at `close`: its opening quote is the nearest one at the
  * same escape depth. A quote escaped deeper is content; a shallower one opens the string the word
- * sits in, so a serialized word with no opening of its own is masked from just after it.
+ * sits in, so a serialized word with no opening of its own is masked from just after it, and a
+ * raw one from the farthest escaped quote it passed.
  */
 function quoted(text: string, close: number, bound: number): Word | undefined {
   let cursor = close - 1;
@@ -247,10 +251,15 @@ function quoted(text: string, close: number, bound: number): Word | undefined {
     cursor--;
   }
   const level = depth(slashes);
+  /** The farthest quote escaped deeper than this one, where an unmatched word is masked from. */
+  let deeper = -1;
   while (cursor >= bound) {
     const code = text.charCodeAt(cursor);
     if (code === CR || code === LF) {
-      return level > 0 ? { start: cursor + 1, open: false } : undefined;
+      if (level > 0) {
+        return { start: cursor + 1, open: false };
+      }
+      return deeper < 0 ? undefined : { start: deeper, open: false };
     }
     if (code !== QUOTE) {
       cursor--;
@@ -272,12 +281,16 @@ function quoted(text: string, close: number, bound: number): Word | undefined {
     if (found < level) {
       return { start: cursor + 1, open: false };
     }
+    deeper = previous + 1;
     cursor = previous;
   }
   if (bound > 0) {
     return { start: bound, open: false };
   }
-  return level > 0 ? { start: 0, open: false } : undefined;
+  if (level > 0) {
+    return { start: 0, open: false };
+  }
+  return deeper < 0 ? undefined : { start: deeper, open: false };
 }
 
 /** Index of the quote closing a quoted string inside a comment, or `open` when there is none. */
@@ -324,6 +337,15 @@ function comments(text: string): Map<number, number> {
     }
   }
   return pairs;
+}
+
+/** Whether the solidus at `index` closes a `scheme://`, after which a URL authority starts. */
+function authority(text: string, index: number): boolean {
+  let cursor = index;
+  while (cursor > 0 && text.charCodeAt(cursor - 1) === SLASH) {
+    cursor--;
+  }
+  return cursor < index && text.charCodeAt(cursor - 1) === COLON;
 }
 
 /**
@@ -402,8 +424,7 @@ function local(
     if (!(flags & LOCAL) || (encoded && flags & URL)) {
       break;
     }
-    /** `//` opens a URL authority or path: the part starts after it. */
-    if (point === SLASH && !encoded && start - 2 >= limit && text.charCodeAt(start - 2) === SLASH) {
+    if (point === SLASH && !encoded && authority(text, start - 1)) {
       break;
     }
     start -= size;
@@ -414,32 +435,27 @@ function local(
   return { start, units };
 }
 
-/** An at sign between path separators names a scoped package or a directory, not an address. */
-function segment(text: string, at: number): boolean {
-  const prior = text.charCodeAt(at - 1);
-  if (prior !== SLASH && prior !== BACKSLASH) {
-    return false;
+/**
+ * An at sign that opens a directory under `node_modules` names a package scope in a file path or
+ * stack frame (`node_modules/@scope.name/pkg`), not an address, so frame locations stay readable.
+ */
+function scope(text: string, at: number): boolean {
+  let cursor = at;
+  while (
+    cursor > 0 &&
+    (text.charCodeAt(cursor - 1) === SLASH || text.charCodeAt(cursor - 1) === BACKSLASH)
+  ) {
+    cursor--;
   }
-  const limit = Math.min(text.length, at + 1 + MAX_PART);
-  let cursor = at + 1;
-  while (cursor < limit) {
-    const code = text.charCodeAt(cursor);
-    if (code === SLASH || code === BACKSLASH) {
-      return cursor > at + 1;
-    }
-    if (ends(code, false)) {
-      return false;
-    }
-    cursor++;
-  }
-  return false;
+  return cursor < at && text.endsWith('node_modules', cursor);
 }
 
 /**
- * A comma or semicolon at `index - 1` joins labels when a label or dot follows it and the run it
- * starts does not end at an at sign, which would make that run the next address's local part.
+ * A comma or semicolon at `index - 1` joins labels when a label or dot follows it, unless the
+ * domain before it is already complete (`listed`) and the run after it ends at an at sign, which
+ * makes that run the next address's local part in a list.
  */
-function joins(text: string, index: number, limit: number): boolean {
+function joins(text: string, index: number, limit: number, listed: boolean): boolean {
   let cursor = index;
   let read = false;
   while (cursor < limit) {
@@ -455,7 +471,7 @@ function joins(text: string, index: number, limit: number): boolean {
     }
     cursor += skip;
   }
-  return read && atSign(text, cursor) === 0;
+  return read && !(listed && atSign(text, cursor) > 0);
 }
 
 /** End of a dotted run of labels from `from`, or 0 when no dot sits between two labels. */
@@ -486,7 +502,7 @@ function labels(text: string, from: number, limit: number): number {
       continue;
     }
     const code = text.charCodeAt(cursor);
-    if ((code === COMMA || code === SEMICOLON) && seen && joins(text, cursor + 1, limit)) {
+    if ((code === COMMA || code === SEMICOLON) && seen && joins(text, cursor + 1, limit, valid)) {
       cursor++;
       continue;
     }
@@ -495,10 +511,10 @@ function labels(text: string, from: number, limit: number): number {
   return valid ? end : 0;
 }
 
-/** Characters that ended the domain of the earlier patterns, which `loose` keeps. */
+/** Characters that ended a part in the earlier patterns, which `loose` and `token` keep. */
 function ends(code: number, encoded: boolean): boolean {
   if (code === AT) {
-    return true;
+    return !encoded;
   }
   if (code >= 0x80) {
     return (classify(code) & SPACE) !== 0;
@@ -508,16 +524,21 @@ function ends(code: number, encoded: boolean): boolean {
 
 /**
  * The domain the earlier patterns matched: a delimiter-bounded token with a dot between two of
- * its characters, trimmed of trailing ASCII punctuation, which holds no part of the address.
+ * its characters, trimmed of trailing ASCII punctuation, which holds no part of the address. As
+ * there, it runs on across later at signs; an encoded run without a dot is remembered, so the
+ * encoded at signs inside it are not read again.
  */
-function loose(text: string, from: number, limit: number, encoded: boolean): number {
+function loose(text: string, from: number, limit: number, encoded: boolean, scan: Scan): number {
+  if (encoded && from < scan.skip) {
+    return 0;
+  }
   let cursor = from;
   let end = 0;
   let pending = false;
   let valid = false;
   while (cursor < limit) {
     const code = text.charCodeAt(cursor);
-    if (ends(code, encoded) || encodedAt(text, cursor) > 0) {
+    if (ends(code, encoded)) {
       break;
     }
     valid ||= pending;
@@ -530,6 +551,9 @@ function loose(text: string, from: number, limit: number, encoded: boolean): num
     if (code >= 0x80 || ascii[code] & LABEL) {
       end = cursor;
     }
+  }
+  if (encoded && !valid) {
+    scan.skip = cursor;
   }
   return valid ? end : 0;
 }
@@ -564,13 +588,13 @@ function dotted(text: string, from: number, end: number): boolean {
  * token of the earlier patterns runs on past them into another dotted label (`exa.mple'x.com`),
  * which is more of a malformed domain: then the token ends it, as it did before.
  */
-function domain(text: string, from: number, encoded: boolean): number {
+function domain(text: string, from: number, encoded: boolean, scan: Scan): number {
   const limit = Math.min(text.length, from + MAX_PART);
   if (text.charCodeAt(from) === BRACKET) {
     return literal(text, from, limit);
   }
   const strict = labels(text, from, limit);
-  const fallback = loose(text, from, limit, encoded);
+  const fallback = loose(text, from, limit, encoded, scan);
   if (strict === 0) {
     return fallback;
   }
@@ -618,6 +642,7 @@ export function findEmails(text: string): Span[] {
   if (!hasAtSign(text)) {
     return spans;
   }
+  const scan: Scan = { skip: 0 };
   let pairs: Map<number, number> | undefined;
   const opening = (close: number): number => {
     pairs ??= comments(text);
@@ -660,7 +685,7 @@ export function findEmails(text: string): Span[] {
       }
     }
     const stop =
-      units > 0 && !(size === 1 && segment(text, index)) ? domain(text, end, encoded) : 0;
+      units > 0 && !(size === 1 && scope(text, index)) ? domain(text, end, encoded, scan) : 0;
     mark = end;
     if (stop === 0) {
       /** Text glued to the next at sign inherits this start, so reach back as far as the token. */
