@@ -243,7 +243,8 @@ describe('createPrincipalSearch', () => {
     query = { q: 'alice' },
     types,
     entraEnabled = false,
-    authorization = 'Bearer token',
+    authorization = 'Bearer id-token',
+    federatedAccessToken = 'token' as string | null,
     localResults = [],
     entraResults = [],
   }: {
@@ -251,6 +252,7 @@ describe('createPrincipalSearch', () => {
     types?: SearchablePrincipalType[];
     entraEnabled?: boolean;
     authorization?: string;
+    federatedAccessToken?: string | null;
     localResults?: TPrincipalSearchResult[];
     entraResults?: TPrincipalSearchResult[];
   }) => {
@@ -266,7 +268,14 @@ describe('createPrincipalSearch', () => {
     const req = {
       query,
       headers: { authorization },
-      user: { id: 'user123', role: SystemRoles.USER, openidId: 'oid-1' },
+      user: {
+        id: 'user123',
+        role: SystemRoles.USER,
+        openidId: 'oid-1',
+        ...(federatedAccessToken
+          ? { federatedTokens: { access_token: federatedAccessToken } }
+          : {}),
+      },
       principalSearchTypes: types,
     } as PrincipalSearchRequest;
     const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
@@ -360,7 +369,7 @@ describe('createPrincipalSearch', () => {
 
   it.each([
     ['Entra ID search is disabled', { entraEnabled: false }],
-    ['there is no bearer token', { authorization: 'Basic token' }],
+    ['there is no federated access token', { federatedAccessToken: null }],
     [
       'local results fill the limit',
       { query: { q: 'alice', limit: '1' }, localResults: [principal({ name: 'Alice' })] },
@@ -371,6 +380,24 @@ describe('createPrincipalSearch', () => {
 
     expect(test.deps.searchEntraIdPrincipals).not.toHaveBeenCalled();
     expect(test.res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('asserts with the federated access token, never the request bearer', async () => {
+    const test = setupSearch({
+      types: [USER],
+      entraEnabled: true,
+      authorization: 'Bearer id-token',
+      federatedAccessToken: 'federated-access-token',
+    });
+    await test.run();
+
+    expect(test.deps.searchEntraIdPrincipals).toHaveBeenCalledWith(
+      'federated-access-token',
+      'oid-1',
+      'alice',
+      'users',
+      20,
+    );
   });
 
   it('merges new Entra ID principals, ranks them, and counts sources', async () => {

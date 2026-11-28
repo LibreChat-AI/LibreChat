@@ -7,6 +7,7 @@ import type {
   TPrincipalSearchResult,
 } from 'librechat-data-provider';
 import type { NextFunction, Request, Response } from 'express';
+import type { OIDCTokens } from '@librechat/data-schemas';
 
 export type SearchablePrincipalType = PrincipalType.USER | PrincipalType.GROUP | PrincipalType.ROLE;
 
@@ -14,9 +15,11 @@ export type EntraPrincipalSearchType = 'all' | 'users' | 'groups';
 
 export type PrincipalSearchUser = Partial<Pick<TUser, 'id' | 'role' | 'provider'>> & {
   openidId?: string;
+  /** Resolved by the OpenID JWT strategy; the access token is the on-behalf-of assertion. */
+  federatedTokens?: OIDCTokens;
 };
 
-export type PrincipalSearchRequest = Pick<Request, 'query' | 'headers'> & {
+export type PrincipalSearchRequest = Pick<Request, 'query'> & {
   user?: PrincipalSearchUser;
   /** Principal types the caller may search, resolved by the people picker access check. */
   principalSearchTypes?: SearchablePrincipalType[];
@@ -203,14 +206,24 @@ async function findEntraPrincipals({
     return [];
   }
 
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
+  /**
+   * The on-behalf-of assertion must be the federated *access* token, which the OpenID JWT
+   * strategy resolves and deliberately leaves unset when the request bearer is not identifiable
+   * as one. Under `OPENID_REUSE_TOKENS` that bearer is the ID token, and Entra rejects an ID
+   * token used as a jwt-bearer assertion with `AADSTS240002`.
+   */
+  const accessToken = req.user?.federatedTokens?.access_token;
+  if (!accessToken) {
+    logger.warn(
+      'Entra ID principal search skipped: no federated access token on the request. ' +
+        'The people picker falls back to locally known principals only.',
+    );
     return [];
   }
 
   try {
     const graphResults = await deps.searchEntraIdPrincipals(
-      authHeader.substring(7),
+      accessToken,
       req.user?.openidId,
       query,
       graphType,
