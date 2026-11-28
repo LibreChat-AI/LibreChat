@@ -112,6 +112,39 @@ describe('createImageAuthorizationMiddleware', () => {
     expect(deps.findSession).toHaveBeenCalledWith({ userId: VIEWER_ID, refreshToken: token });
   });
 
+  it('allows the owner path when a reverse proxy strips the deployment base path', async () => {
+    (deps.getBasePath as jest.Mock).mockReturnValue('/chat');
+    const token = signUser(VIEWER_ID);
+    const middleware = createImageAuthorizationMiddleware({}, deps);
+
+    await middleware(
+      createRequest(`/images/${VIEWER_ID}/profile.png`, `refreshToken=${token}`),
+      response,
+      next,
+    );
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(deps.getUserById).toHaveBeenCalledWith(
+      VIEWER_ID,
+      'role tenantId idOnTheSource avatar provider twoFactorEnabled twoFactorEnrolledAt credentialsChangedAt',
+    );
+  });
+
+  it('denies a different user when a reverse proxy strips the deployment base path', async () => {
+    (deps.getBasePath as jest.Mock).mockReturnValue('/chat');
+    const token = signUser(VIEWER_ID);
+    const middleware = createImageAuthorizationMiddleware({}, deps);
+
+    await middleware(
+      createRequest(`/images/${OWNER_ID}/private.png`, `refreshToken=${token}`),
+      response,
+      next,
+    );
+
+    expect(next).not.toHaveBeenCalled();
+    expect(response.status).toHaveBeenCalledWith(403);
+  });
+
   describe('required enrollment and credential retirement', () => {
     const originalEnforcement = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
 
