@@ -139,6 +139,7 @@ export default function DataTable({ data }: { data: TFile[] }) {
   const visibleColumnCount = table.getVisibleLeafColumns().length;
 
   const selected = table.getFilteredSelectedRowModel().rows.length;
+  const bulk = selected > 0 || snapshot.length > 0 || isDeleting;
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -150,48 +151,75 @@ export default function DataTable({ data }: { data: TFile[] }) {
           surface="dialog"
           containerClassName="min-w-0 flex-1 basis-full sm:basis-0"
         />
-        <Controls table={table} />
-      </div>
-      {(selected > 0 || snapshot.length > 0 || isDeleting) && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-text-secondary text-sm" role="status">
-            {localize('com_ui_selected_count', { count: selected })}
-          </span>
-          <Button variant="ghost" size="sm" onClick={() => setRowSelection({})}>
-            {localize('com_ui_clear')}
-          </Button>
-          <Button
-            ref={bulkTrigger}
-            variant="outline"
-            size="sm"
-            aria-label={localize('com_ui_delete')}
-            aria-haspopup="dialog"
-            disabled={!selected || isDeleting}
-            onClick={() =>
-              setSnapshot(table.getFilteredSelectedRowModel().rows.map((row) => row.original))
-            }
-          >
-            {isDeleting ? (
-              <Spinner className="size-3.5 sm:size-4" />
-            ) : (
-              <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
+        <div className="grid min-w-0">
+          <div
+            aria-hidden={bulk}
+            inert={bulk ? '' : undefined}
+            className={cn(
+              'duration-theme-fast col-start-1 row-start-1 flex flex-wrap items-center gap-2 transition-opacity ease-out motion-reduce:transition-none',
+              bulk && 'opacity-0',
             )}
-            {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
-          </Button>
-          {snapshot.length > 0 && (
-            <Confirm
-              files={snapshot}
-              triggerRef={bulkTrigger}
-              onClose={() => setSnapshot([])}
-              onConfirm={() => void remove(snapshot)}
-            />
-          )}
+          >
+            <Controls table={table} />
+          </div>
+          <div
+            aria-hidden={!bulk}
+            inert={!bulk ? '' : undefined}
+            className={cn(
+              'duration-theme-fast col-start-1 row-start-1 flex flex-wrap items-center gap-2 transition-opacity ease-out motion-reduce:transition-none',
+              !bulk && 'opacity-0',
+            )}
+          >
+            <span className="text-text-secondary text-sm" role="status">
+              {localize('com_ui_selected_count', { count: selected })}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRowSelection({});
+                document.getElementById('files-filter')?.focus({ preventScroll: true });
+              }}
+            >
+              {localize('com_ui_clear')}
+            </Button>
+            <Button
+              ref={bulkTrigger}
+              variant="outline"
+              size="sm"
+              aria-label={localize('com_ui_delete')}
+              aria-haspopup="dialog"
+              disabled={!selected || isDeleting}
+              onClick={() =>
+                setSnapshot(table.getFilteredSelectedRowModel().rows.map((row) => row.original))
+              }
+            >
+              {isDeleting ? (
+                <Spinner className="size-3.5 sm:size-4" />
+              ) : (
+                <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
+              )}
+              {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
+            </Button>
+            {snapshot.length > 0 && (
+              <Confirm
+                files={snapshot}
+                triggerRef={bulkTrigger}
+                onClose={() => setSnapshot([])}
+                onConfirm={() => void remove(snapshot)}
+              />
+            )}
+          </div>
         </div>
-      )}
+      </div>
       {hasFailure && <Alert variant="error">{localize('com_ui_delete_partial_failure')}</Alert>}
       <div
         ref={scrollRef}
-        className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-md"
+        id="my-files-list"
+        tabIndex={-1}
+        role="region"
+        aria-label={localize('com_nav_my_files')}
+        className="[&_tr[data-state=selected]]:bg-surface-active relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-md [&_tbody_tr]:duration-100 motion-reduce:[&_tbody_tr]:transition-none"
       >
         {/* Unwrapped: this div is the scroller the virtualizer observes, so the table
             must not add its own scrolling wrapper inside it. */}
