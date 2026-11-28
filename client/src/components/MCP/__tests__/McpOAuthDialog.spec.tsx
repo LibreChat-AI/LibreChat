@@ -42,20 +42,24 @@ jest.mock('@librechat/client', () => {
       }),
     Button: ({
       children,
+      asChild,
       onClick,
       'aria-label': ariaLabel,
       'aria-expanded': ariaExpanded,
     }: {
       children?: ReactNode;
+      asChild?: boolean;
       onClick?: () => void;
       'aria-label'?: string;
       'aria-expanded'?: boolean;
     }) =>
-      React.createElement(
-        'button',
-        { type: 'button', onClick, 'aria-label': ariaLabel, 'aria-expanded': ariaExpanded },
-        children,
-      ),
+      asChild
+        ? React.createElement('span', null, children)
+        : React.createElement(
+            'button',
+            { type: 'button', onClick, 'aria-label': ariaLabel, 'aria-expanded': ariaExpanded },
+            children,
+          ),
   };
 });
 
@@ -85,19 +89,18 @@ describe('McpOAuthDialog', () => {
     expect(screen.getByText('com_ui_mcp_oauth_scan_qr')).toBeInTheDocument();
   });
 
-  test('Continue opens the OAuth URL in a new tab', () => {
-    const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+  test('Continue is a real link to the OAuth URL, not a scripted click', () => {
     const clickSpy = jest
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => undefined);
+    const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
     render(<McpOAuthDialog {...baseProps} />);
-    fireEvent.click(screen.getByText('com_ui_continue_oauth'));
-    expect(clickSpy).toHaveBeenCalledTimes(1);
-    const link = clickSpy.mock.instances[0] as unknown as HTMLAnchorElement;
-    expect(link.href).toBe(baseProps.oauthUrl);
-    expect(link.target).toBe('_blank');
-    expect(link.rel).toBe('noopener noreferrer');
-    /** A features string makes WebKit request a popup window, which iOS web apps cannot open. */
+    const anchor = screen.getByText('com_ui_continue_oauth').closest('a');
+    expect(anchor).not.toBeNull();
+    expect(anchor).toHaveAttribute('href', baseProps.oauthUrl);
+    expect(anchor).toHaveAttribute('target', '_blank');
+    expect(anchor).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(clickSpy).not.toHaveBeenCalled();
     expect(openSpy).not.toHaveBeenCalled();
     clickSpy.mockRestore();
     openSpy.mockRestore();

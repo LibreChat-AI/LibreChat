@@ -11,7 +11,7 @@ import {
   OGDialogDescription,
 } from '@librechat/client';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
-import { cn, openInNewTab } from '~/utils';
+import { cn } from '~/utils';
 
 interface McpOAuthDialogProps {
   open: boolean;
@@ -143,13 +143,17 @@ export default function McpOAuthDialog({
               <QrCode className="size-4" aria-hidden="true" />
             </Button>
             <Button
-              type="button"
+              asChild
               variant="submit"
               className="h-auto min-h-10 min-w-0 flex-1 basis-40 whitespace-normal"
-              onClick={() => openInNewTab(oauthUrl)}
             >
-              {localize('com_ui_continue_oauth')}
-              <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
+              {/* A real anchor navigates with genuine user activation everywhere; a scripted
+                 click() carries no user activation in WebKit and reaches Electron shells as a
+                 window-open request nothing may handle. See #18252. */}
+              <a href={oauthUrl} target="_blank" rel="noopener noreferrer">
+                {localize('com_ui_continue_oauth')}
+                <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
+              </a>
             </Button>
           </div>
         </div>
