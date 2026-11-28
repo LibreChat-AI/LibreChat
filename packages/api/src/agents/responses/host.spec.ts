@@ -1403,6 +1403,21 @@ it('does not turn a missing admitted job into a fabricated stop confirmation', a
   expect((await scoped(() => storage.read(record, record.responseId)))?.status).toBe('in_progress');
 });
 
+it('settles an owner Stop when no execution remains to confirm it', async () => {
+  const f = await fixture();
+  const record = await reserveUnstarted(f.credential.id);
+  await scoped(() =>
+    storage.publish(record, record.responseId, record.revision, {
+      status: 'in_progress',
+      responseJSON: JSON.stringify({}),
+      generationCreatedAt: 1234,
+    }),
+  );
+  const cancelled = await scoped(() => f.host.cancelResponse(record, record.responseId));
+  expect(cancelled).toMatchObject({ ok: true, response: { status: 'cancelled' } });
+  expect((await scoped(() => storage.read(record, record.responseId)))?.status).toBe('cancelled');
+});
+
 it('denies an idempotent POST replay through a replacement key after the original key is revoked', async () => {
   const f = await fixture();
   const body = { model: 'agent', input: 'Original credential output', background: true };
