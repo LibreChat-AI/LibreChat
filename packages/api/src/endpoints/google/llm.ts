@@ -5,6 +5,7 @@ import {
   AuthKeys,
   removeNullishValues,
   isGeminiHydrogen,
+  supportsGeminiXHighThinking,
   GEMINI_HYDROGEN_OUTPUT_TOKENS,
   GEMINI_HYDROGEN_CONTEXT_TOKENS,
 } from 'librechat-data-provider';
@@ -54,13 +55,21 @@ const geminiArgonBlockedParams = ['candidateCount', 'candidate_count', 'n'] as c
  * and error on `minimal`, so an explicit `minimal` is substituted with the
  * nearest supported level. Argon shares the Flash request shape (sampling
  * ignored, `thinkingBudget` rejected); its allowlisted `cyber-permissive`
- * variant defaults to `high`.
+ * variant defaults to `high`. Gemini 4 Neon defaults to `high`, adds `xhigh`, rejects
+ * `minimal` and `thinkingBudget` with HTTP 400, and supports implicit caching only.
  * @see https://ai.google.dev/gemini-api/docs/latest-model#api-changes-and-parameter-updates
  * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash
  * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
  * @see https://ai.google.dev/gemini-api/docs/models/gemini-4-argon
+ * @see https://aistudio.google.com/docs/models/gemini-4-neon
  */
 const geminiFlashThinkingRules: ReadonlyArray<GeminiFlashThinkingRule> = [
+  {
+    id: 'gemini-4-neon',
+    default: 'HIGH',
+    substitutions: { MINIMAL: 'LOW' },
+    blockedParams: ['cachedContent', 'cached_content', 'maxReasoningTokens'],
+  },
   {
     id: 'gemini-4-hydrogen',
     default: 'HIGH',
@@ -122,7 +131,11 @@ const googleThinkingLevels = new Set<GoogleThinkingLevel>([
  * geography; a region outside `us` and `eu` is kept rather than sent to `global`.
  * @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-argon
  */
-const vertexMultiRegionOnlyModels = ['gemini-4-argon', 'gemini-4-hydrogen'] as const;
+const vertexMultiRegionOnlyModels = [
+  'gemini-4-argon',
+  'gemini-4-hydrogen',
+  'gemini-4-neon',
+] as const;
 
 const vertexRegionMultiRegions: ReadonlyArray<[prefix: string, multiRegion: string]> = [
   ['europe-', 'eu'],
@@ -660,7 +673,7 @@ export function getGoogleConfig(
     };
     if (selectedThinkingLevel) {
       thinkingConfig.thinkingLevel =
-        selectedThinkingLevel === 'XHIGH' && !isGeminiHydrogen(modelName)
+        selectedThinkingLevel === 'XHIGH' && !supportsGeminiXHighThinking(modelName)
           ? 'HIGH'
           : selectedThinkingLevel;
     }
