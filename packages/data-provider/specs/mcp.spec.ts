@@ -749,6 +749,29 @@ describe('MCP schemas', () => {
       expect(result.success).toBe(false);
     });
 
+    it.each(['none', 'client_secret_basic', 'client_secret_post'])(
+      'should preserve %s as the dynamic registration auth method',
+      (method) => {
+        const config = MCPOptionsSchema.parse({
+          type: 'streamable-http',
+          url: 'https://mcp-server.com/http',
+          oauth: { registration_token_endpoint_auth_method: method },
+        });
+
+        expect(config.oauth?.registration_token_endpoint_auth_method).toBe(method);
+      },
+    );
+
+    it('should reject an unsupported dynamic registration auth method', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: { registration_token_endpoint_auth_method: 'unsupported' },
+      });
+
+      expect(result.success).toBe(false);
+    });
+
     it('should accept send_resource_parameter = false (Entra opt-out) from admin config', () => {
       const result = MCPOptionsSchema.safeParse({
         type: 'streamable-http',
