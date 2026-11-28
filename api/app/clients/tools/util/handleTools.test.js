@@ -1068,6 +1068,28 @@ describe('Tool Handlers', () => {
       ).resolves.toBeDefined();
     });
 
+    it('resolves user placeholders in reranker and SearXNG headers', async () => {
+      const header = { 'x-end-user': '{{LIBRECHAT_USER_EMAIL}}' };
+      mockLoadWebSearchAuth.mockResolvedValueOnce({
+        authenticated: true,
+        authResult: { searchProvider: 'searxng', searxngSearchOptions: { headers: header } },
+      });
+      const toolMap = await loadTools({
+        user: fakeUser._id.toString(),
+        tools: [Tools.web_search],
+        returnMap: true,
+        webSearch: { rerankerHeaders: header },
+        options: {
+          req: { ...buildReq(), user: { ...buildReq().user, email: 'user@example.com' } },
+        },
+      });
+      await toolMap[Tools.web_search]();
+
+      const config = mockCreateSearchTool.mock.calls.at(-1)[0];
+      expect(config.rerankerHeaders).toEqual({ 'x-end-user': 'user@example.com' });
+      expect(config.searxngSearchOptions.headers).toEqual({ 'x-end-user': 'user@example.com' });
+    });
+
     it('does not construct web search when authentication is incomplete', async () => {
       mockLoadWebSearchAuth.mockResolvedValueOnce({
         authenticated: false,
