@@ -3023,6 +3023,55 @@ describe('initializeAgent — maxContextTokens', () => {
     expect(result.baseContextTokens).toBe(983_040);
   });
 
+  it('reserves one foreground segment for Gemini 4 long decode', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.VERTEXAI,
+      model: 'gemini-4-carbon',
+      modelDefault: 1048576,
+      maxOutputTokens: 1048576,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.VERTEXAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.baseContextTokens).toBe(983040);
+    expect(result.maxContextTokens).toBe(933888);
+  });
+
+  it('keeps a small explicit output budget in the input reserve', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.VERTEXAI,
+      model: 'gemini-4-carbon',
+      modelDefault: 1048576,
+      maxOutputTokens: 4096,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.VERTEXAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.baseContextTokens).toBe(1044480);
+  });
+
   it('clamps maxContextTokens to at least 1024 for tiny models', async () => {
     const modelDefault = 1100;
     const maxOutputTokens = 1050;

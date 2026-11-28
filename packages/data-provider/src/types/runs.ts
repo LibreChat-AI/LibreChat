@@ -331,6 +331,9 @@ export type TTokenUsageEvent = {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  /** Initial prompt size for continued responses; context tracking only.
+   * Aggregate input/total tokens remain authoritative for billing and output repair. */
+  context_input_tokens?: number;
   input_token_details?: {
     cache_creation?: number;
     /** Subset of `cache_creation` written to Anthropic's 1-hour cache */
@@ -370,16 +373,13 @@ const finiteNonNegativeInteger = (value: unknown): number | undefined => {
 };
 
 /**
- * Full prompt token count for one completed model call — the EXACT context the
- * model saw, provider-aware: additive providers (Bedrock) report `input_tokens`
- * excluding cache, so cache reads/writes are added back; subset providers
- * (Anthropic, OpenAI, …) already fold cache into `input_tokens`. When the
- * provider is absent (custom/OpenAI-compatible payloads), fall back to the same
- * magnitude heuristic `normalizeUsageUnits` uses — cache ≤ input means it's
- * already included — so cached events aren't re-inflated. The ground truth the
- * gauge reconciles its calibrated estimate to.
+ * Aggregate prompt tokens for billing and output repair. Additive providers
+ * (Bedrock) report `input_tokens` excluding cache, so cache reads/writes are
+ * added back; subset providers (Anthropic, OpenAI, …) already fold cache into
+ * `input_tokens`. Without a provider, use the same magnitude heuristic as
+ * `normalizeUsageUnits` so cached events aren't re-inflated.
  */
-export const promptTokensFromUsage = (event: TTokenUsageEvent): number => {
+const aggregatePromptTokensFromUsage = (event: TTokenUsageEvent): number => {
   const input = finiteNonNegativeInteger(event.input_tokens) ?? 0;
   const details = event.input_token_details ?? {};
   const cacheRead = finiteNonNegativeInteger(details.cache_read) ?? 0;
@@ -392,6 +392,11 @@ export const promptTokensFromUsage = (event: TTokenUsageEvent): number => {
     ? input
     : Math.min(Number.MAX_SAFE_INTEGER, input + cacheRead + cacheCreation);
 };
+
+/** Exact conversation context for one completed call. A continued response
+ * re-prefills every segment, so its initial prompt overrides aggregate usage. */
+export const promptTokensFromUsage = (event: TTokenUsageEvent): number =>
+  finiteNonNegativeInteger(event.context_input_tokens) ?? aggregatePromptTokensFromUsage(event);
 
 /**
  * Scales per-tool result-message counts while bounding both malformed input and
@@ -526,7 +531,7 @@ export const reconcileContextUsage = (
 export const outputTokensFromUsage = (event: TTokenUsageEvent): number => {
   const output = finiteNonNegativeInteger(event.output_tokens) ?? 0;
   const total = finiteNonNegativeInteger(event.total_tokens) ?? 0;
-  return Math.max(output, total - promptTokensFromUsage(event));
+  return Math.max(output, total - aggregatePromptTokensFromUsage(event));
 };
 
 /** Reconcile and retain the primary call details on live, saved, and resumable snapshots. */

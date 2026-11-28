@@ -3,7 +3,9 @@ import { ContentTypes, ErrorTypes } from 'librechat-data-provider';
 
 /**
  * Gemini's raw finish reasons for a call that stopped at its output budget. `CONTINUATION` ends a
- * segment the provider expects the caller to continue, which this host cannot do yet.
+ * segment the provider expects the caller to continue. Reaching this handler means continuation
+ * is unsupported for the request or cannot proceed because no token was returned, the request was
+ * non-streaming, or the run was aborted.
  */
 const TRUNCATED_FINISH_REASONS: ReadonlySet<string> = new Set(['MAX_TOKENS', 'CONTINUATION']);
 

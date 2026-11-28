@@ -18,7 +18,6 @@ import {
   EModelEndpoint,
   getModelKey,
 } from './schemas';
-
 describe('reasoningOverrideSchema', () => {
   it.each([
     { key: 'reasoning_effort', value: ReasoningEffort.high },
@@ -494,7 +493,6 @@ describe('googleSettings', () => {
         'gemini-3.1-flash-lite',
         'gemini-3.5-flash',
         'models/gemini-3.5-flash',
-        'gemini-4-pro',
         'gemini-10-flash',
       ])('returns 65535 for %s', (model) => {
         expect(reset(model)).toBe(65535);
@@ -505,6 +503,15 @@ describe('googleSettings', () => {
       it.each(['gemini-2.5-flash-image', 'gemini-3-pro-image'])('returns 32768 for %s', (model) => {
         expect(reset(model)).toBe(32768);
       });
+    });
+
+    describe('Gemini long-decode models (1M shared window)', () => {
+      it.each(['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-4-neon'])(
+        'keeps the current output default for long-decode models',
+        (model) => {
+          expect(reset(model)).toBe(model === 'gemini-4-hydrogen' ? 65536 : 65535);
+        },
+      );
     });
 
     describe('legacy/deprecated Gemini and Gemma models (8K)', () => {
@@ -534,6 +541,18 @@ describe('googleSettings', () => {
     it('caps current Gemini models at 65535', () => {
       expect(set(100000, 'gemini-2.5-pro')).toBe(65535);
       expect(set(100000, 'gemini-3.5-flash')).toBe(65535);
+    });
+
+    it('allows the shared-window maximum for long-decode models', () => {
+      expect(set(1048576, 'gemini-4-carbon')).toBe(1048576);
+      expect(set(1048576, 'gemini-4-argon')).toBe(1048576);
+      expect(set(1048576, 'gemini-4-hydrogen')).toBe(1048576);
+      expect(set(1048576, 'gemini-4-neon')).toBe(1048576);
+    });
+
+    it('caps long-decode models at the shared-window maximum', () => {
+      expect(set(1048577, 'gemini-4-carbon')).toBe(1048576);
+      expect(set(1048577, 'gemini-4-hydrogen')).toBe(1048576);
     });
 
     it('allows values within the current 64K limit', () => {

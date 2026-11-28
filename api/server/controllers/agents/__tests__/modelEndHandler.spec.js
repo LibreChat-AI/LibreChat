@@ -6,6 +6,7 @@ jest.mock('@librechat/api', () => {
     getModelRefusalInfo,
     recordModelTruncation,
     getModelEndUsage,
+    getModelEndContextInputTokens,
     captureResponseAccountingUsage,
     collectGoogleThoughtSignatures,
   } = jest.requireActual('@librechat/api');
@@ -17,6 +18,7 @@ jest.mock('@librechat/api', () => {
     getModelRefusalInfo,
     recordModelTruncation,
     getModelEndUsage,
+    getModelEndContextInputTokens,
     captureResponseAccountingUsage,
     collectGoogleThoughtSignatures,
   };
@@ -330,6 +332,45 @@ describe('ModelEndHandler: Google thoughtSignature capture (issue #13006 follow-
 
   it('throws when collectedUsage is not an array (existing contract)', () => {
     expect(() => new ModelEndHandler(null)).toThrow('collectedUsage must be an array');
+  });
+});
+
+describe('ModelEndHandler: Gemini long-decode usage', () => {
+  it('emits initial context input while preserving aggregate billing usage', async () => {
+    const collectedUsage = [];
+    const emitUsage = jest.fn();
+    const handler = new ModelEndHandler(collectedUsage, null, emitUsage);
+
+    await handler.handle(
+      'on_chat_model_end',
+      {
+        output: {
+          usage_metadata: {
+            input_tokens: 300,
+            output_tokens: 65538,
+            total_tokens: 65838,
+            input_token_details: { cache_read: 250 },
+          },
+          response_metadata: { initial_prompt_token_count: 100 },
+        },
+      },
+      { ls_model_name: 'gemini-4-carbon', run_id: 'r1', user_id: 'u1' },
+      buildGraph(),
+    );
+
+    expect(collectedUsage[0]).toMatchObject({
+      input_tokens: 300,
+      output_tokens: 65538,
+      total_tokens: 65838,
+    });
+    expect(emitUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input_tokens: 300,
+        output_tokens: 65538,
+        total_tokens: 65838,
+        context_input_tokens: 100,
+      }),
+    );
   });
 });
 

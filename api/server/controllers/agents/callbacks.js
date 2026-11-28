@@ -20,6 +20,7 @@ const {
 const {
   sendEvent,
   getModelEndUsage,
+  getModelEndContextInputTokens,
   collectGoogleThoughtSignatures,
   computeUsageCostUSD,
   captureResponseAccountingUsage,
@@ -195,6 +196,7 @@ class ModelEndHandler {
             input_tokens: taggedUsage.input_tokens,
             output_tokens: taggedUsage.output_tokens,
             total_tokens: taggedUsage.total_tokens,
+            context_input_tokens: getModelEndContextInputTokens(data?.output),
             input_token_details:
               cache_creation != null || cache_read != null
                 ? {

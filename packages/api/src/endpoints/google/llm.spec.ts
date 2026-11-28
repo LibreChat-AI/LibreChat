@@ -2,7 +2,22 @@ import { Providers } from '@librechat/agents';
 import { AuthKeys, ThinkingLevel } from 'librechat-data-provider';
 import type { GoogleClientOptions } from '@librechat/agents';
 import type * as t from '~/types';
-import { getGoogleConfig, getSafetySettings, knownGoogleParams } from './llm';
+import {
+  getGoogleConfig,
+  getGoogleOutputReserve,
+  getSafetySettings,
+  knownGoogleParams,
+} from './llm';
+
+describe('getGoogleOutputReserve', () => {
+  it('reserves only one foreground segment for long-decode models', () => {
+    expect(getGoogleOutputReserve('gemini-4-carbon', 1048576)).toBe(65536);
+    expect(getGoogleOutputReserve('gemini-4-carbon', 262144)).toBe(65536);
+    expect(getGoogleOutputReserve('gemini-4-carbon', 4096)).toBe(4096);
+    expect(getGoogleOutputReserve('gemini-4-carbon')).toBe(65536);
+    expect(getGoogleOutputReserve('gemini-4-carbon', 0)).toBe(65536);
+  });
+});
 
 describe('getGoogleConfig', () => {
   const originalEnv = process.env;
@@ -170,6 +185,13 @@ describe('getGoogleConfig', () => {
         modelOptions: { model: 'gemini-2.5-pro', maxOutputTokens: 1024 },
       });
       expect(result.llmConfig).toHaveProperty('maxOutputTokens', 1024);
+    });
+
+    it('uses the shared settings limit for Gemini 4 output budgets', () => {
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-4-neon', maxOutputTokens: 1048577 },
+      });
+      expect(result.llmConfig).toHaveProperty('maxOutputTokens', 1048576);
     });
 
     it('lets a configured defaultParams maxOutputTokens take precedence over the model default', () => {

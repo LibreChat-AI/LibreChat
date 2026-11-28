@@ -5,12 +5,18 @@ import type { SearchResultData } from './types/web';
 import type { FunctionTool } from './types/tools';
 import type { TFile } from './types/files';
 import {
+  isGeminiHydrogen,
+  isGeminiLongDecodeModel,
+  GEMINI_HYDROGEN_DEFAULT_OUTPUT_TOKENS,
+  GEMINI_STANDARD_MAX_OUTPUT_TOKENS,
+  GEMINI_LONG_DECODE_MAX_OUTPUT_TOKENS,
+} from './gemini';
+import {
   CODE_ENVIRONMENT_MODES,
   CODE_WORKSPACE_ID_PATTERN,
   CODE_WORKSPACE_CHECKOUT_MODES,
   MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
-import { isGeminiHydrogen, GEMINI_HYDROGEN_OUTPUT_TOKENS } from './gemini';
 import { userSubmittedMessageFieldPathSchema } from './filters';
 import { TFeedback, feedbackSchema } from './feedback';
 import { CODE_APPROVAL_MODES } from './code/approval';
@@ -531,33 +537,28 @@ export const openAISettings = {
   },
 };
 
-/**
- * `65535` (not 65536) is the value valid on both Google AI Studio and Vertex AI:
- * Vertex caps current Gemini text models at 65,535 output tokens, so defaulting to
- * 65,536 would make otherwise-default Vertex requests fail validation.
- */
-const GOOGLE_MAX_OUTPUT = 65535 as const;
 const GOOGLE_IMAGE_MAX_OUTPUT = 32768 as const;
 const GOOGLE_LEGACY_MAX_OUTPUT = 8192 as const;
 
-/**
- * Resolves the documented max output-token limit for a Google/Gemini model.
- * Current Gemini text models (2.5 and 3+) support 64K output tokens; their image
- * variants (e.g. `gemini-2.5-flash-image`) cap at 32K; legacy/deprecated models
- * (2.0 and earlier, including legacy image models) and Gemma retain the 8K limit.
- */
-const getGoogleMaxOutputTokens = (modelName: string): number => {
+/** Resolves the current default output-token count for a Google/Gemini model. */
+const getGoogleDefaultOutputTokens = (modelName: string): number => {
   if (isGeminiHydrogen(modelName)) {
-    return GEMINI_HYDROGEN_OUTPUT_TOKENS;
+    return GEMINI_HYDROGEN_DEFAULT_OUTPUT_TOKENS;
   }
   if (/gemini-(?:2\.5|[3-9]|\d{2,})/i.test(modelName)) {
     if (/image/i.test(modelName)) {
       return GOOGLE_IMAGE_MAX_OUTPUT;
     }
-    return GOOGLE_MAX_OUTPUT;
+    return GEMINI_STANDARD_MAX_OUTPUT_TOKENS;
   }
   return GOOGLE_LEGACY_MAX_OUTPUT;
 };
+
+/** Resolves the request limit independently from the default output budget. */
+const getGoogleMaxOutputTokens = (modelName: string): number =>
+  isGeminiLongDecodeModel(modelName)
+    ? GEMINI_LONG_DECODE_MAX_OUTPUT_TOKENS
+    : getGoogleDefaultOutputTokens(modelName);
 
 /**
  * Per-model thinking budget bounds, documented in
@@ -607,10 +608,11 @@ export const googleSettings = {
   },
   maxOutputTokens: {
     min: 1 as const,
-    max: GOOGLE_MAX_OUTPUT,
+    max: GEMINI_STANDARD_MAX_OUTPUT_TOKENS,
     step: 1 as const,
     default: GOOGLE_LEGACY_MAX_OUTPUT,
-    reset: (modelName: string): number => getGoogleMaxOutputTokens(modelName),
+    reset: (modelName: string): number => getGoogleDefaultOutputTokens(modelName),
+    limit: (modelName: string): number => getGoogleMaxOutputTokens(modelName),
     set: (value: number, modelName: string): number => {
       const max = getGoogleMaxOutputTokens(modelName);
       return value > max ? max : value;

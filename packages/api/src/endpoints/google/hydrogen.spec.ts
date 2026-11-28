@@ -43,7 +43,7 @@ describe('Hydrogen request contract', () => {
       });
       expect(result.provider).toBe(provider);
       expect(result.llmConfig).toMatchObject({
-        maxOutputTokens: 65536,
+        maxOutputTokens: 100000,
         thinkingConfig: { thinkingLevel: expected },
       });
       for (const param of [
@@ -59,12 +59,20 @@ describe('Hydrogen request contract', () => {
       expect(result.llmConfig).not.toHaveProperty('thinkingConfig.thinkingBudget');
     });
 
-    it.each([true, false])('caps foreground output with streaming=%s', (streaming) => {
+    it.each([true, false])('uses the default output budget with streaming=%s', (streaming) => {
       const result = getGoogleConfig(credentials, {
         modelOptions: { model: 'models/gemini-4-hydrogen' },
         streaming,
       });
       expect(result.llmConfig.maxOutputTokens).toBe(65536);
+    });
+
+    it.each([1048576, 1048577])('caps long-decode output at the shared window (%s)', (value) => {
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-4-hydrogen' },
+        addParams: { maxOutputTokens: value },
+      });
+      expect(result.llmConfig.maxOutputTokens).toBe(1048576);
     });
   });
 
@@ -84,7 +92,7 @@ describe('Hydrogen request contract', () => {
   it('reserves output and thinking inside the shared context even when output is omitted', () => {
     expect(getGoogleInputTokenLimit('gemini-4-hydrogen')).toBe(1048576 - 65536);
     expect(getGoogleInputTokenLimit('models/gemini-4-hydrogen-001', 4096)).toBe(1048576 - 4096);
-    expect(getGoogleInputTokenLimit('gemini-4-argon')).toBeUndefined();
+    expect(getGoogleInputTokenLimit('gemini-4-argon')).toBe(1048576 - 65536);
   });
 
   it.each([
