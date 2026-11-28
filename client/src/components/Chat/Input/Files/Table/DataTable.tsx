@@ -49,10 +49,15 @@ type Style = {
 };
 
 export default function DataTable({ data }: { data: TFile[] }) {
-  const columns = useColumns();
   const localize = useLocalize();
   const [isDeleting, setIsDeleting] = useState(false);
   const [snapshot, setSnapshot] = useState<TFile[]>([]);
+  const rowTrigger = useRef<HTMLElement | null>(null);
+  const deleteRow = useCallback((file: TFile, trigger: HTMLElement | null) => {
+    rowTrigger.current = trigger;
+    setSnapshot([file]);
+  }, []);
+  const columns = useColumns(deleteRow);
   const [hasFailure, setHasFailure] = useState(false);
   const { deleteFiles } = useDeleteFilesFromTable();
 
@@ -164,7 +169,19 @@ export default function DataTable({ data }: { data: TFile[] }) {
                 {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
               </Button>
             </AlertDialogTrigger>
-            <AlertDialogContent className="w-11/12 max-w-md">
+            <AlertDialogContent
+              className="w-11/12 max-w-md"
+              onCloseAutoFocus={(event) => {
+                if (rowTrigger.current) {
+                  event.preventDefault();
+                  const target = rowTrigger.current.isConnected
+                    ? rowTrigger.current
+                    : document.getElementById('files-filter');
+                  target?.focus();
+                  rowTrigger.current = null;
+                }
+              }}
+            >
               <AlertDialogHeader>
                 <AlertDialogTitle>{localize('com_ui_delete')}</AlertDialogTitle>
                 <AlertDialogDescription>
@@ -190,7 +207,9 @@ export default function DataTable({ data }: { data: TFile[] }) {
                       setRowSelection((current) => {
                         const next = { ...current };
                         for (const file of snapshot) {
-                          if (!failed.has(file.file_id)) {
+                          if (failed.has(file.file_id)) {
+                            next[file.file_id] = true;
+                          } else {
                             delete next[file.file_id];
                           }
                         }

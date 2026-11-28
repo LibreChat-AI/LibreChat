@@ -153,3 +153,38 @@ test('filters and sorts files without scrolling the surrounding dialog @scenario
   );
   expect(scrollers).toBe(1);
 });
+
+test('row actions use the selected file for details, preview, download and confirmation @scenario:my-files-row-actions', async ({
+  page,
+}) => {
+  const file = files[1];
+  const { dialog } = await openMyFiles(page);
+  await page.route('**/api/files/download/*/' + file.file_id, (route) =>
+    route.fulfill({ contentType: 'text/plain', body: 'Preview fixture content' }),
+  );
+  const trigger = dialog.getByRole('button', { name: 'Actions for ' + file.filename });
+  const menu = page.getByRole('menu').last();
+  await trigger.click();
+  await menu.getByRole('menuitem', { name: 'Details' }).click();
+  const details = page.getByRole('dialog', { name: 'Details' });
+  await expect(details).toContainText(file.filename);
+  await expect(details).toContainText('local');
+  await details.press('Escape');
+  await menu.getByRole('menuitem', { name: 'Preview' }).click();
+  const preview = page.getByRole('dialog').last();
+  await expect(preview).toContainText('Preview fixture content');
+  await preview.press('Escape');
+  const download = page.waitForEvent('download');
+  await menu.getByRole('menuitem', { name: 'Download' }).click();
+  expect((await download).suggestedFilename()).toBe(file.filename);
+  await trigger.click();
+  await menu.getByRole('menuitem', { name: 'Delete' }).click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText(file.filename);
+  await confirmation.getByRole('button', { name: 'Cancel' }).click();
+  await expect(trigger).toBeFocused();
+  const unavailable = dialog.getByRole('button', { name: 'Actions for ' + files[0].filename });
+  await unavailable.click();
+  await expect(menu.getByRole('menuitem', { name: 'Details' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Download' })).toHaveCount(0);
+});
