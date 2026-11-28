@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { File } from 'lucide-react';
+import { atom, useAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { ImagePreview } from '@librechat/chat/components';
 import { FileContext, FileSources } from 'librechat-data-provider';
@@ -28,7 +29,8 @@ export const labels: Partial<Record<string, TranslationKeys>> = {
 function Filename({ file, detail }: { file: TFile; detail: string }) {
   const localize = useLocalize();
   const image = file.type?.startsWith('image/') ? file.preview || file.filepath : undefined;
-  const [failedImage, setFailedImage] = useState<string>();
+  const failure = useMemo(() => atom<string | undefined>(undefined), []);
+  const [failedImage, setFailedImage] = useAtom(failure);
   const contextLabel = file.context && labels[file.context];
   const index = file.filename.lastIndexOf('.');
   const extension = index > 0 && index < file.filename.length - 1 ? file.filename.slice(index) : '';
