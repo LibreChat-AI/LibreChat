@@ -111,4 +111,26 @@ test.describe('composer thinking level', () => {
     await expect(autoToggle).toHaveAttribute('aria-pressed', 'true');
     await expect(autoToggle).toBeFocused();
   });
+
+  test('Thinking popover draws its stops in Auto @scenario:thinking-auto-rail-shows-stops', async ({
+    page,
+  }) => {
+    await openNewChat(page);
+    await trigger(page).click();
+    await expect(popover(page).getByRole('button', { name: 'Auto' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    /* One drawn stop per level, though none is checked in Auto. */
+    const levels = await popover(page).getByRole('radio').count();
+    expect(levels).toBeGreaterThan(1);
+    await expect(popover(page).getByTestId('composer-thinking-stop')).toHaveCount(levels);
+    await expect(popover(page).getByTestId('composer-thinking-stop').first()).toBeVisible();
+
+    await popover(page).getByRole('radio', { name: 'Medium', exact: true }).click();
+    await expect(popover(page).getByRole('radio', { checked: true })).toHaveAccessibleName(
+      'Medium',
+    );
+    await expect(trigger(page)).toHaveAccessibleName('Thinking: Medium');
+  });
 });

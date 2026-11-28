@@ -206,11 +206,6 @@ function Effort({ setting, conversation, value, onChange }: EffortProps): React.
     (value: string) => resolveEffortLabel(setting, value, localize),
     [setting, localize],
   );
-  const activeUngradedValue =
-    current != null && UNGRADED_VALUES.has(current) ? current : ungradedValue;
-  const ungradedLabel =
-    activeUngradedValue != null ? label(activeUngradedValue) : localize('com_ui_auto');
-
   /**
    * Nearest stop to a pointer position, so a sweep snaps rather than drifts.
    *
@@ -413,29 +408,20 @@ function Effort({ setting, conversation, value, onChange }: EffortProps): React.
           />
         </span>
 
-        {!isUngraded &&
-          levels.map((value, index) => (
-            <span
-              key={`stop-${value}`}
-              aria-hidden="true"
-              style={{ left: centerOf(index) }}
-              className={cn(
-                'absolute top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-50 transition-colors',
-                index < activeIndex ? 'bg-surface-fixed' : 'bg-text-secondary',
-              )}
-            />
-          ))}
-
-        {/* The ungraded mode has no position on the track, so the rail names it
-            outright rather than looking broken. */}
-        {isUngraded && (
+        {/* Drawn in the ungraded mode too: they show the rail has positions to
+            pick, so it does not read as an empty bar. */}
+        {levels.map((value, index) => (
           <span
+            key={`stop-${value}`}
             aria-hidden="true"
-            className="text-text-secondary pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-medium tracking-wide uppercase"
-          >
-            {ungradedLabel}
-          </span>
-        )}
+            data-testid="composer-thinking-stop"
+            style={{ left: centerOf(index) }}
+            className={cn(
+              'absolute top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-50 transition-colors',
+              index < activeIndex ? 'bg-surface-fixed' : 'bg-text-secondary',
+            )}
+          />
+        ))}
 
         {/* Always mounted: unmounting it on the way into the ungraded mode pulled
             the cover off the fill mid-fade. It holds still until the fill has
