@@ -661,6 +661,34 @@ function applyResponsesVerbosity({
   return false;
 }
 
+function applyResponsesTextFormat({
+  llmConfig,
+  modelKwargs,
+}: {
+  llmConfig: OpenAILLMConfig;
+  modelKwargs: Record<string, unknown>;
+}): boolean {
+  if (llmConfig.useResponsesApi !== true) {
+    return false;
+  }
+
+  // A structured output format owns the text.format value; never override it.
+  if ((llmConfig as Record<string, unknown>).response_format != null) {
+    return false;
+  }
+
+  const text = getModelKwargsText(modelKwargs);
+  if (text.format != null && typeof text.format === 'object' && !Array.isArray(text.format)) {
+    return false;
+  }
+
+  // The SDK emits an empty text object by default, and some OpenAI-compatible servers
+  // (e.g. LM Studio) reject a text object without a valid format, so stamp a plain-text one.
+  // See lmstudio-ai/lmstudio-bug-tracker#1576.
+  modelKwargs.text = { ...text, format: { type: 'text' } };
+  return true;
+}
+
 /**
  * Extracts default parameters from customParams.paramDefinitions
  * @param paramDefinitions - Array of parameter definitions with key and default values
@@ -1275,6 +1303,8 @@ export function getOpenAILLMConfig({
       modelKwargs,
       useOpenRouter,
     }) || hasModelKwargs;
+
+  hasModelKwargs = applyResponsesTextFormat({ llmConfig, modelKwargs }) || hasModelKwargs;
 
   if (
     llmConfig.model &&
