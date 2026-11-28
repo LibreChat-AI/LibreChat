@@ -141,6 +141,9 @@ jest.mock('openid-client', () => {
       access_token: 'exchanged_graph_token',
       expires_in: 3600,
     }),
+    ClientSecretBasic: jest.fn((secret) => ({ kind: 'client_secret_basic', secret })),
+    ClientSecretPost: jest.fn((secret) => ({ kind: 'client_secret_post', secret })),
+    None: jest.fn(() => ({ kind: 'none' })),
     customFetch: Symbol('customFetch'),
   };
 });
@@ -255,6 +258,7 @@ describe('setupOpenId', () => {
     delete process.env.PROXY;
     delete process.env.OPENID_USE_PKCE;
     delete process.env.OPENID_GENERATE_NONCE;
+    delete process.env.OPENID_TOKEN_ENDPOINT_AUTH_METHOD;
     delete process.env.OPENID_ROLE_SYNC_ENABLED;
     delete process.env.OPENID_ROLE_SYNC_API_ENABLED;
     delete process.env.OPENID_ROLE_SYNC_SOURCE;
@@ -316,9 +320,32 @@ describe('setupOpenId', () => {
 
       await setupOpenId();
 
-      const [, , metadata] = openidClient.discovery.mock.calls.at(-1);
+      const [, , metadata, clientAuthentication] = openidClient.discovery.mock.calls.at(-1);
       expect(metadata.client_secret).toBe('my-secret');
       expect(metadata.token_endpoint_auth_method).toBeUndefined();
+      expect(clientAuthentication).toBeUndefined();
+    });
+
+    it('passes HTTP Basic client authentication when client_secret_basic is configured', async () => {
+      process.env.OPENID_USE_PKCE = 'false';
+      process.env.OPENID_GENERATE_NONCE = 'true';
+      process.env.OPENID_CLIENT_SECRET = 'my-secret';
+      process.env.OPENID_TOKEN_ENDPOINT_AUTH_METHOD = 'client_secret_basic';
+
+      await setupOpenId();
+
+      const [, , metadata, clientAuthentication] = openidClient.discovery.mock.calls.at(-1);
+      expect(openidClient.ClientSecretBasic).toHaveBeenCalledWith('my-secret');
+      expect(clientAuthentication).toEqual({ kind: 'client_secret_basic', secret: 'my-secret' });
+      expect(metadata.token_endpoint_auth_method).toBe('client_secret_basic');
+    });
+
+    it('does not set up OpenID when a secret-based method has no client secret', async () => {
+      delete process.env.OPENID_CLIENT_SECRET;
+      process.env.OPENID_TOKEN_ENDPOINT_AUTH_METHOD = 'client_secret_basic';
+
+      await expect(setupOpenId()).resolves.toBeNull();
+      expect(openidClient.discovery).not.toHaveBeenCalled();
     });
 
     it('sets client_secret and client_secret_post when nonce generation is enabled', async () => {
