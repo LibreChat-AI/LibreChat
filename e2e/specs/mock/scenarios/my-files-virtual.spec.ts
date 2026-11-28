@@ -43,13 +43,15 @@ async function openMyFiles(page: Page) {
   return { dialog, table };
 }
 
-/** Wheels over the table until the last row is mounted, as a user scrolling down would. */
+/** Wheels over the table until the last row enters the viewport, as a user scrolling down would. */
 async function scrollToLastRow(page: Page, table: ReturnType<Page['getByRole']>) {
   const lastRow = table.locator(`tbody tr[aria-rowindex="${FILE_COUNT + 1}"]`);
   await table.hover();
-  for (let attempt = 0; attempt < 80 && (await lastRow.count()) === 0; attempt++) {
+  // Overscan mounts rows before they enter the visible scroll region.
+  await expect(async () => {
     await page.mouse.wheel(0, 1200);
-  }
+    await expect(lastRow).toBeInViewport({ timeout: 200 });
+  }).toPass({ intervals: [50], timeout: 15_000 });
   return lastRow;
 }
 
