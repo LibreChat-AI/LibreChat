@@ -2141,7 +2141,7 @@ describe('Responses text format', () => {
     expect(result.llmConfig.modelKwargs?.text).toBeUndefined();
   });
 
-  it('should not stamp a text format when a text value is configured on llmConfig', () => {
+  it('should not stamp a text format when a text value with a valid format is configured on llmConfig', () => {
     const result = getOpenAILLMConfig({
       apiKey: 'test-api-key',
       streaming: true,
@@ -2159,6 +2159,44 @@ describe('Responses text format', () => {
       text: { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } },
     });
     expect(result.llmConfig.modelKwargs?.text).toBeUndefined();
+  });
+
+  it('should stamp a text format over an empty text value configured on llmConfig', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.2',
+      },
+      addParams: {
+        text: {},
+        useResponsesApi: true,
+      },
+    });
+
+    expect(result.llmConfig.modelKwargs).toHaveProperty('text', { format: { type: 'text' } });
+  });
+
+  it('should merge a configured text value without a format when stamping', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.2',
+      },
+      addParams: {
+        text: { verbosity: Verbosity.low },
+        useResponsesApi: true,
+      },
+    });
+
+    expect(result.llmConfig).toMatchObject({ text: { verbosity: Verbosity.low } });
+    expect(result.llmConfig.modelKwargs).toHaveProperty('text', {
+      format: { type: 'text' },
+      verbosity: Verbosity.low,
+    });
   });
 
   it('should not stamp a text format when dropParams contains text', () => {
