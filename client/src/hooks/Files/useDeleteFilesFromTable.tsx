@@ -1,48 +1,58 @@
-import { QueryKeys } from 'librechat-data-provider';
+import { useSetAtom } from 'jotai';
+import { filesFamily } from '@librechat/chat/react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { BatchFile, TFile } from 'librechat-data-provider';
+import { FileSources, QueryKeys } from 'librechat-data-provider';
+import type { TFile } from 'librechat-data-provider';
+import { deletePreview, failedFileIdsFrom, removeTabAttachmentPresence } from '~/utils';
 import { useDeleteFilesMutation } from '~/data-provider';
-import useFileDeletion from './useFileDeletion';
-import { failedFileIdsFrom } from '~/utils';
+import { clearUploadRecovery } from './useFileHandling';
+import useSetFilesToDelete from './useSetFilesToDelete';
 
-export default function useDeleteFilesFromTable(callback?: () => void) {
+export default function useDeleteFilesFromTable() {
   const queryClient = useQueryClient();
-  const deletionMutation = useDeleteFilesMutation({
-    onMutate: async (variables) => {
-      const { files } = variables;
-      if (!files.length) {
-        return new Map<string, BatchFile>();
-      }
+  const setFiles = useSetAtom(filesFamily(0));
+  const setFilesToDelete = useSetFilesToDelete();
+  const mutation = useDeleteFilesMutation();
 
-      const filesToDeleteMap = files.reduce((map, file) => {
-        map.set(file.file_id, file);
-        return map;
-      }, new Map<string, BatchFile>());
-
-      return { filesToDeleteMap };
-    },
-    onSuccess: (data, variables, context) => {
-      console.log('Files deleted');
-      const { filesToDeleteMap } = context as { filesToDeleteMap: Map<string, BatchFile> };
-      const failed = new Set(failedFileIdsFrom(data));
-
-      queryClient.setQueryData([QueryKeys.files], (oldFiles: TFile[] | undefined) => {
-        const { files } = variables;
-        /** A resolved request is not proof the records are gone: the route answers a failed
-         * storage delete with HTTP 200 and names the id in `failedFileIds`. */
-        return files.length
-          ? oldFiles?.filter(
-              (file) => !filesToDeleteMap.has(file.file_id) || failed.has(file.file_id),
-            )
-          : oldFiles;
+  async function deleteFiles(files: TFile[]) {
+    let failed: Set<string>;
+    try {
+      const result = await mutation.mutateAsync({
+        files: files.map(({ file_id, filepath, source, embedded, temp_file_id }) => ({
+          file_id,
+          filepath: filepath ?? '',
+          source: source ?? FileSources.local,
+          embedded: embedded ?? false,
+          temp_file_id,
+        })),
       });
-      callback?.();
-    },
-    onError: (error) => {
-      console.log('Error deleting files:', error);
-      callback?.();
-    },
-  });
+      failed = new Set(failedFileIdsFrom(result));
+    } catch {
+      failed = new Set(files.map((file) => file.file_id));
+    }
+    const removed = files
+      .filter((file) => !failed.has(file.file_id))
+      .flatMap((file) => (file.temp_file_id ? [file.file_id, file.temp_file_id] : [file.file_id]));
+    if (removed.length) {
+      for (const id of removed) {
+        clearUploadRecovery(id);
+        deletePreview(id);
+      }
+      removeTabAttachmentPresence(removed, 0);
+      setFiles((current) => {
+        const updated = new Map(current);
+        for (const id of removed) {
+          updated.delete(id);
+        }
+        setFilesToDelete(Object.fromEntries(updated));
+        return updated;
+      });
+    }
+    if (failed.size) {
+      await queryClient.invalidateQueries({ queryKey: [QueryKeys.files], exact: true });
+    }
+    return failed;
+  }
 
-  return useFileDeletion({ mutateAsync: deletionMutation.mutateAsync });
+  return { deleteFiles };
 }

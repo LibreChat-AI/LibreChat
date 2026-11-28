@@ -81,3 +81,33 @@ test.describe('my files virtual table', () => {
     }
   });
 });
+
+test('confirming deletes only the selected file after cancel @scenario:my-files-delete-confirm', async ({
+  page,
+}) => {
+  const { dialog, table } = await openMyFiles(page);
+  const requests: string[][] = [];
+  await page.route('**/api/files', async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      return route.fallback();
+    }
+    const ids = route
+      .request()
+      .postDataJSON()
+      .files.map((file: TFile) => file.file_id);
+    requests.push(ids);
+    await route.fulfill({ json: { message: 'Deleted', deletedFileIds: ids, failedFileIds: [] } });
+  });
+  const row = table.getByRole('row').filter({ hasText: files[1].filename });
+  await row.getByRole('checkbox').click();
+  const trigger = dialog.getByRole('button', { name: 'Delete', exact: true });
+  await trigger.click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText(files[1].filename);
+  await confirmation.getByRole('button', { name: 'Cancel' }).click();
+  expect(requests).toEqual([]);
+  await trigger.click();
+  await confirmation.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(row).toHaveCount(0);
+  expect(requests).toEqual([[files[1].file_id]]);
+});

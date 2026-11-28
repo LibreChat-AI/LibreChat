@@ -1,6 +1,4 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import { useSetAtom } from 'jotai';
-import { filesFamily } from '@librechat/chat/react';
 import { FileContext } from 'librechat-data-provider';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -11,6 +9,15 @@ import {
   getFilteredRowModel,
 } from '@tanstack/react-table';
 import {
+  Alert,
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+  AlertDialogHeader,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
   Table,
   Button,
   Spinner,
@@ -24,6 +31,7 @@ import {
   useMediaQuery,
 } from '@librechat/client';
 import type {
+  RowSelectionState,
   ColumnDef,
   SortingState,
   VisibilityState,
@@ -57,13 +65,17 @@ type Style = {
   zIndex?: number;
 };
 
-export default function DataTable<TData, TValue>({ columns, data }: DataTableProps<TData, TValue>) {
+export default function DataTable<TData extends TFile, TValue>({
+  columns,
+  data,
+}: DataTableProps<TData, TValue>) {
   const localize = useLocalize();
   const [isDeleting, setIsDeleting] = useState(false);
-  const setFiles = useSetAtom(filesFamily(0));
-  const { deleteFiles } = useDeleteFilesFromTable(() => setIsDeleting(false));
+  const [snapshot, setSnapshot] = useState<TFile[]>([]);
+  const [hasFailure, setHasFailure] = useState(false);
+  const { deleteFiles } = useDeleteFilesFromTable();
 
-  const [rowSelection, setRowSelection] = useState({});
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [sorting, setSorting] = useState<SortingState>([]);
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -71,6 +83,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const table = useReactTable({
+    getRowId: (file) => file.file_id,
     data,
     columns,
     defaultColumn: {
@@ -81,7 +94,10 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
-    onColumnFiltersChange: setColumnFilters,
+    onColumnFiltersChange: (update) => {
+      setColumnFilters(update);
+      setRowSelection({});
+    },
     getFilteredRowModel: getFilteredRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
@@ -121,26 +137,72 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
   return (
     <div className="flex h-full flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2 py-2 sm:gap-4 sm:py-4">
-        <Button
-          variant="outline"
-          onClick={() => {
-            setIsDeleting(true);
-            const filesToDelete = table
-              .getFilteredSelectedRowModel()
-              .rows.map((row) => row.original);
-            deleteFiles({ files: filesToDelete as TFile[], setFiles });
-            setRowSelection({});
-          }}
-          disabled={!table.getFilteredSelectedRowModel().rows.length || isDeleting}
-          className={cn('min-w-[2.5rem] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
+        <AlertDialog
+          open={snapshot.length > 0}
+          onOpenChange={(open) =>
+            setSnapshot(
+              open ? table.getFilteredSelectedRowModel().rows.map((row) => row.original) : [],
+            )
+          }
         >
-          {isDeleting ? (
-            <Spinner className="size-3.5 sm:size-4" />
-          ) : (
-            <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
-          )}
-          {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
-        </Button>
+          <AlertDialogTrigger asChild>
+            <Button
+              variant="outline"
+              className={cn(
+                'min-w-[2.5rem] transition-all duration-200',
+                isSmallScreen && 'px-2 py-1',
+              )}
+              aria-label={localize('com_ui_delete')}
+              disabled={!table.getFilteredSelectedRowModel().rows.length || isDeleting}
+            >
+              {isDeleting ? (
+                <Spinner className="size-3.5 sm:size-4" />
+              ) : (
+                <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
+              )}
+              {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent className="w-11/12 max-w-md">
+            <AlertDialogHeader>
+              <AlertDialogTitle>{localize('com_ui_delete')}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {snapshot.length === 1
+                  ? localize('com_files_confirm_delete_one', { 0: snapshot[0].filename })
+                  : localize('com_files_confirm_delete_many', { 0: String(snapshot.length) })}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{localize('com_ui_cancel')}</AlertDialogCancel>
+              <Button
+                variant="destructive"
+                disabled={isDeleting}
+                onClick={async () => {
+                  setSnapshot([]);
+                  setIsDeleting(true);
+                  setHasFailure(false);
+                  try {
+                    const failed = await deleteFiles(snapshot);
+                    setHasFailure(failed.size > 0);
+                    setRowSelection((current) => {
+                      const next = { ...current };
+                      for (const file of snapshot) {
+                        if (!failed.has(file.file_id)) {
+                          delete next[file.file_id];
+                        }
+                      }
+                      return next;
+                    });
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+              >
+                {localize('com_ui_delete')}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
         <FilterInput
           inputId="files-filter"
           label={localize('com_files_filter')}
@@ -157,6 +219,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
           />
         </div>
       </div>
+      {hasFailure && <Alert variant="error">{localize('com_ui_delete_partial_failure')}</Alert>}
       <div
         ref={scrollRef}
         className="relative grid h-full max-h-[calc(100vh-20rem)] min-h-[calc(100vh-20rem)] w-full flex-1 overflow-hidden overflow-x-auto overflow-y-auto rounded-md"

@@ -1,6 +1,13 @@
 import { useCallback, useRef } from 'react';
 import { FileSources, FileContext } from 'librechat-data-provider';
-import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
+import {
+  Alert,
+  Button,
+  OGDialog,
+  OGDialogContent,
+  OGDialogHeader,
+  OGDialogTitle,
+} from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import { useGetFiles } from '~/data-provider';
 import { DataTable, columns } from './Table';
@@ -31,13 +38,17 @@ export function MyFilesModal({
       : (triggerRef?.current ?? null);
   }, [triggerRef]);
 
-  const { data: files = [] } = useGetFiles<TFile[]>({
+  const {
+    data: files,
+    isError,
+    refetch,
+  } = useGetFiles<TFile[]>({
     select: (files) =>
-      files.map((file) => {
-        file.context = file.context ?? FileContext.unknown;
-        file.filterSource = file.source === FileSources.firebase ? FileSources.local : file.source;
-        return file;
-      }),
+      files.map((file) => ({
+        ...file,
+        context: file.context ?? FileContext.unknown,
+        filterSource: file.source === FileSources.firebase ? FileSources.local : file.source,
+      })),
   });
 
   return (
@@ -50,7 +61,16 @@ export function MyFilesModal({
         <OGDialogHeader>
           <OGDialogTitle>{localize('com_nav_my_files')}</OGDialogTitle>
         </OGDialogHeader>
-        <DataTable columns={columns} data={files} />
+        {files && <DataTable columns={columns} data={files} />}
+        {!files && isError && (
+          <Alert variant="error">
+            {localize('com_files_load_error')}
+            <Button variant="outline" onClick={() => void refetch()}>
+              {localize('com_ui_retry')}
+            </Button>
+          </Alert>
+        )}
+        {!files && !isError && <p role="status">{localize('com_ui_loading')}</p>}
       </OGDialogContent>
     </OGDialog>
   );

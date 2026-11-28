@@ -1,4 +1,5 @@
 /* eslint-disable react-hooks/rules-of-hooks */
+import { useTranslation } from 'react-i18next';
 import { FileSources, FileContext } from 'librechat-data-provider';
 import { ArrowUpDown, ArrowUp, ArrowDown, Database } from 'lucide-react';
 import { ImagePreview, FilePreview, getFileType } from '@librechat/chat/components';
@@ -14,7 +15,6 @@ import type { ColumnDef } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { SortFilterHeader } from './SortFilterHeader';
-import { formatDate } from '~/utils';
 
 const contextMap: Record<any, TranslationKeys> = {
   [FileContext.avatar]: 'com_ui_avatar',
@@ -164,7 +164,15 @@ export const columns: ColumnDef<TFile>[] = [
     },
     cell: ({ row }) => {
       const isSmallScreen = useMediaQuery('(max-width: 768px)');
-      return formatDate(row.original.updatedAt?.toString() ?? '', isSmallScreen);
+      const { i18n } = useTranslation();
+      const date = new Date(row.original.updatedAt?.toString() ?? '');
+      return Number.isNaN(date.getTime())
+        ? ''
+        : date.toLocaleDateString(i18n.language, {
+            day: 'numeric',
+            month: isSmallScreen ? 'numeric' : 'short',
+            year: isSmallScreen ? '2-digit' : 'numeric',
+          });
     },
   },
   {

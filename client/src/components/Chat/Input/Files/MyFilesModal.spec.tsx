@@ -3,8 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MyFilesModal } from './MyFilesModal';
 
+const mockGetFiles = jest.fn((): { data?: never[]; isError?: boolean; refetch?: () => void } => ({
+  data: [],
+}));
+
 jest.mock('~/data-provider', () => ({
-  useGetFiles: () => ({ data: [] }),
+  useGetFiles: () => mockGetFiles(),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -52,5 +56,23 @@ describe('MyFilesModal focus restoration', () => {
     await user.click(await screen.findByRole('button', { name: 'Close' }));
 
     await waitFor(() => expect(accountButton).toHaveFocus());
+  });
+});
+
+describe('MyFilesModal query states', () => {
+  it('shows loading before the first file list arrives', () => {
+    mockGetFiles.mockReturnValue({});
+    render(<MyFilesModal open onOpenChange={jest.fn()} />);
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
+    expect(screen.queryByTestId('files-table')).toBeNull();
+  });
+
+  it('offers a retry after an initial error', async () => {
+    const refetch = jest.fn();
+    mockGetFiles.mockReturnValue({ isError: true, refetch });
+    render(<MyFilesModal open onOpenChange={jest.fn()} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('com_files_load_error');
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 });
