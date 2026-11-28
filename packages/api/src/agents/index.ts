@@ -39,6 +39,7 @@ export * from './listingAvatars';
 export * from './lazySubagents';
 export * from './lazyHistory';
 export * from './memory';
+export * from './builder';
 export * from './management';
 export * from './failures';
 export * from './marketplace';

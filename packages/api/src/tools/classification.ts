@@ -397,6 +397,22 @@ export function createToolSearchDefinition(provider?: Providers | string): LCToo
   };
 }
 
+/** Registers the event-driven PTC entry and returns its definition. */
+export function registerProgrammaticToolDefinition(
+  toolRegistry: LCToolRegistry,
+  ptcTool: Pick<GenericTool, 'description' | 'schema'>,
+): LCTool {
+  toolRegistry.set(BashProgrammaticToolCallingDefinition.name, {
+    name: BashProgrammaticToolCallingDefinition.name,
+    allowed_callers: ['direct'],
+  });
+  return {
+    name: BashProgrammaticToolCallingDefinition.name,
+    description: ptcTool.description,
+    parameters: ptcTool.schema as LCTool['parameters'],
+  };
+}
+
 /**
  * Builds the tool registry from MCP tools and conditionally creates PTC and tool search tools.
  *
@@ -526,17 +542,7 @@ export async function buildToolClassification(
       params.gitIdentity,
     );
     if (!definitionsOnly) additionalTools.push(ptcTool);
-
-    /** Add PTC definition for event-driven mode */
-    toolDefinitions.push({
-      name: BashProgrammaticToolCallingDefinition.name,
-      description: ptcTool.description,
-      parameters: ptcTool.schema as LCTool['parameters'],
-    });
-    toolRegistry.set(BashProgrammaticToolCallingDefinition.name, {
-      name: BashProgrammaticToolCallingDefinition.name,
-      allowed_callers: ['direct'],
-    });
+    toolDefinitions.push(registerProgrammaticToolDefinition(toolRegistry, ptcTool));
 
     logger.debug(`[buildToolClassification] PTC tool enabled for agent ${agentId}`);
   } catch (error) {

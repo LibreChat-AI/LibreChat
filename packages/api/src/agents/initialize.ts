@@ -83,6 +83,11 @@ import {
   MAX_PRIMED_SKILLS_PER_TURN,
 } from './skills';
 import {
+  createContextProgrammaticBashTool,
+  resolveAttachedWorkspaceCommandTimeoutMax,
+  resolveAttachedWorkspaceCommandTimeoutDefault,
+} from '~/code/command';
+import {
   resolveChatProjectFiles,
   resolveChatProjectPolicyFiles,
   toCanonicalProjectResource,
@@ -107,15 +112,17 @@ import {
   isFileAuthoringToolDefinition,
 } from './tools';
 import {
+  isAgentBuilderEnabled,
+  withAgentBuilderDeferral,
+  registerAgentBuilderTools,
+  isAgentBuilderWriteEnabled,
+} from './builder';
+import {
   normalizeServerName,
   requiresEphemeralUserConnection,
   splitMCPToolKey,
   normalizeAgentToolKeys,
 } from '~/mcp/utils';
-import {
-  resolveAttachedWorkspaceCommandTimeoutMax,
-  resolveAttachedWorkspaceCommandTimeoutDefault,
-} from '~/code/command';
 import {
   resolveAgentInferenceParameters,
   restoreAgentInferenceInput,
@@ -130,6 +137,7 @@ import { extractAgentContent, extractSkillContent } from '../protection/adapters
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
+import { registerProgrammaticToolDefinition } from '~/tools/classification';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
@@ -159,6 +167,7 @@ import { generateArtifactsPrompt } from '~/prompts';
 import { resolveVision } from '~/endpoints/vision';
 import { getAgentInferencePolicy } from './input';
 import { getProviderConfig } from '~/endpoints';
+import { applyToolCallers } from './callers';
 import { primeResources } from './resources';
 import { pinAgentModel } from './pin';
 
@@ -2560,6 +2569,33 @@ export async function initializeAgent(
     );
   }
 
+  /**
+   * Expand the `agent_builder` marker. Writes register only when endpoint tool approval is
+   * on, so every write is reviewed (see `requireAgentBuilderApproval`). Reads default to
+   * code-only callers when this agent can run programmatic code, so agent configs stay out
+   * of the model context.
+   * shortcut: attached environments are treated as non-programmatic here; the runtime
+   * capability probe is async. Upgrade by passing the loader's PTC decision in.
+   */
+  const capabilities = appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? [];
+  const programmaticAvailable =
+    effectiveCodeEnvAvailable &&
+    capabilities.includes(AgentCapabilities.programmatic_tools) &&
+    trustedCodeExecutionContext.environmentType !== 'attached';
+  const agentBuilderRegistered =
+    isAgentBuilderEnabled(appConfig) &&
+    (agent.tools ?? []).includes(AgentCapabilities.agent_builder);
+  if (agentBuilderRegistered) {
+    const builderResult = registerAgentBuilderTools({
+      toolRegistry,
+      toolDefinitions,
+      includeWrites: isAgentBuilderWriteEnabled(appConfig),
+      programmatic: programmaticAvailable,
+    });
+    toolDefinitions = builderResult.toolDefinitions;
+    recordCapabilityToolNames(AgentCapabilities.agent_builder, builderResult.toolNames);
+  }
+
   if (skillAuthoringAvailable) {
     const skillReadResult = registerCodeExecutionTools({
       toolRegistry,
@@ -2816,6 +2852,27 @@ export async function initializeAgent(
     recordCapabilityToolNames(AgentCapabilities.skills, skillResult.toolNames);
   }
 
+  /** Registration is complete: system tools take `allowed_callers` from `tool_options`. */
+  const callers = applyToolCallers({
+    toolDefinitions: toolDefinitions ?? [],
+    toolRegistry,
+    toolOptions: agent.tool_options,
+    capabilityToolNames,
+  });
+  toolDefinitions = callers.toolDefinitions;
+  if (
+    callers.hasProgrammaticTools &&
+    programmaticAvailable &&
+    toolRegistry &&
+    !toolRegistry.has(Constants.BASH_PROGRAMMATIC_TOOL_CALLING)
+  ) {
+    const ptcTool = createContextProgrammaticBashTool(undefined, trustedCodeExecutionContext);
+    toolDefinitions = [
+      ...toolDefinitions,
+      registerProgrammaticToolDefinition(toolRegistry, ptcTool),
+    ];
+  }
+
   /**
    * Intent labels run LAST, after every registration step — the skill
    * catalog above both appends its own definition and REPLACES upgraded ones
@@ -2871,7 +2928,9 @@ export async function initializeAgent(
     const deferral = applyDeferredToolLoading({
       toolDefinitions,
       toolRegistry,
-      toolOptions: agent.tool_options,
+      toolOptions: agentBuilderRegistered
+        ? withAgentBuilderDeferral(agent.tool_options)
+        : agent.tool_options,
       capabilityToolNames,
       provider: agent.provider,
       hasDeferredTools,

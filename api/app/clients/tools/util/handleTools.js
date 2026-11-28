@@ -33,6 +33,8 @@ const {
   resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
   setMissingCodeFilesContext,
+  createAgentBuilderTool,
+  AGENT_BUILDER_TOOL_NAMES,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -68,6 +70,7 @@ const {
 } = require('~/server/services/MCP');
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
+const { agentBuilderRoutes } = require('~/server/services/Agents/builder');
 const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSearch');
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
@@ -440,6 +443,10 @@ const loadTools = async ({
           memoryMethods: { setMemory, deleteMemory, getFormattedMemories },
           getRoleByName,
         });
+      continue;
+    } else if (AGENT_BUILDER_TOOL_NAMES.has(tool)) {
+      requestedTools[tool] = () =>
+        createAgentBuilderTool({ name: tool, req: options.req, routes: agentBuilderRoutes });
       continue;
     } else if (tool && mcpToolPattern.test(tool)) {
       if (!canUseMCP) {
