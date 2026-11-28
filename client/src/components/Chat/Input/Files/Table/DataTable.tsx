@@ -9,14 +9,6 @@ import {
 } from '@tanstack/react-table';
 import {
   Alert,
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-  AlertDialogHeader,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogCancel,
   Table,
   Button,
   Spinner,
@@ -35,6 +27,8 @@ import { useDeleteFilesFromTable } from '~/hooks/Files';
 import { useColumns } from './Columns';
 import { Controls } from './Controls';
 import { useLocalize } from '~/hooks';
+import Confirm from './Confirm';
+import Actions from './Actions';
 import { cn } from '~/utils';
 
 const sortLabels = { asc: 'ascending', desc: 'descending', none: undefined } as const;
@@ -49,14 +43,39 @@ type Style = {
 };
 
 export default function DataTable({ data }: { data: TFile[] }) {
-  const columns = useColumns();
   const localize = useLocalize();
   const [isDeleting, setIsDeleting] = useState(false);
   const [snapshot, setSnapshot] = useState<TFile[]>([]);
+  const bulkTrigger = useRef<HTMLButtonElement>(null);
   const [hasFailure, setHasFailure] = useState(false);
   const { deleteFiles } = useDeleteFilesFromTable();
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const remove = useCallback(
+    async (files: TFile[]) => {
+      setIsDeleting(true);
+      setHasFailure(false);
+      try {
+        const failed = await deleteFiles(files);
+        setHasFailure(failed.size > 0);
+        setRowSelection((current) => {
+          const next = { ...current };
+          for (const file of files) {
+            if (failed.has(file.file_id)) {
+              next[file.file_id] = true;
+            } else {
+              delete next[file.file_id];
+            }
+          }
+          return next;
+        });
+      } finally {
+        setIsDeleting(false);
+      }
+    },
+    [deleteFiles],
+  );
+  const columns = useColumns();
   const [sorting, setSorting] = useState<SortingState>([{ id: 'updatedAt', desc: true }]);
   const isSmallScreen = useMediaQuery('(max-width: 639px)');
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -141,71 +160,32 @@ export default function DataTable({ data }: { data: TFile[] }) {
           <Button variant="ghost" size="sm" onClick={() => setRowSelection({})}>
             {localize('com_ui_clear')}
           </Button>
-          <AlertDialog
-            open={snapshot.length > 0}
-            onOpenChange={(open) =>
-              setSnapshot(
-                open ? table.getFilteredSelectedRowModel().rows.map((row) => row.original) : [],
-              )
+          <Button
+            ref={bulkTrigger}
+            variant="outline"
+            size="sm"
+            aria-label={localize('com_ui_delete')}
+            aria-haspopup="dialog"
+            disabled={!selected || isDeleting}
+            onClick={() =>
+              setSnapshot(table.getFilteredSelectedRowModel().rows.map((row) => row.original))
             }
           >
-            <AlertDialogTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-label={localize('com_ui_delete')}
-                disabled={!table.getFilteredSelectedRowModel().rows.length || isDeleting}
-              >
-                {isDeleting ? (
-                  <Spinner className="size-3.5 sm:size-4" />
-                ) : (
-                  <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
-                )}
-                {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent className="w-11/12 max-w-md">
-              <AlertDialogHeader>
-                <AlertDialogTitle>{localize('com_ui_delete')}</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {snapshot.length === 1
-                    ? localize('com_files_confirm_delete_named', { 0: snapshot[0].filename })
-                    : localize('com_files_confirm_delete_selection', {
-                        0: String(snapshot.length),
-                      })}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>{localize('com_ui_cancel')}</AlertDialogCancel>
-                <Button
-                  variant="destructive"
-                  disabled={isDeleting}
-                  onClick={async () => {
-                    setSnapshot([]);
-                    setIsDeleting(true);
-                    setHasFailure(false);
-                    try {
-                      const failed = await deleteFiles(snapshot);
-                      setHasFailure(failed.size > 0);
-                      setRowSelection((current) => {
-                        const next = { ...current };
-                        for (const file of snapshot) {
-                          if (!failed.has(file.file_id)) {
-                            delete next[file.file_id];
-                          }
-                        }
-                        return next;
-                      });
-                    } finally {
-                      setIsDeleting(false);
-                    }
-                  }}
-                >
-                  {localize('com_ui_delete')}
-                </Button>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+            {isDeleting ? (
+              <Spinner className="size-3.5 sm:size-4" />
+            ) : (
+              <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
+            )}
+            {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
+          </Button>
+          {snapshot.length > 0 && (
+            <Confirm
+              files={snapshot}
+              triggerRef={bulkTrigger}
+              onClose={() => setSnapshot([])}
+              onConfirm={() => void remove(snapshot)}
+            />
+          )}
         </div>
       )}
       {hasFailure && <Alert variant="error">{localize('com_ui_delete_partial_failure')}</Alert>}
@@ -283,7 +263,15 @@ export default function DataTable({ data }: { data: TFile[] }) {
                             )}
                             style={style}
                           >
-                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                            {cell.column.id === 'actions' ? (
+                              <Actions
+                                file={row.original}
+                                onDelete={remove}
+                                deleting={isDeleting}
+                              />
+                            ) : (
+                              flexRender(cell.column.columnDef.cell, cell.getContext())
+                            )}
                           </TableCell>
                         );
                       })}

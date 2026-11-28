@@ -18,11 +18,15 @@ const FILE_COUNT = 200;
 const files: TFile[] = Array.from({ length: FILE_COUNT }, (_, index) => ({
   file_id: `virtual-file-${index}`,
   filename: `Virtual fixture ${String(index).padStart(3, '0')}.txt`,
-  filepath: `/files/virtual-file-${index}.txt`,
+  filepath:
+    index === 2
+      ? '/api/files/code/download/session-2/file-2?execution_profile=stateful'
+      : `/files/virtual-file-${index}.txt`,
   user: 'virtual-files-user',
   bytes: 100,
   object: 'file',
-  source: index === 0 ? FileSources.azure : FileSources.local,
+  source:
+    [FileSources.azure, FileSources.local, FileSources.execute_code][index] ?? FileSources.local,
   context: FileContext.message_attachment,
   type: 'text/plain',
   usage: 0,
@@ -152,4 +156,51 @@ test('filters and sorts files without scrolling the surrounding dialog @scenario
       ).length,
   );
   expect(scrollers).toBe(1);
+});
+
+test('row actions use the selected file for details, preview, download and confirmation @scenario:my-files-row-actions', async ({
+  page,
+}) => {
+  const file = files[1];
+  const { dialog } = await openMyFiles(page);
+  await page.route('**/api/files/download/*/' + file.file_id, (route) =>
+    route.fulfill({ contentType: 'text/plain', body: 'Preview fixture content' }),
+  );
+  const trigger = dialog.getByRole('button', { name: 'Actions for ' + file.filename });
+  const menu = page.getByRole('menu').last();
+  await trigger.click();
+  await menu.getByRole('menuitem', { name: 'Details' }).click();
+  const details = page.getByRole('dialog', { name: 'Details' });
+  await expect(details).toContainText(file.filename);
+  await expect(details).toContainText('Host (local)');
+  await expect(details).toContainText('Attachment (message_attachment)');
+  await details.press('Escape');
+  await menu.getByRole('menuitem', { name: 'Preview' }).click();
+  const preview = page.getByRole('dialog').last();
+  await expect(preview).toContainText('Preview fixture content');
+  await preview.press('Escape');
+  const download = page.waitForEvent('download');
+  await menu.getByRole('menuitem', { name: 'Download' }).click();
+  expect((await download).suggestedFilename()).toBe(file.filename);
+  await trigger.click();
+  await menu.getByRole('menuitem', { name: 'Delete' }).click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText(file.filename);
+  await confirmation.getByRole('button', { name: 'Cancel' }).click();
+  await expect(menu.getByRole('menuitem', { name: 'Delete' })).toBeFocused();
+  await trigger.click();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  const unavailable = dialog.getByRole('button', { name: 'Actions for ' + files[0].filename });
+  await unavailable.click();
+  await expect(menu.getByRole('menuitem', { name: 'Details' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Download' })).toHaveCount(0);
+  await unavailable.click();
+  await expect(unavailable).toHaveAttribute('aria-expanded', 'false');
+  const output = files[2];
+  await page.route('**' + output.filepath, (route) => route.fulfill({ body: 'code output' }));
+  await dialog.getByRole('button', { name: 'Actions for ' + output.filename }).click();
+  await expect(menu.getByRole('menuitem', { name: 'Preview' })).toHaveCount(0);
+  const outputDownload = page.waitForEvent('download');
+  await menu.getByRole('menuitem', { name: 'Download' }).click();
+  expect((await outputDownload).suggestedFilename()).toBe(output.filename);
 });

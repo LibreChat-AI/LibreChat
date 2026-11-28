@@ -2,29 +2,14 @@ import { useMemo } from 'react';
 import { File } from 'lucide-react';
 import { atom, useAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import { FileContext } from 'librechat-data-provider';
 import { ImagePreview } from '@librechat/chat/components';
-import { FileContext, FileSources } from 'librechat-data-provider';
 import { Checkbox, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type { ColumnDef } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
 import { formatFileSize } from '~/utils';
 import { useLocalize } from '~/hooks';
-
-export const labels: Partial<Record<string, TranslationKeys>> = {
-  [FileContext.agents]: 'com_ui_agents',
-  [FileContext.skill_file]: 'com_ui_skills',
-  [FileContext.avatar]: 'com_ui_avatar',
-  [FileContext.unknown]: 'com_ui_unknown',
-  [FileContext.assistants]: 'com_ui_assistants',
-  [FileContext.image_generation]: 'com_ui_image_gen',
-  [FileContext.assistants_output]: 'com_ui_assistants_output',
-  [FileContext.message_attachment]: 'com_ui_attachment',
-  [FileContext.run_artifact]: 'com_ui_published_file',
-  [FileSources.azure]: 'com_ui_azure',
-  [FileSources.openai]: 'com_ui_openai',
-  [FileSources.local]: 'com_ui_host',
-};
+import { labels } from './labels';
 
 function Filename({ file, detail }: { file: TFile; detail: string }) {
   const localize = useLocalize();
@@ -147,6 +132,12 @@ export function useColumns(): ColumnDef<TFile>[] {
         header: localize('com_ui_size'),
         size: 100,
         cell: ({ row }) => formatFileSize(row.original.bytes),
+      },
+      {
+        id: 'actions',
+        size: 48,
+        enableSorting: false,
+        header: () => <span className="sr-only">{localize('com_ui_more_options')}</span>,
       },
       { accessorKey: 'source', filterFn: 'equalsString' },
       { accessorKey: 'context', filterFn: 'equalsString' },
