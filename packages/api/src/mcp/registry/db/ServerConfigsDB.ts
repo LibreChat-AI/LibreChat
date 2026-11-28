@@ -262,6 +262,28 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
     config: ParsedServerConfig,
     userId?: string,
   ): Promise<ParsedServerConfig> {
+    const configToSave = await this.prepareUpdate(serverName, config, userId);
+    const saved = await this._dbMethods.updateMCPServer(serverName, { config: configToSave });
+    if (!saved) {
+      throw new Error(`[ServerConfigsDB.update] MCP server "${serverName}" no longer exists.`);
+    }
+    return await this.mapDBServerToParsedConfig(saved);
+  }
+
+  public async updateWithPrevious(serverName: string, config: ParsedServerConfig, userId: string) {
+    const configToSave = await this.prepareUpdate(serverName, config, userId);
+    const change = await this._dbMethods.replaceMCPServerConfig(serverName, configToSave);
+    if (!change) {
+      throw new Error(`[ServerConfigsDB.update] MCP server "${serverName}" no longer exists.`);
+    }
+    const [previous, next] = await Promise.all([
+      this.mapDBServerToParsedConfig(change.previous),
+      this.mapDBServerToParsedConfig(change.next),
+    ]);
+    return { previous, next };
+  }
+
+  private async prepareUpdate(serverName: string, config: ParsedServerConfig, userId?: string) {
     if (!userId) {
       throw new Error(
         '[ServerConfigsDB.update] User ID is required to update a database-stored MCP server.',
@@ -326,11 +348,7 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
       };
     }
 
-    const saved = await this._dbMethods.updateMCPServer(serverName, { config: configToSave });
-    if (!saved) {
-      throw new Error(`[ServerConfigsDB.update] MCP server "${serverName}" no longer exists.`);
-    }
-    return await this.mapDBServerToParsedConfig(saved);
+    return configToSave;
   }
 
   /**

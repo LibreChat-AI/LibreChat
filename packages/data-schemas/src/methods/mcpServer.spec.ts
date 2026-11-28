@@ -507,6 +507,23 @@ describe('MCPServer Model Tests', () => {
   });
 
   describe('updateMCPServer', () => {
+    test('@scenario:replaced-config returns the config actually replaced by each writer', async () => {
+      const created = await methods.createMCPServer({
+        config: createSSEConfig('Audit', 'Initial'),
+        author: authorId,
+      });
+      const first = createSSEConfig('Audit', 'First');
+      const second = createSSEConfig('Audit', '$literal description');
+      await methods.updateMCPServer(created.serverName, { config: first });
+
+      const change = await methods.replaceMCPServerConfig(created.serverName, second);
+
+      expect(change?.previous.config).toEqual(first);
+      expect(change?.next).toEqual(await methods.findMCPServerByServerName(created.serverName));
+      expect(change?.next.config).toEqual(second);
+      expect(await methods.replaceMCPServerConfig('missing', second)).toBeNull();
+    });
+
     test('should update server config', async () => {
       const created = await methods.createMCPServer({
         config: createSSEConfig('Update Test', 'Original description'),
