@@ -42,12 +42,12 @@ class FakeResponse extends EventEmitter {
   }
 }
 
-function createManager(): GenerationJobManagerClass {
+function createManager({ cleanupOnComplete = false } = {}): GenerationJobManagerClass {
   const manager = new JobManager();
   manager.configure({
     jobStore: new InMemoryJobStore({ ttlAfterComplete: 60_000 }),
     eventTransport: new InMemoryEventTransport(),
-    cleanupOnComplete: false,
+    cleanupOnComplete,
   });
   manager.initialize();
   return manager;
@@ -260,6 +260,48 @@ describe('Assistants run enrollment', () => {
 
       await run.settle(closedResponse());
       await expect(stopping).resolves.toBeUndefined();
+    });
+  });
+
+  describe('a run its own request settles', () => {
+    const provider = () => {
+      const cancel = jest.fn().mockResolvedValue({});
+      return { cancel, openai: { beta: { threads: { runs: { cancel } } } } };
+    };
+
+    /** Completing the job aborts the signal a stop arrives on, so settling looks like a stop. */
+    it.each([
+      ['completed', false],
+      ['completed', true],
+      ['failed', false],
+      ['failed', true],
+    ] as const)(
+      'leaves a %s provider run uncancelled (cleanupOnComplete %s)',
+      async (outcome, cleanupOnComplete) => {
+        await manager.destroy();
+        manager = createManager({ cleanupOnComplete });
+        const run = await enroll();
+        const { cancel, openai } = provider();
+        run.cancelOnStop(openai, { thread_id: 'thread_1', run_id: 'run_1' });
+
+        const error = outcome === 'failed' ? new Error('provider failed') : undefined;
+        await run.settle(closedResponse(), error);
+        await flush();
+
+        expect(cancel).not.toHaveBeenCalled();
+        await expect(manager.getCleanupBlockingJobIdsForUser('user-1')).resolves.toEqual([]);
+      },
+    );
+
+    it('leaves a provider run named after settlement uncancelled', async () => {
+      const run = await enroll();
+      await run.settle(closedResponse());
+
+      const { cancel, openai } = provider();
+      run.cancelOnStop(openai, { thread_id: 'thread_1', run_id: 'run_1' });
+      await flush();
+
+      expect(cancel).not.toHaveBeenCalled();
     });
   });
 

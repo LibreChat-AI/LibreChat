@@ -121,9 +121,9 @@ const PROVIDER = `http://127.0.0.1:${process.env.E2E_ASSISTANTS_PORT || '8890'}`
 
 type ProviderRequest = { method: string; path: string; body?: { assistant_id?: string } };
 
-/** How many runs the app started for `assistantId`, and how often it read back (and billed)
- *  each run it read: once by the stop, or once by the request that recovers a failed run. */
-async function runReads(page: Page, assistantId: string) {
+/** What the app sent the fake Assistants API, the threads it ran `assistantId` on, and how many
+ *  runs it started there. */
+async function providerRequests(page: Page, assistantId: string) {
   const response = await page.request.get(`${PROVIDER}/__e2e/requests`);
   const { requests } = (await response.json()) as { requests: ProviderRequest[] };
   const threads = new Set<string>();
@@ -135,6 +135,13 @@ async function runReads(page: Page, assistantId: string) {
       runs += 1;
     }
   }
+  return { requests, threads, runs };
+}
+
+/** How many runs the app started for `assistantId`, and how often it read back (and billed)
+ *  each run it read: once by the stop, or once by the request that recovers a failed run. */
+async function runReads(page: Page, assistantId: string) {
+  const { requests, threads, runs } = await providerRequests(page, assistantId);
   const reads = new Map<string, number>();
   for (const { method, path } of requests) {
     const [, thread, run] = path.match(/^\/v1\/threads\/([^/]+)\/runs\/([^/]+)$/) ?? [];
@@ -143,6 +150,15 @@ async function runReads(page: Page, assistantId: string) {
     }
   }
   return { runs, reads: [...reads.values()] };
+}
+
+/** How many times the app asked the provider to cancel a run of `assistantId`. */
+async function runCancels(page: Page, assistantId: string): Promise<number> {
+  const { requests, threads } = await providerRequests(page, assistantId);
+  return requests.filter(({ method, path }) => {
+    const thread = path.match(/^\/v1\/threads\/([^/]+)\/runs\/[^/]+\/cancel$/)?.[1];
+    return method === 'POST' && thread != null && threads.has(thread);
+  }).length;
 }
 
 /** Sends `text` to an assistant through a chat route the way an API client does, and drops the
@@ -204,6 +220,10 @@ const billedFor = (conversationId: string) =>
 /** A request that closes before its run settles checks the run's stop marker 2 s later, then
  *  recovers the run if nothing else did; counting waits past that check and its read. */
 const RECOVERY_CHECK_MS = 6_000;
+
+/** A request whose run completed bills the run as its last step and settles right after;
+ *  counting waits past that settlement. */
+const SETTLE_MS = 2_000;
 
 /** A run that writes a whole message (`apart-one`), calls a tool, then streams a second one. */
 const PARTS = 'E2E_ASSISTANT_SLOW:E2E_ASSISTANT_PARTS';
@@ -764,6 +784,104 @@ test.describe('assistants stream', () => {
         ...(await runReads(page, assistant.id)),
         billed: await billedFor(conversationId),
       }).toEqual({ runs: 2, reads: [1, 1], billed: 2 });
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a completed assistant reply leaves its run uncancelled at the provider @scenario:assistants-completed-run-not-cancelled', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-done');
+    const assistant = await createAssistant(page, `E2E done ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, replyPrompt(label));
+      await expect(messagesView(page).getByText(`E2E assistant reply ${label}`)).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      const conversationId = new URL(page.url()).pathname.split('/').pop() ?? '';
+
+      await expect.poll(() => billedFor(conversationId), { timeout: 20_000 }).toBe(2);
+      await page.waitForTimeout(SETTLE_MS);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        cancels: await runCancels(page, assistant.id),
+      }).toEqual({ runs: 1, reads: [], cancels: 0 });
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a v1 client whose reply completed leaves its run uncancelled at the provider @scenario:assistants-v1-completed-run-not-cancelled', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-v1-done');
+    const assistant = await createAssistant(page, `E2E v1 done ${label}`, 'v1');
+    try {
+      /** Reads the reply through its final event, which the server ends the response with. */
+      const conversationId = await sendAndDrop(page, {
+        version: 'v1',
+        assistantId: assistant.id,
+        text: replyPrompt(label),
+        until: '"final":true',
+      });
+      expect(conversationId).toBeTruthy();
+
+      await expect.poll(() => billedFor(conversationId), { timeout: 20_000 }).toBe(2);
+      await page.waitForTimeout(SETTLE_MS);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        cancels: await runCancels(page, assistant.id),
+      }).toEqual({ runs: 1, reads: [], cancels: 0 });
+    } finally {
+      await deleteAssistant(page, assistant.id, 'v1');
+    }
+  });
+
+  test('a stopped assistant run is cancelled at the provider once @scenario:assistants-stopped-run-cancelled-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-stop-once');
+    const assistant = await createAssistant(page, `E2E stop once ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, `E2E_ASSISTANT_SLOW:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      expect(await stopRun(page)).toBe(200);
+
+      /** The stop cancels the run and reads it back; the stopped request then settles. */
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        cancels: await runCancels(page, assistant.id),
+      }).toEqual({ runs: 1, reads: [1], cancels: 1 });
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a failed assistant run is cancelled at the provider once, by the request that recovers it @scenario:assistants-failed-run-cancelled-once', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-fail-once');
+    const assistant = await createAssistant(page, `E2E fail once ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_DROP:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+        timeout: 30_000,
+      });
+
+      /** The request cancels and reads back the run whose stream dropped, then settles. */
+      await page.waitForTimeout(RECOVERY_CHECK_MS);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        cancels: await runCancels(page, assistant.id),
+      }).toEqual({ runs: 1, reads: [1], cancels: 1 });
     } finally {
       await deleteAssistant(page, assistant.id);
     }
