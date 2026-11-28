@@ -1036,7 +1036,7 @@ describe('getOpenAILLMConfig', () => {
       expect(result.llmConfig).toHaveProperty('useResponsesApi', true);
       expect(result.llmConfig.modelKwargs).toEqual({
         max_output_tokens: 2048,
-        text: { verbosity: Verbosity.low },
+        text: { format: { type: 'text' }, verbosity: Verbosity.low },
       });
     });
 
@@ -2139,6 +2139,56 @@ describe('Responses text format', () => {
     });
 
     expect(result.llmConfig.modelKwargs?.text).toBeUndefined();
+  });
+
+  it('should not stamp a text format when a text value is configured on llmConfig', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.2',
+      },
+      addParams: {
+        text: { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } },
+        useResponsesApi: true,
+      },
+    });
+
+    expect(result.llmConfig).toMatchObject({
+      text: { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } },
+    });
+    expect(result.llmConfig.modelKwargs?.text).toBeUndefined();
+  });
+
+  it('should not stamp a text format when dropParams contains text', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.2',
+        useResponsesApi: true,
+      },
+      dropParams: ['text'],
+    });
+
+    expect(result.llmConfig.modelKwargs?.text).toBeUndefined();
+  });
+
+  it('should stamp a text format over a malformed format without a type', () => {
+    const result = getOpenAILLMConfig({
+      apiKey: 'test-api-key',
+      streaming: true,
+      endpoint: EModelEndpoint.openAI,
+      modelOptions: {
+        model: 'gpt-5.2',
+        useResponsesApi: true,
+      },
+      inferenceParameters: { text: { format: {} } },
+    });
+
+    expect(result.llmConfig.modelKwargs).toHaveProperty('text', { format: { type: 'text' } });
   });
 });
 describe('takesReasoningEffort', () => {

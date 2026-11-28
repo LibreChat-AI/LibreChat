@@ -105,6 +105,7 @@ describe('getOpenAIConfig', () => {
         effort: ReasoningEffort.high,
         summary: ReasoningSummary.detailed,
       },
+      text: { format: { type: 'text' } },
     });
     expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
     expect((result.llmConfig as Record<string, unknown>).reasoning_summary).toBeUndefined();
@@ -429,7 +430,10 @@ describe('getOpenAIConfig', () => {
     expect(result.tools).toEqual([{ type: 'web_search' }]);
     // web_search should not be in modelKwargs or llmConfig
     expect((result.llmConfig as Record<string, unknown>).web_search).toBeUndefined();
-    expect(result.llmConfig.modelKwargs).toEqual({ customParam: 'value' });
+    expect(result.llmConfig.modelKwargs).toEqual({
+      customParam: 'value',
+      text: { format: { type: 'text' } },
+    });
   });
 
   it('should disable web_search when included in dropParams', () => {
@@ -480,8 +484,8 @@ describe('getOpenAIConfig', () => {
     expect(result.llmConfig.useResponsesApi).toBe(true);
     expect(result.tools).toEqual([{ type: 'web_search' }]);
     expect(result.llmConfig.temperature).toBe(0.7);
-    // web_search should not be added to modelKwargs
-    expect(result.llmConfig.modelKwargs).toBeUndefined();
+    // web_search should not be added to modelKwargs; only the stamped text format is present
+    expect(result.llmConfig.modelKwargs).toEqual({ text: { format: { type: 'text' } } });
   });
 
   it('should handle web_search with both addParams and dropParams', () => {
@@ -517,7 +521,10 @@ describe('getOpenAIConfig', () => {
     expect(result.tools).toEqual([{ type: 'web_search' }]);
     expect((result.llmConfig as Record<string, unknown>).web_search).toBeUndefined();
     expect(result.llmConfig.temperature).toBe(0.5);
-    expect(result.llmConfig.modelKwargs).toEqual({ customParam1: 'value1' });
+    expect(result.llmConfig.modelKwargs).toEqual({
+      customParam1: 'value1',
+      text: { format: { type: 'text' } },
+    });
   });
 
   it('should drop params for search models', () => {
@@ -682,6 +689,7 @@ describe('getOpenAIConfig', () => {
     });
     expect(result.llmConfig.modelKwargs).toEqual({
       text: {
+        format: { type: 'text' },
         verbosity: Verbosity.low,
       },
     });
@@ -703,6 +711,7 @@ describe('getOpenAIConfig', () => {
 
     expect(result.llmConfig.modelKwargs).toEqual({
       text: {
+        format: { type: 'text' },
         verbosity: Verbosity.high, // Should be overridden by addParams
       },
       customParam: 'value',
@@ -777,6 +786,7 @@ describe('getOpenAIConfig', () => {
     expect(result.llmConfig.maxTokens).toBeUndefined();
     expect(result.llmConfig.modelKwargs).toEqual({
       text: {
+        format: { type: 'text' },
         verbosity: Verbosity.medium,
       },
       max_output_tokens: 1500,
@@ -1484,7 +1494,7 @@ describe('getOpenAIConfig', () => {
       expect(result.llmConfig.reasoning).toBeUndefined();
       expect(result.llmConfig.maxTokens).toBe(2000);
       expect(result.llmConfig.modelKwargs).toEqual({
-        text: { verbosity: Verbosity.medium },
+        text: { format: { type: 'text' }, verbosity: Verbosity.medium },
         reasoning: { effort: ReasoningEffort.high },
         customParam: 'custom-value',
       });

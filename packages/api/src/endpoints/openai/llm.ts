@@ -712,11 +712,18 @@ function applyResponsesVerbosity({
 function applyResponsesTextFormat({
   llmConfig,
   modelKwargs,
+  dropParams,
 }: {
   llmConfig: OpenAILLMConfig;
   modelKwargs: Record<string, unknown>;
+  dropParams?: string[];
 }): boolean {
   if (llmConfig.useResponsesApi !== true) {
+    return false;
+  }
+
+  // A route that drops `text` owns the payload shape; never re-add it.
+  if (dropParams?.includes('text')) {
     return false;
   }
 
@@ -725,8 +732,19 @@ function applyResponsesTextFormat({
     return false;
   }
 
+  // A configured text value reaches the SDK as a call option and outranks the default; leave it alone.
+  if ((llmConfig as Record<string, unknown>).text != null) {
+    return false;
+  }
+
   const text = getModelKwargsText(modelKwargs);
-  if (text.format != null && typeof text.format === 'object' && !Array.isArray(text.format)) {
+  const format = text.format;
+  const hasValidFormat =
+    format != null &&
+    typeof format === 'object' &&
+    !Array.isArray(format) &&
+    typeof (format as Record<string, unknown>).type === 'string';
+  if (hasValidFormat) {
     return false;
   }
 
@@ -1382,7 +1400,8 @@ export function getOpenAILLMConfig({
       useOpenRouter,
     }) || hasModelKwargs;
 
-  hasModelKwargs = applyResponsesTextFormat({ llmConfig, modelKwargs }) || hasModelKwargs;
+  hasModelKwargs =
+    applyResponsesTextFormat({ llmConfig, modelKwargs, dropParams }) || hasModelKwargs;
 
   if (
     llmConfig.model &&
