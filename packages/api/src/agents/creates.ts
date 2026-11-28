@@ -182,10 +182,12 @@ export interface CreateAgentDeps {
   /** Saves the agent; the caller adapts the stored record with `toCreatedAgent`. */
   createAgent: (agentData: Record<string, unknown>) => Promise<CreatedAgent>;
   getFiles: GetAgentContentFiles;
-  /** Removes tool-resource file IDs the owner cannot attach. Mutates `tool_resources`. */
+  /** Removes tool-resource file IDs the owner cannot attach and that are not already on
+   *  `existingToolResources`. Mutates `tool_resources`. */
   pruneToolResourceFileIds: (params: {
     tool_resources: AgentToolResources;
     ownerIds: string;
+    existingToolResources?: AgentToolResources;
     logPrefix: string;
   }) => Promise<number>;
   /** Rewrites a subagent graph self-reference and returns the validated config. */
@@ -529,7 +531,8 @@ function mapCreateStatus(status: number): AgentManagementErrorCode {
   return 'internal_error';
 }
 
-function getErrorStatus(error: unknown): unknown {
+/** Reads the `statusCode` a data-schemas method attaches to a thrown error. */
+export function getErrorStatus(error: unknown): unknown {
   return (error as { statusCode?: unknown } | null)?.statusCode;
 }
 

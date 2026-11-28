@@ -147,6 +147,33 @@ export async function authorizeAgent<
   return { ok: true, value: new AgentAuthorization<R, T>(agent) };
 }
 
+/** Authorizations the agent route middleware granted, by request. Not stored on the request
+ *  object, so request serialization and `req.resourceAccess` stay unchanged. */
+const requestAuthorizations = new WeakMap<
+  object,
+  { levels: readonly AgentAccessLevel[]; authorization: AuthorizedAgent<AgentAccessLevel> }
+>();
+
+/**
+ * The agent the route middleware authorized on `req`, when its check covered every level in
+ * `required`; otherwise `null`. `T` is the record type of the middleware's agent loader.
+ */
+export function getRequestAgentAuthorization<
+  R extends AgentAccessLevel,
+  T extends AgentAccessRecord = AgentAccessRecord,
+>(req: object, required: R | readonly R[]): AuthorizedAgent<R, T> | null {
+  const granted = requestAuthorizations.get(req);
+  if (!granted) {
+    return null;
+  }
+  const levels: readonly R[] = typeof required === 'string' ? [required] : required;
+  if (!levels.every((level) => granted.levels.includes(level))) {
+    return null;
+  }
+  /** The middleware ran `authorizeAgent` for every level in `granted.levels`. */
+  return granted.authorization as unknown as AuthorizedAgent<R, T>;
+}
+
 /** What the agent route middleware records on the request after a successful check. */
 export type AgentAccessRequest<T extends AgentAccessRecord = AgentAccessRecord> = Request & {
   resourceAccess?: {
@@ -177,22 +204,41 @@ function toAccessLevels(requiredPermission: number): AgentAccessLevel[] {
   return levels;
 }
 
+export interface AgentAccessMiddlewareDeps<T extends AgentAccessRecord>
+  extends AuthorizeAgentDeps<T, IUser> {
+  /** Loads the full document, `versions` included; required by `includeVersions`. */
+  getAgentWithVersions?: (agentId: string) => Promise<T | null>;
+}
+
 /**
  * Express middleware for agent routes. It reads the agent's public ID from
  * `req.params[resourceIdParam]`, runs `authorizeAgent`, and maps the result to the
  * route's existing 400 / 401 / 404 / 403 / 500 responses. On success the loaded agent
- * is available as `req.resourceAccess.resourceInfo`. A manage-agents user on a missing
+ * is available as `req.resourceAccess.resourceInfo`, and the authorization itself through
+ * `getRequestAgentAuthorization`. A manage-agents user on a missing
  * agent continues to the route handler, which sends its own missing-agent reply.
  */
 export function createAgentAccessMiddleware<T extends AgentAccessRecord>(
-  options: { requiredPermission: number; resourceIdParam?: string },
-  deps: AuthorizeAgentDeps<T, IUser>,
+  options: {
+    requiredPermission: number;
+    resourceIdParam?: string;
+    /** Loads the agent through `deps.getAgentWithVersions`, for a handler that returns it. */
+    includeVersions?: boolean;
+  },
+  deps: AgentAccessMiddlewareDeps<T>,
 ): (req: AgentAccessRequest<T>, res: Response, next: NextFunction) => Promise<Response | void> {
-  const { requiredPermission, resourceIdParam = 'id' } = options;
+  const { requiredPermission, resourceIdParam = 'id', includeVersions = false } = options;
   if (!requiredPermission || typeof requiredPermission !== 'number') {
     throw new Error('canAccessAgentResource: requiredPermission is required and must be a number');
   }
+  if (includeVersions && !deps.getAgentWithVersions) {
+    throw new Error('canAccessAgentResource: includeVersions requires getAgentWithVersions');
+  }
   const required = toAccessLevels(requiredPermission);
+  const authorizeDeps: AuthorizeAgentDeps<T, IUser> =
+    includeVersions && deps.getAgentWithVersions
+      ? { ...deps, getAgent: deps.getAgentWithVersions }
+      : deps;
 
   return async function canAccessAgentResource(req, res, next) {
     const agentId = req.params[resourceIdParam];
@@ -214,7 +260,7 @@ export function createAgentAccessMiddleware<T extends AgentAccessRecord>(
     }
 
     try {
-      const result = await authorizeAgent({ user, agentId, required }, deps);
+      const result = await authorizeAgent({ user, agentId, required }, authorizeDeps);
       if (!result.ok && result.error.code === 'not_found' && result.error.canManageAll) {
         logger.debug(
           `[canAccessAgentResource] Manage-agents bypass for user ${user.id} on missing agent ${agentId}`,
@@ -234,6 +280,7 @@ export function createAgentAccessMiddleware<T extends AgentAccessRecord>(
       }
 
       const { agent } = result.value;
+      requestAuthorizations.set(req, { levels: required, authorization: result.value });
       req.resourceAccess = {
         resourceType: ResourceType.AGENT,
         resourceId: agent._id,

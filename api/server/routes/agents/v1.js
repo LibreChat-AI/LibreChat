@@ -117,6 +117,7 @@ router.patch(
   canAccessAgentResource({
     requiredPermission: PermissionBits.EDIT,
     resourceIdParam: 'id',
+    includeVersions: true,
   }),
   strictConfigMiddleware,
   v1.updateAgent,

@@ -18,7 +18,11 @@ import type {
   AuthorizedAgent,
   AuthorizeAgentDeps,
 } from './access';
-import { authorizeAgent, createAgentAccessMiddleware } from './access';
+import {
+  authorizeAgent,
+  createAgentAccessMiddleware,
+  getRequestAgentAuthorization,
+} from './access';
 import { generateCapabilityCheck } from '~/middleware/capabilities';
 import { AccessControlService } from '~/acl/accessControlService';
 
@@ -296,6 +300,61 @@ describe('createAgentAccessMiddleware', () => {
     expect(req.resourceAccess?.resourceInfo.id).toBe(agent.id);
   });
 
+  it('loads through getAgentWithVersions when the route asks for versions', async () => {
+    const owner = await createUser();
+    const agent = await createAgentFor(owner);
+    await grant(owner, agent, PermissionBits.VIEW | PermissionBits.EDIT);
+    const getAgent = jest.fn(deps.getAgent);
+    const getAgentWithVersions = jest.fn(deps.getAgent);
+    const middleware = createAgentAccessMiddleware(
+      { requiredPermission: PermissionBits.EDIT, includeVersions: true },
+      { ...deps, getAgent, getAgentWithVersions },
+    );
+    const req = {
+      params: { id: agent.id },
+      user: owner,
+    } as unknown as AgentAccessRequest<AgentRecord>;
+    const next = jest.fn();
+
+    await middleware(req, makeResponse(), next);
+
+    expect(next).toHaveBeenCalled();
+    expect(getAgentWithVersions).toHaveBeenCalledWith(agent.id);
+    expect(getAgent).not.toHaveBeenCalled();
+    expect(() =>
+      createAgentAccessMiddleware(
+        { requiredPermission: PermissionBits.EDIT, includeVersions: true },
+        deps,
+      ),
+    ).toThrow('includeVersions requires getAgentWithVersions');
+  });
+
+  it('exposes the authorization it granted, for the levels it checked', async () => {
+    const owner = await createUser();
+    const agent = await createAgentFor(owner);
+    await grant(owner, agent, PermissionBits.VIEW | PermissionBits.EDIT);
+    const getAgent = jest.fn(deps.getAgent);
+    const middleware = createAgentAccessMiddleware(
+      { requiredPermission: PermissionBits.EDIT },
+      { ...deps, getAgent },
+    );
+    const req = {
+      params: { id: agent.id },
+      user: owner,
+    } as unknown as AgentAccessRequest<AgentRecord>;
+
+    expect(getRequestAgentAuthorization(req, 'EDIT')).toBeNull();
+    await middleware(req, makeResponse(), jest.fn());
+
+    const authorized = getRequestAgentAuthorization<'EDIT', AgentRecord>(req, 'EDIT');
+    expect(authorized?.agent.id).toBe(agent.id);
+    expect(authorized?.agent).toBe(req.resourceAccess?.resourceInfo);
+    expect(getRequestAgentAuthorization(req, 'VIEW')).toBeNull();
+    expect(getRequestAgentAuthorization(req, ['EDIT', 'DELETE'])).toBeNull();
+    expect(getRequestAgentAuthorization({}, 'EDIT')).toBeNull();
+    expect(getAgent).toHaveBeenCalledTimes(1);
+  });
+
   it('passes a manage-agents user on a missing agent to the route handler', async () => {
     const admin = await createUser(SystemRoles.ADMIN);
     const middleware = createAgentAccessMiddleware({ requiredPermission: 1 }, deps);
@@ -311,6 +370,7 @@ describe('createAgentAccessMiddleware', () => {
     expect(next).toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
     expect(req.resourceAccess).toBeUndefined();
+    expect(getRequestAgentAuthorization(req, 'VIEW')).toBeNull();
   });
 
   it('sends the existing 404 body for a missing agent without the capability', async () => {

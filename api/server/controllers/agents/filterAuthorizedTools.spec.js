@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
-const { Constants, actionDelimiter } = require('librechat-data-provider');
+const { Constants, PermissionBits, actionDelimiter } = require('librechat-data-provider');
 const { agentSchema } = require('@librechat/data-schemas');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
@@ -74,12 +74,27 @@ jest.mock('~/cache', () => ({
 const {
   filterAuthorizedTools,
   createAgent: createAgentHandler,
-  updateAgent: updateAgentHandler,
+  updateAgent: routeUpdateAgent,
   duplicateAgent: duplicateAgentHandler,
   revertAgentVersion: revertAgentVersionHandler,
 } = require('./v1');
 
 const { getMCPServersRegistry } = require('~/config');
+const { toUpdatableAgent, createAgentAccessMiddleware } = require('@librechat/api');
+const db = require('~/models');
+
+/** The PATCH route authorizes and loads the agent before the handler runs. These tests cover
+ *  the handler, so the authorization grants every agent and passes a missing one through. */
+const authorizeUpdate = createAgentAccessMiddleware(
+  { requiredPermission: PermissionBits.EDIT },
+  {
+    getAgent: (agentId) => db.getAgent({ id: agentId }, {}).then(toUpdatableAgent),
+    hasCapability: async () => true,
+    checkPermission: async () => true,
+  },
+);
+const updateAgentHandler = (req, res) =>
+  authorizeUpdate(req, res, () => routeUpdateAgent(req, res));
 
 let Agent;
 

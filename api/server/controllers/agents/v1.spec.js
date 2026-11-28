@@ -22,6 +22,7 @@ const {
   PrincipalModel,
   PrincipalType,
   ResourceType,
+  ErrorTypes,
   actionDelimiter,
   InstructionsPromptErrorCode,
 } = require('librechat-data-provider');
@@ -101,7 +102,8 @@ const {
   getAgentVersions: getAgentVersionsHandler,
   duplicateAgent: duplicateAgentHandler,
   revertAgentVersion: revertAgentVersionHandler,
-  updateAgent: updateAgentHandler,
+  updateAgent: routeUpdateAgent,
+  updateAgentForRequest,
   getListAgents: getListAgentsHandler,
   uploadAgentAvatar: uploadAgentAvatarHandler,
 } = require('./v1');
@@ -114,6 +116,8 @@ const {
 
 const {
   CONTENT_TRAVERSAL_MAX_DEPTH,
+  toUpdatableAgent,
+  createAgentAccessMiddleware,
   createAgentManagementAuth,
   createAgentManagementCreateHandler,
   createAgentManagementDeleteHandler,
@@ -128,6 +132,19 @@ const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
 const { promptService } = require('~/server/services/Prompts');
 const db = require('~/models');
+
+/** The PATCH route authorizes and loads the agent before the handler runs. These tests cover
+ *  the handler, so the authorization grants every agent and passes a missing one through. */
+const authorizeUpdate = createAgentAccessMiddleware(
+  { requiredPermission: PermissionBits.EDIT },
+  {
+    getAgent: (agentId) => db.getAgent({ id: agentId }, {}).then(toUpdatableAgent),
+    hasCapability: async () => true,
+    checkPermission: async () => true,
+  },
+);
+const updateAgentHandler = (req, res) =>
+  authorizeUpdate(req, res, () => routeUpdateAgent(req, res));
 
 /**
  * @type {import('mongoose').Model<import('@librechat/data-schemas').IAgent>}
@@ -730,10 +747,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
       const update = createAgentManagementUpdateHandler({
         getRoleByName,
-        getAgentWithVersionCount: db.getAgentWithVersionCount,
+        getAgentWithVersionCount: (search) =>
+          db.getAgentWithVersionCount(search).then(toUpdatableAgent),
         checkPermission: checkAgentPermission,
         hasCapability,
-        updateAgent: updateAgentHandler,
+        updateAgent: updateAgentForRequest,
       });
       const remove = createAgentManagementDeleteHandler({
         getRoleByName,
@@ -2424,7 +2442,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       await updateAgentHandler(mockReq, mockRes);
 
       expect(mockRes.status).toHaveBeenCalledWith(404);
-      expect(mockRes.json).toHaveBeenCalledWith({ error: 'Agent not found' });
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      });
     });
 
     test('should include version field in update response', async () => {

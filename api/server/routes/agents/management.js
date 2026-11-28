@@ -20,6 +20,7 @@ const {
   mapAgentManagementError,
   restoreTenantContextFromReq,
   resolveToolRoleGrants,
+  toUpdatableAgent,
 } = require('@librechat/api');
 const {
   checkBan,
@@ -52,10 +53,10 @@ const createHandler = createAgentManagementCreateHandler({
 });
 const updateHandler = createAgentManagementUpdateHandler({
   getRoleByName: db.getRoleByName,
-  getAgentWithVersionCount: db.getAgentWithVersionCount,
+  getAgentWithVersionCount: (search) => db.getAgentWithVersionCount(search).then(toUpdatableAgent),
   checkPermission,
   hasCapability,
-  updateAgent: v1.updateAgent,
+  updateAgent: v1.updateAgentForRequest,
 });
 const deleteHandler = createAgentManagementDeleteHandler({
   getRoleByName: db.getRoleByName,
