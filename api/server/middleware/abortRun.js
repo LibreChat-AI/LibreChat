@@ -1,9 +1,10 @@
-const { sendEvent, getTransactionsConfig } = require('@librechat/api');
+const { sendEvent, claimRunRecovery, getTransactionsConfig } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys, RunStatus, isUUID } = require('librechat-data-provider');
 const { initializeClient } = require('~/server/services/Endpoints/assistants');
 const { checkMessageGaps, recordUsage } = require('~/server/services/Threads');
 const { getConvo } = require('~/models');
+const { distributedLock } = require('~/cache/distributedLock');
 const getLogStores = require('~/cache/getLogStores');
 
 const three_minutes = 1000 * 60 * 3;
@@ -44,6 +45,11 @@ async function abortRun(req, res) {
   let runMessages = [];
   /** @type {{ openai: OpenAI }} */
   const { openai } = await initializeClient({ req, res });
+
+  if (!(await claimRunRecovery(distributedLock, run_id))) {
+    logger.warn('[abortRun] Run already stopped or recovered', { thread_id });
+    return res.status(204).send({ message: 'Run already cancelled' });
+  }
 
   try {
     await cache.set(cacheKey, 'cancelled', three_minutes);

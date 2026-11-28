@@ -735,23 +735,35 @@ test.describe('assistants stream', () => {
     }
   });
 
-  test('a run that completed but could not be tagged at the provider is still billed once @scenario:assistants-completed-run-tag-failure-bills-once', async ({
+  test('a run that completed but could not be tagged is billed once, even with the next message sent at once @scenario:assistants-completed-run-tag-failure-bills-once', async ({
     page,
   }) => {
-    test.setTimeout(90_000);
+    test.setTimeout(120_000);
     const label = uniqueLabel('assistant-tag-fail');
+    const second = `E2E_ASSISTANT_SLOW:second-${label}`;
     const assistant = await createAssistant(page, `E2E tag fail ${label}`);
     try {
       /** The run completes, then tagging its message at the provider fails before the controller
-       *  bills it, so the request recovers the run itself. */
+       *  bills it, so the request recovers the run itself, 2 s later. */
       const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_BRIEF:E2E_ASSISTANT_USAGE:E2E_ASSISTANT_TAG_FAIL:${label}`;
       await sendToAssistant(page, assistant.id, prompt);
       await expect(messagesView(page).getByText(/achunk-012/)).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+        timeout: 20_000,
+      });
       await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
       const conversationId = new URL(page.url()).pathname.split('/').pop() ?? '';
 
+      /** The next run takes the conversation's abort entry before that recovery starts. */
+      await send(page, second);
+      await expect(messagesView(page).getByText(/achunk-012/)).toHaveCount(2, { timeout: 20_000 });
+      expect(await stopRun(page)).toBe(200);
+
       await page.waitForTimeout(RECOVERY_CHECK_MS);
-      expect(await billedFor(conversationId)).toBe(2);
+      expect({
+        ...(await runReads(page, assistant.id)),
+        billed: await billedFor(conversationId),
+      }).toEqual({ runs: 2, reads: [1, 1], billed: 2 });
     } finally {
       await deleteAssistant(page, assistant.id);
     }

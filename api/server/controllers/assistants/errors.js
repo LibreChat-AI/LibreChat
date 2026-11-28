@@ -4,6 +4,7 @@ const { getTransactionsConfig, createRecoveryClaim } = require('@librechat/api')
 const { CacheKeys, ViolationTypes, ContentTypes } = require('librechat-data-provider');
 const { recordUsage, checkMessageGaps } = require('~/server/services/Threads');
 const { sendResponse } = require('~/server/middleware/error');
+const { distributedLock } = require('~/cache/distributedLock');
 const getLogStores = require('~/cache/getLogStores');
 const { getConvo } = require('~/models');
 
@@ -37,6 +38,7 @@ const { getConvo } = require('~/models');
 const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/chat/' }) => {
   const claim = createRecoveryClaim({
     cache: getLogStores(CacheKeys.ABORT_KEYS),
+    lock: distributedLock,
     completedRun: () => getContext().completedRun,
   });
 
@@ -106,7 +108,7 @@ const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/ch
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     try {
-      if (!(await claim({ key: cacheKey, thread_id, run_id, error }))) {
+      if (!(await claim({ key: cacheKey, run_id, error }))) {
         logger.debug(`[${originPath}] Run already stopped or recovered`);
         return res.end();
       }
