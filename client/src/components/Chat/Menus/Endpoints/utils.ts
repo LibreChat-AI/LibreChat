@@ -2,6 +2,7 @@ import React from 'react';
 import { Bot } from 'lucide-react';
 import { isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type {
+  Agent,
   TModelSpec,
   TAgentsMap,
   TAssistantsMap,
@@ -82,6 +83,28 @@ export function filterItems<
 
     return false;
   });
+}
+
+type SelectorAgentsFilter = { editableOnly: boolean; pinnedAgentIds: Set<string> };
+
+/**
+ * Agents for the model selector. With the marketplace on, the selector lists only the agents
+ * the user can edit; agents they pinned stay in the list as well, so a pinned shared agent can
+ * be picked from the selector and not only from the sidebar.
+ */
+export function filterSelectorAgents(agents: Agent[], filter: SelectorAgentsFilter): Agent[];
+export function filterSelectorAgents(
+  agents: Agent[] | undefined,
+  filter: SelectorAgentsFilter,
+): Agent[] | undefined;
+export function filterSelectorAgents(
+  agents: Agent[] | undefined,
+  { editableOnly, pinnedAgentIds }: SelectorAgentsFilter,
+): Agent[] | undefined {
+  if (!editableOnly) {
+    return agents;
+  }
+  return agents?.filter((agent) => agent.isEditable !== false || pinnedAgentIds.has(agent.id));
 }
 
 export function shouldRenderEndpointOption(endpoint: {
