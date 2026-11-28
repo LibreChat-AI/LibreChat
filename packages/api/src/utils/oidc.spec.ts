@@ -392,6 +392,29 @@ describe('OpenID Token Utilities', () => {
   });
 
   describe('processOpenIDPlaceholders', () => {
+    it.each(['sk-abc$$def', 'A$&B', 'x$`y', "x$'y", '$1', ''])(
+      'preserves literal OpenID values %j',
+      (value) => {
+        const tokenInfo = {
+          accessToken: value,
+          idToken: value,
+          idTokenExpiresAt: Math.floor(Date.now() / 1000) + 3600,
+          userId: value,
+          userEmail: value,
+          userName: value,
+        };
+        const fields = ['ACCESS_TOKEN', 'USER_ID', 'USER_EMAIL', 'USER_NAME', 'TOKEN'];
+        if (value) fields.push('ID_TOKEN');
+
+        for (const field of fields) {
+          const placeholder = `{{LIBRECHAT_OPENID_${field}}}`;
+          expect(
+            processOpenIDPlaceholders(`prefix-${placeholder}-${placeholder}-suffix`, tokenInfo),
+          ).toBe(`prefix-${value}-${value}-suffix`);
+        }
+      },
+    );
+
     it('should not substitute an expired ID token for the ID token placeholder', () => {
       const nowSeconds = Math.floor(Date.now() / 1000);
       const tokenInfo = {

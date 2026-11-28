@@ -398,13 +398,16 @@ export function processOpenIDPlaceholders(
         break;
     }
 
-    processedValue = processedValue.replace(new RegExp(placeholder, 'g'), replacementValue);
+    processedValue = processedValue.replace(new RegExp(placeholder, 'g'), () => replacementValue);
   }
 
   const genericPlaceholder = '{{LIBRECHAT_OPENID_TOKEN}}';
   if (fields.includes('ACCESS_TOKEN') && processedValue.includes(genericPlaceholder)) {
     const replacementValue = tokenInfo.accessToken || '';
-    processedValue = processedValue.replace(new RegExp(genericPlaceholder, 'g'), replacementValue);
+    processedValue = processedValue.replace(
+      new RegExp(genericPlaceholder, 'g'),
+      () => replacementValue,
+    );
   }
 
   return processedValue;
