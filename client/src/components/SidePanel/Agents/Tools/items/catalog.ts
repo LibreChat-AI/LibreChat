@@ -34,6 +34,8 @@ export interface BuildCatalogInputs {
     webSearch: boolean;
     runCode: boolean;
     fileSearch: boolean;
+    /** `AGENTS.CREATE`, which the Agent Builder card needs on top of its capability. */
+    agentBuilder: boolean;
   };
   /**
    * Id of the signed-in user. When provided, skills authored by this user are
@@ -186,6 +188,16 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
       iconKey: 'ask_user_question',
       name: 'com_ui_ask_user',
       description: 'com_agents_ask_user_info',
+    });
+  }
+
+  if (enabled.has(AgentCapabilities.agent_builder) && inputs.permissions.agentBuilder) {
+    items.push({
+      kind: 'builtin',
+      id: AgentCapabilities.agent_builder,
+      iconKey: 'agent_builder',
+      name: 'com_ui_agent_builder',
+      description: 'com_agents_agent_builder_info',
     });
   }
 

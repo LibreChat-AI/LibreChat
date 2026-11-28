@@ -18,6 +18,7 @@ const {
   findShadowedServerNames,
   isNormalizationSensitiveName,
   buildInlineMemoryTool,
+  createAgentBuilderToolResolver,
   getCodeApiAuthHeaders,
   buildImageToolContext,
   SET_MEMORY_TOOL_NAME,
@@ -73,7 +74,26 @@ const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/pro
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
-const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
+const {
+  getAgent,
+  setMemory,
+  deleteMemory,
+  getRoleByName,
+  getFormattedMemories,
+  getListAgentsByAccess,
+} = require('~/models');
+const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
+
+const resolveAgentBuilderTool = createAgentBuilderToolResolver({
+  getAgent,
+  hasCapability,
+  checkPermission,
+  findAccessibleResources,
+  getListAgentsByAccess,
+  getRoleByName,
+  checkCapability,
+});
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
 /** @typedef {import('@librechat/agents/langchain/tools').Tool} Tool */
@@ -317,6 +337,16 @@ const loadTools = async ({
       if (!allowed) {
         continue;
       }
+    }
+
+    const agentBuilderTool = resolveAgentBuilderTool({
+      tool,
+      req: options.req,
+      toolRegistry: options.toolRegistry,
+    });
+    if (agentBuilderTool) {
+      requestedTools[tool] = agentBuilderTool;
+      continue;
     }
 
     if (tool === Tools.execute_code) {

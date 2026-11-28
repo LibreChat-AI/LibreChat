@@ -131,23 +131,17 @@ describe('computeToggleAction', () => {
   });
 });
 
-describe('computeToggleAction — ask_user_question builtin', () => {
-  const item = {
-    kind: 'builtin',
-    id: 'ask_user_question',
-    iconKey: 'ask_user_question',
-    name: 'com_ui_ask_user',
-    description: 'com_agents_ask_user_info',
-  } as const;
+describe.each(['ask_user_question', 'agent_builder'])('computeToggleAction — %s builtin', (id) => {
+  const item = { kind: 'builtin', id, iconKey: id, name: 'name', description: 'description' };
 
   test('toggles agent.tools, never a capability field', () => {
     expect(computeToggleAction(item as never, { selected: false })).toEqual({
       type: 'tool-add',
-      id: 'ask_user_question',
+      id,
     });
     expect(computeToggleAction(item as never, { selected: true })).toEqual({
       type: 'tool-remove',
-      id: 'ask_user_question',
+      id,
     });
   });
 });

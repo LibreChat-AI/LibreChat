@@ -81,6 +81,8 @@ const {
   getToolErrorText,
   setMissingCodeFilesContext,
   getAssistantRun,
+  resolveAgentBuilderTools,
+  AGENT_BUILDER_CAPABILITY_GATES,
 } = require('@librechat/api');
 const {
   Time,
@@ -180,6 +182,7 @@ const toolCapabilityGates = {
   [Tools.file_search]: AgentCapabilities.file_search,
   [Tools.execute_code]: AgentCapabilities.execute_code,
   [Tools.web_search]: AgentCapabilities.web_search,
+  ...AGENT_BUILDER_CAPABILITY_GATES,
 };
 
 /**
@@ -924,7 +927,7 @@ async function loadToolDefinitionsWrapper({
   const mcpPermissionContext = createMCPPermissionContext(req);
   const canUseMCP = hasMCPTools ? await mcpPermissionContext.canUseServers(req.user) : true;
 
-  const filteredTools = agent.tools?.filter((tool) => {
+  const isDefinitionToolAllowed = (tool) => {
     if (tool === Tools.file_search) {
       return checkCapability(AgentCapabilities.file_search) && canUseTool(tool);
     }
@@ -950,6 +953,12 @@ async function loadToolDefinitionsWrapper({
       return false;
     }
     return true;
+  };
+  const { tools: filteredTools, agentBuilderEnabled } = resolveAgentBuilderTools({
+    tools: agent.tools,
+    checkCapability,
+    canUseTool,
+    filter: isDefinitionToolAllowed,
   });
 
   if (!filteredTools || filteredTools.length === 0) {
@@ -1604,6 +1613,7 @@ async function loadToolDefinitionsWrapper({
     toolDefinitions,
     hasDeferredTools,
     deferredToolsEnabled,
+    agentBuilderEnabled,
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,
@@ -1726,7 +1736,7 @@ async function loadAgentTools({
   const canUseTool = await resolveAgentToolPermissions(req, agent.tools, enabledCapabilities);
 
   let includesWebSearch = false;
-  const _agentTools = agent.tools?.filter((tool) => {
+  const isAgentToolAllowed = (tool) => {
     if (tool === Tools.file_search) {
       return checkCapability(AgentCapabilities.file_search) && canUseTool(tool);
     } else if (tool === Tools.execute_code) {
@@ -1746,6 +1756,12 @@ async function loadAgentTools({
       return false;
     }
     return true;
+  };
+  const { tools: _agentTools } = resolveAgentBuilderTools({
+    tools: agent.tools,
+    checkCapability,
+    canUseTool,
+    filter: isAgentToolAllowed,
   });
 
   if (!_agentTools || _agentTools.length === 0) {

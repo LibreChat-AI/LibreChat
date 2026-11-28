@@ -175,6 +175,10 @@ export function useAgentItems({
     permissionType: PermissionTypes.FILE_SEARCH,
     permission: Permissions.USE,
   });
+  const hasAgentCreateAccess = useHasAccess({
+    permissionType: PermissionTypes.AGENTS,
+    permission: Permissions.CREATE,
+  });
   const showMemory = useShowMemory();
   const webSearchUserProvided = useWebSearchUserProvided();
   const builtinAuthMap = useBuiltinAuthMap();
@@ -211,6 +215,7 @@ export function useAgentItems({
           webSearch: hasWebSearchAccess,
           runCode: hasRunCodeAccess,
           fileSearch: hasFileSearchAccess,
+          agentBuilder: hasAgentCreateAccess,
         },
         showMemory,
         webSearchUserProvided,
@@ -226,6 +231,7 @@ export function useAgentItems({
       hasWebSearchAccess,
       hasRunCodeAccess,
       hasFileSearchAccess,
+      hasAgentCreateAccess,
       skillsPermission,
       showMemory,
       webSearchUserProvided,
