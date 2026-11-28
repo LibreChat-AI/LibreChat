@@ -6,7 +6,7 @@ import type { TFile } from 'librechat-data-provider';
 import type { Table } from '@tanstack/react-table';
 import type { MenuItemProps } from '~/common';
 import { useLocalize } from '~/hooks';
-import { labels } from './Columns';
+import { labels } from './labels';
 
 function Menu({
   title,

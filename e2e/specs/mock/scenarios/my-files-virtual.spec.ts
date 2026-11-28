@@ -18,11 +18,15 @@ const FILE_COUNT = 200;
 const files: TFile[] = Array.from({ length: FILE_COUNT }, (_, index) => ({
   file_id: `virtual-file-${index}`,
   filename: `Virtual fixture ${String(index).padStart(3, '0')}.txt`,
-  filepath: `/files/virtual-file-${index}.txt`,
+  filepath:
+    index === 2
+      ? '/api/files/code/download/session-2/file-2?execution_profile=stateful'
+      : `/files/virtual-file-${index}.txt`,
   user: 'virtual-files-user',
   bytes: 100,
   object: 'file',
-  source: index === 0 ? FileSources.azure : FileSources.local,
+  source:
+    [FileSources.azure, FileSources.local, FileSources.execute_code][index] ?? FileSources.local,
   context: FileContext.message_attachment,
   type: 'text/plain',
   usage: 0,
@@ -169,6 +173,7 @@ test('row actions use the selected file for details, preview, download and confi
   const details = page.getByRole('dialog', { name: 'Details' });
   await expect(details).toContainText(file.filename);
   await expect(details).toContainText('local');
+  await expect(details).toContainText('Attachment (message_attachment)');
   await details.press('Escape');
   await menu.getByRole('menuitem', { name: 'Preview' }).click();
   const preview = page.getByRole('dialog').last();
@@ -187,4 +192,13 @@ test('row actions use the selected file for details, preview, download and confi
   await unavailable.click();
   await expect(menu.getByRole('menuitem', { name: 'Details' })).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: 'Download' })).toHaveCount(0);
+  await unavailable.click();
+  await expect(unavailable).toHaveAttribute('aria-expanded', 'false');
+  const output = files[2];
+  await page.route('**' + output.filepath, (route) => route.fulfill({ body: 'code output' }));
+  await dialog.getByRole('button', { name: 'Actions for ' + output.filename }).click();
+  await expect(menu.getByRole('menuitem', { name: 'Preview' })).toHaveCount(0);
+  const outputDownload = page.waitForEvent('download');
+  await menu.getByRole('menuitem', { name: 'Download' }).click();
+  expect((await outputDownload).suggestedFilename()).toBe(output.filename);
 });

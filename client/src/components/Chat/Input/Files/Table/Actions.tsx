@@ -1,8 +1,8 @@
 import { useId, useRef, useState } from 'react';
 import { Ellipsis } from 'lucide-react';
 import { MenuButton } from '@ariakit/react';
-import { FileSources } from 'librechat-data-provider';
 import { getPreviewKind, shouldUseExtractedTextPreview } from '@librechat/chat';
+import { apiBaseUrl, FileSources, checkOpenAIStorage } from 'librechat-data-provider';
 import {
   Button,
   DropdownPopup,
@@ -14,20 +14,12 @@ import {
 } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import type { MenuItemProps } from '~/common';
+import { isLocallyStoredSource } from '~/components/Chat/Messages/Content/Parts/LogLink';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
 import { formatFileSize, getDownloadFilename, triggerDownload } from '~/utils';
-import { useFileDownload } from '~/data-provider';
+import { useCodeOutputDownload, useFileDownload } from '~/data-provider';
 import { useLocalize } from '~/hooks';
-
-const downloadable = new Set([
-  FileSources.local,
-  FileSources.firebase,
-  FileSources.s3,
-  FileSources.cloudfront,
-  FileSources.azure_blob,
-  FileSources.execute_code,
-  FileSources.text,
-]);
+import { labels } from './labels';
 
 export default function Actions({
   file,
@@ -44,13 +36,27 @@ export default function Actions({
   const details = useRef<HTMLButtonElement>(null);
   const preview = useRef<HTMLButtonElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const { refetch, isFetching } = useFileDownload(file.user, file.file_id, { direct: false });
+  const owned = useFileDownload(file.user, file.file_id, { direct: false });
+  const prefix = apiBaseUrl() + '/api/files/code/download/';
+  const codePath =
+    file.source === FileSources.execute_code &&
+    file.filepath?.startsWith(prefix) &&
+    /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+(?:\?[^#]*)?$/.test(file.filepath.slice(prefix.length))
+      ? file.filepath
+      : undefined;
+  const code = useCodeOutputDownload(codePath);
+  const download = codePath ? code : owned;
   const original =
-    file.source != null &&
-    (downloadable.has(file.source) ||
-      ((file.source === FileSources.openai || file.source === FileSources.azure) &&
-        'model' in file &&
-        !!file.model));
+    isLocallyStoredSource(file.source) ||
+    (file.source != null && checkOpenAIStorage(file.source) && 'model' in file && !!file.model);
+  const contextKey = file.context && labels[file.context];
+  const context =
+    contextKey && file.context
+      ? localize('com_files_label_and_identifier', {
+          label: localize(contextKey),
+          value: file.context,
+        })
+      : file.context;
   const canPreview =
     (original && !!getPreviewKind(file.filename, file.type, file.source)) ||
     shouldUseExtractedTextPreview(file.llmDeliveryPath);
@@ -72,10 +78,10 @@ export default function Actions({
     },
     {
       label: localize('com_ui_download'),
-      show: original,
-      disabled: isFetching,
+      show: original || !!codePath,
+      disabled: download.isFetching,
       onClick: async () => {
-        const result = await refetch();
+        const result = await download.refetch();
         if (result.isError || !result.data) {
           showToast({ status: 'error', message: localize('com_ui_download_error') });
           return;
@@ -113,7 +119,7 @@ export default function Actions({
                 [localize('com_ui_name'), file.filename],
                 [localize('com_ui_size'), formatFileSize(file.bytes)],
                 [localize('com_ui_storage'), file.source],
-                [localize('com_ui_context'), file.context],
+                [localize('com_ui_context'), context],
               ].map(([label, value]) => (
                 <div className="contents" key={label}>
                   <dt className="text-text-secondary">{label}</dt>

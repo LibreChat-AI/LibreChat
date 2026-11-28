@@ -991,6 +991,7 @@
   "com_files_empty_library": "You have no files yet.",
   "com_files_largest_first": "Largest first",
   "com_files_smallest_first": "Smallest first",
+  "com_files_label_and_identifier": "{{label}} ({{value}})",
   "com_files_actions_named": "Actions for {{0}}",
   "com_files_select_named": "Select {{0}}",
   "com_files_total_one": "{{count}} file",
