@@ -21,6 +21,8 @@ export interface CascadeOutcome {
   failed: string[];
   /** Each fulfilled step's `remove` result, by step name. */
   removed: Record<string, unknown>;
+  /** True when a compensation write failed or a fulfilled step had no restore operation. */
+  readonly compensationIncomplete: boolean;
   /** Best-effort restore of every fulfilled step; failures are logged, never thrown. */
   compensate: () => Promise<void>;
 }
@@ -102,18 +104,29 @@ export async function runCascade(steps: CascadeStep[], logPrefix: string): Promi
     removed[name] = result.value;
   });
 
+  let compensationIncomplete = false;
   async function compensate(): Promise<void> {
+    compensationIncomplete = false;
     for (const { step, arg } of unrestored) {
-      await restoreStep(step, arg);
+      if (!(await restoreStep(step, arg))) compensationIncomplete = true;
     }
     for (const step of steps) {
       if (step.name in removed) {
-        await restoreStep(step, restoreArgs[step.name]);
+        if (!step.restore || !(await restoreStep(step, restoreArgs[step.name]))) {
+          compensationIncomplete = true;
+        }
       }
     }
   }
 
-  return { failed, removed, compensate };
+  return {
+    failed,
+    removed,
+    compensate,
+    get compensationIncomplete() {
+      return compensationIncomplete;
+    },
+  };
 }
 
 /** The config store calls a principal's deletion makes: remove its profile, or put it back. */

@@ -17,6 +17,7 @@ import type {
   AuditSeverity,
   SystemGrantMove,
   RoleDeletion,
+  RoleMethods,
   ConfigMoveOptions,
 } from '@librechat/data-schemas';
 import type { FilterQuery, Types } from 'mongoose';
@@ -145,7 +146,7 @@ export interface AdminRolesDeps {
   updateRoleByName: (
     name: string,
     updates: Partial<IRole>,
-    options?: { id?: string },
+    options?: { id?: string; renameToken?: string },
   ) => Promise<IRole | null>;
   updateAccessPermissions: (
     name: string,
@@ -167,16 +168,9 @@ export interface AdminRolesDeps {
     data: Partial<IUser>,
     expectedState?: Record<string, unknown>,
   ) => Promise<IUser | null>;
-  /** Moves the role's members in the caller's partition to `newRole` (a rename's migration). */
-  updateUsersByRole: (oldRole: string, newRole: string) => Promise<void>;
-  /** The ids of the role's members in the caller's partition. */
-  findUserIdsByRole: (roleName: string) => Promise<string[]>;
-  /** With `fromRole`, only users whose role is still that one change. */
-  updateUsersRoleByIds: (
-    userIds: string[],
-    newRole: string,
-    options?: { fromRole?: string },
-  ) => Promise<void>;
+  reserveRoleRename: RoleMethods['reserveRoleRename'];
+  prepareRoleMembers: RoleMethods['prepareRoleMembers'];
+  settleRoleRename: RoleMethods['settleRoleRename'];
   listUsersByRole: (
     roleName: string,
     options?: { limit?: number; offset?: number },
@@ -362,9 +356,9 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     deleteRoleByName,
     findUser,
     updateUser,
-    updateUsersByRole,
-    findUserIdsByRole,
-    updateUsersRoleByIds,
+    reserveRoleRename,
+    prepareRoleMembers,
+    settleRoleRename,
     listUsersByRole,
     countUsersByRole,
     deleteConfig,
@@ -534,24 +528,6 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     }
   }
 
-  async function rollbackMigratedUsers(
-    migratedIds: string[],
-    currentName: string,
-    newName: string,
-  ): Promise<void> {
-    if (migratedIds.length === 0) {
-      return;
-    }
-    try {
-      await updateUsersRoleByIds(migratedIds, currentName, { fromRole: newName });
-    } catch (rollbackError) {
-      logger.error(
-        `[adminRoles] CRITICAL: rename rollback failed — ${migratedIds.length} users have dangling role "${newName}": [${migratedIds.join(', ')}]`,
-        rollbackError,
-      );
-    }
-  }
-
   /**
    * Puts the role document back under its old name (and description) after a failed rename.
    * The description goes back only while it is still the one this rename set, so an edit made
@@ -563,8 +539,9 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     existing: IRole,
     currentName: string,
     newName: string,
+    token: string,
     extraUpdates?: Partial<IRole>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const revert: Partial<IRole> = { name: currentName };
     if (extraUpdates?.description !== undefined) {
       const renamed = await getRoleByName(newName).catch(() => null);
@@ -573,12 +550,18 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
     }
     try {
-      await updateRoleByName(newName, revert, roleIdentity(existing));
+      return (
+        (await updateRoleByName(newName, revert, {
+          ...roleIdentity(existing),
+          renameToken: token,
+        })) != null
+      );
     } catch (revertError) {
       logger.error(
-        `[adminRoles] CRITICAL: rename rollback failed — role "${currentName}" is still named "${newName}"`,
+        `[adminRoles] CRITICAL: rename rollback failed for role "${currentName}" is still named "${newName}"`,
         getSafeErrorMetadata(revertError),
       );
+      return false;
     }
   }
 
@@ -594,7 +577,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     tenantId: string | undefined,
   ): Promise<
     | { ok: true; moved: RoleDependentsMoved }
-    | { ok: false; code: 'ROLE_CONFIG_CONFLICT' | 'ROLE_RENAME_FAILED' }
+    | { ok: false; code: 'ROLE_CONFIG_CONFLICT' | 'ROLE_RENAME_FAILED'; restored: boolean }
   > {
     let configConflict = false;
     const steps: CascadeStep[] = [];
@@ -656,7 +639,11 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     const cascade = await runCascade(steps, '[adminRoles] rename');
     if (cascade.failed.length > 0) {
       await cascade.compensate();
-      return { ok: false, code: configConflict ? 'ROLE_CONFIG_CONFLICT' : 'ROLE_RENAME_FAILED' };
+      return {
+        ok: false,
+        code: configConflict ? 'ROLE_CONFIG_CONFLICT' : 'ROLE_RENAME_FAILED',
+        restored: configConflict && cascade.failed.length === 1 && !cascade.compensationIncomplete,
+      };
     }
     const { config, grants, acl } = cascade.removed as {
       config?: ConfigRecord | null;
@@ -721,16 +708,6 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     }
   }
 
-  /**
-   * Renames a role: migrates its users, renames the role document, then moves the config
-   * profile, grants and ACL entries keyed by the old name. A failure at any step undoes the
-   * earlier ones, so the role is either fully renamed or left as it was.
-   *
-   * The ID snapshot from `findUserIdsByRole` is a point-in-time read. Users assigned
-   * to `currentName` between the snapshot and the bulk `updateUsersByRole` write will
-   * be moved to `newName` but will NOT be reverted on rollback. This window is narrow
-   * and only relevant under concurrent admin operations during a rename.
-   */
   async function renameRole(
     existing: IRole,
     currentName: string,
@@ -738,27 +715,42 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     tenantId: string | undefined,
     extraUpdates?: Partial<IRole>,
   ): Promise<RoleRenameResult> {
-    const migratedIds = await findUserIdsByRole(currentName);
-    await updateUsersByRole(currentName, newName);
-    let role: IRole | null;
-    try {
-      const updates: Partial<IRole> = { name: newName, ...extraUpdates };
-      role = await updateRoleByName(currentName, updates, roleIdentity(existing));
-    } catch (error) {
-      await rollbackMigratedUsers(migratedIds, currentName, newName);
-      throw error;
-    }
-    if (!role) {
-      await rollbackMigratedUsers(migratedIds, currentName, newName);
+    const identity = roleIdentity(existing);
+    const token = await reserveRoleRename(currentName, newName, identity?.id);
+    if (!token) {
       return { ok: false, code: 'ROLE_NOT_FOUND' };
     }
-    const dependents = await moveRoleDependents(currentName, newName, tenantId);
-    if (!dependents.ok) {
-      await revertRoleUpdate(existing, currentName, newName, extraUpdates);
-      await rollbackMigratedUsers(migratedIds, currentName, newName);
+    let confirmed = false;
+    try {
+      await prepareRoleMembers(token);
+      const role = await updateRoleByName(
+        currentName,
+        { name: newName, ...extraUpdates },
+        { ...identity, renameToken: token },
+      );
+      if (!role) {
+        return { ok: false, code: 'ROLE_NOT_FOUND' };
+      }
+      const dependents = await moveRoleDependents(currentName, newName, tenantId);
+      confirmed = dependents.ok;
+      if (!dependents.ok) {
+        const reverted = await revertRoleUpdate(
+          existing,
+          currentName,
+          newName,
+          token,
+          extraUpdates,
+        );
+        confirmed = reverted && dependents.restored;
+      }
+      return dependents.ok ? { ok: true, role, moved: dependents.moved } : dependents;
+    } finally {
+      try {
+        await settleRoleRename(token, confirmed);
+      } finally {
+        await invalidateRenamedRole(tenantId);
+      }
     }
-    await invalidateRenamedRole(tenantId);
-    return dependents.ok ? { ok: true, role, moved: dependents.moved } : dependents;
   }
 
   async function updateRoleHandler(req: ServerRequest, res: Response) {
@@ -1385,7 +1377,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return res.status(404).json({ error: 'Role not found' });
       }
 
-      const user = await findUser({ _id: userId });
+      const user = await findUser({ _id: userId }, '+roleToken');
       if (!user || !isPartitionUser(user)) {
         return res.status(404).json({ error: 'User not found' });
       }
@@ -1401,7 +1393,15 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         }
       }
 
-      const removed = await updateUser(userId, { role: SystemRoles.USER }, { role: name });
+      if (!isSystemRoleName(name) && !isSameRole(existing, await getRoleByName(name))) {
+        return res.status(409).json({ error: 'User role changed concurrently' });
+      }
+
+      const removed = await updateUser(
+        userId,
+        { role: SystemRoles.USER, roleToken: randomUUID() },
+        { role: name, roleToken: user.roleToken ?? null },
+      );
       if (!removed) {
         const current = await findUser({ _id: userId });
         if (!current) {

@@ -9,8 +9,8 @@ import {
   CacheKeys,
 } from 'librechat-data-provider';
 import type { IRole, IUser, RolePermissions } from '..';
+import { createRoleMethods, RoleDeletionError, RoleConflictError } from './role';
 import { _resetStrictCache } from '../models/plugins/tenantIsolation';
-import { createRoleMethods, RoleDeletionError } from './role';
 import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '../models';
 
@@ -1169,53 +1169,56 @@ describe('deleteRoleByName', () => {
   it.each([
     ['given', true],
     ['resolved', false],
-  ])('never moves the members of a role recreated mid-delete (id %s)', async (_label, withId) => {
-    const original = await createRoleByName({ name: 'editor' });
-    const alice = await User.create({
-      name: 'Alice',
-      email: 'alice@test.com',
-      role: 'editor',
-      username: 'alice',
-    });
-    let danaId = '';
-    const realUpdateMany = User.updateMany.bind(User);
-    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
-      filter: mongoose.FilterQuery<IUser>,
-      update: mongoose.UpdateQuery<IUser>,
-      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
-    ) =>
-      (async () => {
-        const result = await realUpdateMany(filter, update, options);
-        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
-          /** After the first pass: the role is deleted, recreated, and given a new member. */
-          await Role.deleteOne({ _id: original._id });
-          await createRoleByName({ name: 'editor' });
-          const dana = await User.create({
-            name: 'Dana',
-            email: 'dana@test.com',
-            role: 'editor',
-            username: 'dana',
-          });
-          danaId = dana._id.toString();
-        }
-        return result;
-      })()) as unknown as typeof User.updateMany);
+  ])(
+    '@scenario:recreated-role-members-survive-deletion never moves the members of a role recreated mid-delete (id %s)',
+    async (_label, withId) => {
+      const original = await createRoleByName({ name: 'editor' });
+      const alice = await User.create({
+        name: 'Alice',
+        email: 'alice@test.com',
+        role: 'editor',
+        username: 'alice',
+      });
+      let danaId = '';
+      const realUpdateMany = User.updateMany.bind(User);
+      const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+        filter: mongoose.FilterQuery<IUser>,
+        update: mongoose.UpdateQuery<IUser>,
+        options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+      ) =>
+        (async () => {
+          const result = await realUpdateMany(filter, update, options);
+          if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+            /** After the first pass: the role is deleted, recreated, and given a new member. */
+            await Role.deleteOne({ _id: original._id });
+            await createRoleByName({ name: 'editor' });
+            const dana = await User.create({
+              name: 'Dana',
+              email: 'dana@test.com',
+              role: 'editor',
+              username: 'dana',
+            });
+            danaId = dana._id.toString();
+          }
+          return result;
+        })()) as unknown as typeof User.updateMany);
 
-    let caught: unknown;
-    try {
-      await deleteRoleByName('editor', withId ? { id: String(original._id) } : undefined);
-    } catch (error) {
-      caught = error;
-    } finally {
-      spy.mockRestore();
-    }
+      let caught: unknown;
+      try {
+        await deleteRoleByName('editor', withId ? { id: String(original._id) } : undefined);
+      } catch (error) {
+        caught = error;
+      } finally {
+        spy.mockRestore();
+      }
 
-    expect(caught).toBeInstanceOf(RoleDeletionError);
-    expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
-    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
-    expect((await User.findById(danaId).lean())!.role).toBe('editor');
-    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
-  });
+      expect(caught).toBeInstanceOf(RoleDeletionError);
+      expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
+      expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+      expect((await User.findById(danaId).lean())!.role).toBe('editor');
+      expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+    },
+  );
 
   it('checks the role identity before every batch of a large role', async () => {
     const original = await createRoleByName({ name: 'editor' });
@@ -1889,6 +1892,57 @@ describe('role tokens of a rename', () => {
   /** The stored token, which reads leave out unless they ask for it. */
   const roleToken = async (id: unknown) =>
     (await User.findById(id).select('+roleToken').lean())?.roleToken;
+
+  it('@scenario:confirmed-membership-sweeps-recover reserves both names during a rename and recovers the old name on the next create', async () => {
+    const methods = createRoleMethods(mongoose);
+    await Role.init();
+    await methods.createRoleByName({ name: 'editor', permissions: {} });
+    const token = await methods.reserveRoleRename('editor', 'writer');
+    if (!token) throw new Error('Missing rename reservation');
+    await methods.updateRoleByName('editor', { name: 'writer' }, { renameToken: token });
+    const member = await User.create({
+      name: 'Late member',
+      email: 'late@example.com',
+      role: 'editor',
+    });
+    await expect(methods.createRoleByName({ name: 'editor' })).rejects.toBeInstanceOf(
+      RoleConflictError,
+    );
+    await expect(methods.reserveRoleRename('writer', 'reviewer')).rejects.toBeInstanceOf(
+      RoleConflictError,
+    );
+    await Role.updateOne({ name: 'writer' }, { $set: { 'rename.expires': new Date(0) } });
+    // An expired lease alone cannot confirm the authorization cascade.
+    await expect(methods.createRoleByName({ name: 'editor' })).rejects.toBeInstanceOf(
+      RoleConflictError,
+    );
+    expect(await Role.findOne({ name: 'editor' })).toBeNull();
+    // The crash was after confirmation but before the final membership sweep.
+    await Role.updateOne({ name: 'writer' }, { $set: { 'rename.pending': false } });
+    await expect(methods.createRoleByName({ name: 'editor' })).resolves.toMatchObject({
+      name: 'editor',
+    });
+    expect((await User.findById(member._id).lean())?.role).toBe('writer');
+    await methods.settleRoleRename(token);
+    expect(await methods.findUserIdsByRole('editor')).toEqual([]);
+  });
+
+  it('@scenario:rollback-preserves-later-assignments undoes only its own assignments when the rename stops before the document write', async () => {
+    const methods = createRoleMethods(mongoose);
+    await methods.createRoleByName({ name: 'editor' });
+    const [first, second] = await User.create([
+      { email: 'first@example.com', role: 'editor' },
+      { email: 'second@example.com', role: 'editor' },
+    ]);
+    const token = await methods.reserveRoleRename('editor', 'writer');
+    if (!token) throw new Error('Missing rename reservation');
+    await methods.prepareRoleMembers(token);
+    await User.updateOne({ _id: second._id }, { $set: { roleToken: 'later' } });
+    await Role.updateOne({ name: 'editor' }, { $set: { 'rename.expires': new Date(0) } });
+    await methods.createRoleByName({ name: 'writer' });
+    expect((await User.findById(first._id).lean())?.role).toBe('editor');
+    expect((await User.findById(second._id).lean())?.role).toBe('writer');
+  });
 
   it('replaces the token of every member a rename or its undo moves, leaving reads without it', async () => {
     const [alice, bob] = await User.create([

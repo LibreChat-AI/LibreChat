@@ -106,7 +106,7 @@ export function createRoleMethods(
   updateRoleByName: (
     roleName: string,
     updates: Partial<IRole>,
-    options?: { id?: string },
+    options?: { id?: string; renameToken?: string },
   ) => Promise<IRole>;
   setRolePermissions: (
     roleName: string,
@@ -122,6 +122,9 @@ export function createRoleMethods(
   createRoleByName: (roleData: Partial<IRole>) => Promise<IRole>;
   deleteRoleByName: (roleName: string, options?: { id?: string }) => Promise<RoleDeletion | null>;
   updateUsersByRole: (oldRole: string, newRole: string) => Promise<void>;
+  reserveRoleRename: (from: string, to: string, id?: string) => Promise<string | null>;
+  prepareRoleMembers: (token: string) => Promise<void>;
+  settleRoleRename: (token: string, confirmed?: boolean) => Promise<void>;
   findUserIdsByRole: (roleName: string) => Promise<string[]>;
   updateUsersRoleByIds: (
     userIds: string[],
@@ -134,6 +137,12 @@ export function createRoleMethods(
   ) => Promise<IUser[]>;
   countUsersByRole: (roleName: string) => Promise<number>;
 } {
+  /** The index uses one key per partition and name, including legacy platform partitions. */
+  function reservationKey(name: string): string {
+    const tenant = getTenantId();
+    return JSON.stringify([tenant && tenant !== SYSTEM_TENANT_ID ? tenant : null, name]);
+  }
+
   /**
    * The users holding `roleName` in the caller's tenant partition (`tenantPartitionFilter`): the
    * active tenant's, or outside a tenant only platform-level ones. Role names are reused across
@@ -393,16 +402,22 @@ export function createRoleMethods(
   async function updateRoleByName(
     roleName: string,
     updates: Partial<IRole>,
-    options?: { id?: string },
+    options?: { id?: string; renameToken?: string },
   ): Promise<IRole> {
     const cache = deps.getCache?.(CacheKeys.ROLES);
     try {
       const Role = mongoose.models.Role;
-      const role = await Role.findOneAndUpdate(
-        roleDocumentFilter(roleName, 'updateRoleByName', options?.id),
-        { $set: updates },
-        { new: true },
-      )
+      const filter = roleDocumentFilter(roleName, 'updateRoleByName', options?.id);
+      let values: Record<string, unknown> = { ...updates };
+      if (options?.renameToken) {
+        filter['rename.token'] = options.renameToken;
+        filter['rename.owner'] = null;
+        values['rename.pending'] = true;
+      } else if (updates.name && updates.name !== roleName) {
+        filter.rename = null;
+        values = { ...updates, names: [reservationKey(updates.name)] };
+      }
+      const role = await Role.findOneAndUpdate(filter, { $set: values }, { new: true })
         .select('-__v')
         .lean()
         .exec();
@@ -646,13 +661,23 @@ export function createRoleMethods(
       throw new RoleConflictError(`Cannot create role with reserved system name: ${name}`);
     }
     const Role = mongoose.models.Role;
-    const existing = await Role.findOne(roleDocumentFilter(trimmed, 'createRoleByName')).lean();
+    await recoverRoleRename(trimmed);
+    const existing = await Role.findOne({
+      $and: [
+        tenantPartitionFilter('createRoleByName'),
+        { $or: [{ name: trimmed }, { names: reservationKey(trimmed) }] },
+      ],
+    }).lean();
     if (existing) {
       throw new RoleConflictError(`Role "${trimmed}" already exists`);
     }
     let role;
     try {
-      role = await new Role({ ...roleData, name: trimmed }).save();
+      role = await new Role({
+        ...roleData,
+        name: trimmed,
+        names: [reservationKey(trimmed)],
+      }).save();
     } catch (err) {
       /**
        * The compound unique index `{ name: 1, tenantId: 1 }` on the role schema
@@ -665,15 +690,17 @@ export function createRoleMethods(
       }
       throw err;
     }
+    const created = role.toObject() as IRole;
+    delete created.names;
     try {
       const cache = deps.getCache?.(CacheKeys.ROLES);
       if (cache) {
-        await cache.set(scopedCacheKey(role.name), role.toObject());
+        await cache.set(scopedCacheKey(role.name), created);
       }
     } catch (cacheError) {
       logger.error(`[createRoleByName] cache set failed for "${role.name}":`, cacheError);
     }
-    return role.toObject() as IRole;
+    return created;
   }
 
   /**
@@ -700,22 +727,27 @@ export function createRoleMethods(
     let reason: RoleDeletionFailure = 'reassignment_failed';
     try {
       for (let pass = 0; ; pass++) {
-        const ids = (await User.find(members).select('_id').lean()).map((u) => u._id.toString());
-        if (ids.length === 0) {
+        const assignments = (await User.find(members).select('_id +roleToken').lean()).map(
+          (user) => ({
+            _id: user._id.toString(),
+            roleToken: user.roleToken ?? null,
+          }),
+        );
+        if (assignments.length === 0) {
           return [...reassigned];
         }
         if (pass === MAX_REASSIGN_PASSES) {
           throw new Error(`members still joining "${roleName}" after every pass`);
         }
-        for (let i = 0; i < ids.length; i += REASSIGN_BATCH_SIZE) {
+        for (let i = 0; i < assignments.length; i += REASSIGN_BATCH_SIZE) {
           /** Members are matched by name, so every write first confirms the name still holds
            * the targeted role: never the members of a role recreated under it mid-delete. */
           if (!(await isStillTargeted())) {
             reason = 'deleted_elsewhere';
             throw new Error(`role "${roleName}" changed during its deletion`);
           }
-          const batch = ids.slice(i, i + REASSIGN_BATCH_SIZE);
-          written.push(...batch);
+          const batch = assignments.slice(i, i + REASSIGN_BATCH_SIZE);
+          written.push(...batch.map((user) => user._id));
           await reassignBatch(User, members, batch, reassigned);
         }
       }
@@ -735,11 +767,12 @@ export function createRoleMethods(
   async function reassignBatch(
     User: Model<IUser>,
     members: FilterQuery<IUser>,
-    batch: string[],
+    assignments: { _id: string; roleToken: string | null }[],
     reassigned: Set<string>,
   ): Promise<void> {
     /** The tag is not a schema path, so every query naming it opts out of strict filtering. */
     const nonce = new mongoose.Types.ObjectId();
+    const batch = assignments.map((user) => user._id);
     const tagged = { _id: { $in: batch }, [REASSIGN_NONCE_PATH]: nonce };
     const readTagged = async () =>
       (await User.find(tagged, { _id: 1 }, { strictQuery: false }).lean()).map((u) =>
@@ -749,8 +782,11 @@ export function createRoleMethods(
     let keepTag = false;
     try {
       ({ modifiedCount } = await User.updateMany(
-        { ...members, _id: { $in: batch } },
-        { $set: { role: SystemRoles.USER }, $push: { [REASSIGN_NONCE_PATH]: nonce } },
+        { $and: [members, { $or: assignments }] },
+        {
+          $set: { role: SystemRoles.USER, roleToken: nonce.toString() },
+          $push: { [REASSIGN_NONCE_PATH]: nonce },
+        },
         { strict: false },
       ));
       if (modifiedCount === 0) {
@@ -847,7 +883,11 @@ export function createRoleMethods(
       if (!target) {
         return null;
       }
-      const role = { ...partitioned, _id: target._id };
+      await recoverRoleRename(roleName);
+      const role = { ...partitioned, _id: target._id, rename: null };
+      if (await Role.exists({ ...partitioned, _id: target._id, rename: { $ne: null } })) {
+        throw new RoleConflictError(`Role "${roleName}" already exists`);
+      }
       const isStillTargeted = async () => (await Role.exists(role)) != null;
       const reassignedUserIds = await reassignMembersToUser(roleName, isStillTargeted);
       let deleted: IRole | null;
@@ -899,6 +939,178 @@ export function createRoleMethods(
       $set: { role: newRole, roleToken: new mongoose.Types.ObjectId().toString() },
     });
     await invalidateAuthUserDocCache(affectedUserIds);
+  }
+
+  /** A process that dies leaves enough state to finish the sweep or undo its precise writes.
+   * Recovery claims a new lease before it reconciles, fencing the interrupted document rename. */
+  async function recoverRoleRename(name: string): Promise<void> {
+    const Role = mongoose.models.Role as Model<IRole>;
+    const role = await Role.findOne({
+      ...tenantPartitionFilter('recoverRoleRename'),
+      names: reservationKey(name),
+      'rename.expires': { $lte: new Date() },
+    })
+      .select('+rename')
+      .lean();
+    if (!role?.rename) {
+      return;
+    }
+    if (role.rename.pending) {
+      logger.error(
+        '[roles] Rename reservation needs administrator repair: verify config profiles, capability grants and ACLs before releasing the reserved names.',
+        { roleId: String(role._id) },
+      );
+      throw new RoleConflictError(`Role "${name}" already exists`);
+    }
+    await settleRoleRename(role.rename.token, false, role.rename.expires);
+  }
+
+  const leaseExpiry = () => new Date(Date.now() + 60_000);
+
+  async function reserveRoleRename(from: string, to: string, id?: string): Promise<string | null> {
+    await Promise.all([recoverRoleRename(from), recoverRoleRename(to)]);
+    const Role = mongoose.models.Role as Model<IRole>;
+    const token = new mongoose.Types.ObjectId().toString();
+    try {
+      const role = await Role.findOneAndUpdate(
+        { ...roleDocumentFilter(from, 'reserveRoleRename', id), rename: null },
+        {
+          $set: {
+            names: [reservationKey(from), reservationKey(to)],
+            rename: { from, to, token, expires: leaseExpiry() },
+          },
+        },
+      )
+        .select('_id')
+        .lean();
+      if (!role && (await Role.exists(roleDocumentFilter(from, 'reserveRoleRename', id)))) {
+        throw new RoleConflictError(`Role "${from}" already exists`);
+      }
+      return role ? token : null;
+    } catch (error) {
+      if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) {
+        throw new RoleConflictError(`Role "${to}" already exists`);
+      }
+      throw error;
+    }
+  }
+
+  async function prepareRoleMembers(token: string): Promise<void> {
+    const Role = mongoose.models.Role as Model<IRole>;
+    const filter = {
+      ...tenantPartitionFilter('prepareRoleMembers'),
+      'rename.token': token,
+      'rename.owner': null,
+    };
+    const role = await Role.findOne(filter).select('+rename').lean();
+    if (!role?.rename || role.name !== role.rename.from) {
+      throw new RoleConflictError('Role rename changed concurrently');
+    }
+    await migrateRoleMembers(role.name, role.rename.to, {
+      token,
+      isCurrent: async () =>
+        (
+          await Role.updateOne(
+            { ...filter, name: role.name },
+            { $set: { 'rename.expires': leaseExpiry() } },
+          )
+        ).matchedCount === 1,
+    });
+  }
+
+  async function settleRoleRename(token: string, confirmed = false, expired?: Date): Promise<void> {
+    const Role = mongoose.models.Role as Model<IRole>;
+    const owner = new mongoose.Types.ObjectId().toString();
+    const filter = { ...tenantPartitionFilter('settleRoleRename'), 'rename.token': token };
+    const role = await Role.findOneAndUpdate(
+      {
+        ...filter,
+        ...(expired
+          ? { 'rename.expires': expired, 'rename.pending': { $ne: true } }
+          : { 'rename.owner': null }),
+      },
+      {
+        $set: {
+          'rename.expires': leaseExpiry(),
+          'rename.owner': owner,
+          ...(confirmed ? { 'rename.pending': false } : {}),
+        },
+      },
+      { new: true },
+    )
+      .select('+rename')
+      .lean();
+    if (!role?.rename) {
+      return;
+    }
+    const { from, to } = role.rename;
+    const current = { ...filter, 'rename.owner': owner, name: role.name };
+    const forward = role.name === to;
+    const isCurrent = async () =>
+      (await Role.updateOne(current, { $set: { 'rename.expires': leaseExpiry() } }))
+        .matchedCount === 1;
+    if (expired && !forward) {
+      /** Fence any prepared batch whose owner stalled immediately before its user write. */
+      await migrateRoleMembers(from, from, { token: owner, isCurrent });
+    }
+    await migrateRoleMembers(forward ? from : to, role.name, {
+      token: forward ? token : owner,
+      fromToken: forward ? undefined : token,
+      isCurrent,
+    });
+    if (role.rename.pending) {
+      logger.error(
+        '[roles] Rename authorization cascade unconfirmed. Names remain reserved for administrator repair.',
+        { roleId: String(role._id) },
+      );
+      return;
+    }
+    await Role.updateOne(current, {
+      $set: { names: [reservationKey(role.name)] },
+      $unset: { rename: 1 },
+    });
+  }
+
+  /** Moves only assignments observed before the role identity check. A rollback supplies the
+   * migration token so an intervening assignment of the same role survives it. */
+  async function migrateRoleMembers(
+    oldRole: string,
+    newRole: string,
+    {
+      token,
+      fromToken,
+      isCurrent,
+    }: {
+      token: string;
+      fromToken?: string;
+      isCurrent: () => Promise<boolean>;
+    },
+  ): Promise<void> {
+    const User = mongoose.models.User as Model<IUser>;
+    const filter = {
+      ...roleMembersFilter(oldRole, 'migrateRoleMembers'),
+      ...(fromToken == null ? {} : { roleToken: fromToken }),
+    };
+    const users = await User.find(filter).select('_id +roleToken').lean();
+    for (let offset = 0; offset < users.length; offset += REASSIGN_BATCH_SIZE) {
+      const batch = users.slice(offset, offset + REASSIGN_BATCH_SIZE);
+      if (!(await isCurrent())) {
+        throw new RoleConflictError('Role rename changed concurrently');
+      }
+      try {
+        await User.updateMany(
+          {
+            $and: [
+              filter,
+              { $or: batch.map(({ _id, roleToken }) => ({ _id, roleToken: roleToken ?? null })) },
+            ],
+          },
+          { $set: { role: newRole, roleToken: token } },
+        );
+      } finally {
+        await invalidateAuthUserDocCache(batch.map(({ _id }) => _id.toString()));
+      }
+    }
   }
 
   /** The ids of the users holding `roleName` in the caller's tenant partition. */
@@ -972,6 +1184,9 @@ export function createRoleMethods(
     createRoleByName,
     deleteRoleByName,
     updateUsersByRole,
+    reserveRoleRename,
+    prepareRoleMembers,
+    settleRoleRename,
     findUserIdsByRole,
     updateUsersRoleByIds,
     listUsersByRole,
