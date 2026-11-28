@@ -303,6 +303,27 @@ describe('Office HTML producers', () => {
       expect(html).toContain('Sheet One');
       expect(html).toContain('Second Sheet');
     });
+
+    test('renders only the populated cells of a sheet declaring a whole-sheet range', async () => {
+      const { utils, write } = await import('xlsx');
+      const workbook = utils.book_new();
+      utils.book_append_sheet(workbook, utils.aoa_to_sheet([['Name'], ['A']]), 'Data');
+      /* Excel declares this range when formatting spans whole rows and columns. */
+      const zip = await JSZip.loadAsync(write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+      const sheetPath = 'xl/worksheets/sheet1.xml';
+      const sheetXml = await zip.file(sheetPath)!.async('string');
+      zip.file(
+        sheetPath,
+        sheetXml.replace(/<dimension ref="[^"]*"/, '<dimension ref="A1:XFD1048576"'),
+      );
+
+      const html = await excelSheetToHtml(await zip.generateAsync({ type: 'nodebuffer' }));
+
+      expect(html).toContain('Name');
+      expect(html).not.toContain('Showing first');
+      expect(html.match(/<tr/g)).toHaveLength(2);
+      expect(html.match(/<td/g)).toHaveLength(2);
+    });
   });
 
   describe('csvToHtml', () => {
