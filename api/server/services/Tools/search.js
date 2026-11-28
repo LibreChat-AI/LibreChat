@@ -1,7 +1,7 @@
 const { nanoid } = require('nanoid');
 const { Tools } = require('librechat-data-provider');
 const { logger } = require('@librechat/data-schemas');
-const { GenerationJobManager, writeGuarded } = require('@librechat/api');
+const { GenerationJobManager, writeStreaming } = require('@librechat/api');
 
 /**
  * Helper to write attachment events either to res or to job emitter.
@@ -18,7 +18,7 @@ function writeAttachment(res, streamId, attachment, jobCreatedAt) {
       { expectedCreatedAt: jobCreatedAt },
     );
   } else {
-    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeStreaming(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
 }
 
