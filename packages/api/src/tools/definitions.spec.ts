@@ -179,6 +179,79 @@ describe('definitions.ts', () => {
         expect(actionDef?.parameters).toBeUndefined();
       });
 
+      /* OpenAPI-derived schemas reach Gemini/Vertex the same way MCP schemas do, and a
+         keyword like `uniqueItems` or `discriminator` fails the whole request with a 400. */
+      describe('Google/Vertex schema sanitization', () => {
+        const createActionDefs = (): ActionToolDefinition[] => [
+          {
+            name: 'createOrder_action_shop_example_com',
+            description: 'Create an order',
+            /* Real OpenAPI input, so it carries keywords `JsonSchemaType` does not model. */
+            parameters: {
+              type: 'object',
+              properties: {
+                tags: { type: 'array', items: { type: 'string' }, uniqueItems: true },
+                payment: {
+                  oneOf: [
+                    {
+                      type: 'object',
+                      properties: { kind: { type: 'string', enum: ['card'] } },
+                    },
+                    {
+                      type: 'object',
+                      properties: { kind: { type: 'string', enum: ['invoice'] } },
+                    },
+                  ],
+                  discriminator: { propertyName: 'kind' },
+                },
+              },
+              required: ['payment'],
+            } as unknown as ActionToolDefinition['parameters'],
+          },
+        ];
+
+        const loadActionDefinition = async (provider?: Providers) => {
+          const result = await loadToolDefinitions(
+            {
+              userId: 'user-123',
+              agentId: 'agent-123',
+              tools: ['createOrder_action_shop---example---com'],
+              provider,
+            },
+            {
+              getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+              isBuiltInTool: mockIsBuiltInTool,
+              getActionToolDefinitions: jest.fn().mockResolvedValue(createActionDefs()),
+            },
+          );
+          return result.toolDefinitions.find(
+            (d) => d.name === 'createOrder_action_shop_example_com',
+          );
+        };
+
+        it.each([Providers.GOOGLE, Providers.VERTEXAI])(
+          'strips Gemini-rejected keywords from action schemas for %s',
+          async (provider) => {
+            const actionDef = await loadActionDefinition(provider);
+
+            const serialized = JSON.stringify(actionDef?.parameters);
+            expect(serialized).not.toContain('uniqueItems');
+            expect(serialized).not.toContain('discriminator');
+            expect(serialized).not.toContain('oneOf');
+            expect(actionDef?.parameters?.required).toEqual(['payment']);
+            expect(
+              (actionDef?.parameters?.properties as Record<string, { type?: string }>).tags.type,
+            ).toBe('array');
+          },
+        );
+
+        it('keeps action schemas unchanged for other providers', async () => {
+          const actionDef = await loadActionDefinition(Providers.OPENAI);
+
+          expect(actionDef?.parameters).toEqual(createActionDefs()[0].parameters);
+        });
+      });
+
       it('collects OAuth action tool names and strips the marker from emitted defs', async () => {
         const mockActionDefs: ActionToolDefinition[] = [
           {

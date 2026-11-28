@@ -525,13 +525,27 @@ export async function buildToolClassification(
       codeExecutionContext,
       params.gitIdentity,
     );
-    if (!definitionsOnly) additionalTools.push(ptcTool);
+    /**
+     * The PTC schema declares `uniqueItems` on `tool_manifest`, which Gemini/Vertex
+     * rejects with a 400, so it is sanitized like `tool_search`. The sanitizer builds a
+     * new object, and only this tool instance's `schema` is reassigned, so the SDK's
+     * shared schema stays intact for other providers.
+     */
+    const ptcParameters = (
+      isGoogle ? sanitizeGeminiSchema(ptcTool.schema as Record<string, unknown>) : ptcTool.schema
+    ) as LCTool['parameters'];
+    if (!definitionsOnly) {
+      if (isGoogle) {
+        ptcTool.schema = ptcParameters as typeof ptcTool.schema;
+      }
+      additionalTools.push(ptcTool);
+    }
 
     /** Add PTC definition for event-driven mode */
     toolDefinitions.push({
       name: BashProgrammaticToolCallingDefinition.name,
       description: ptcTool.description,
-      parameters: ptcTool.schema as LCTool['parameters'],
+      parameters: ptcParameters,
     });
     toolRegistry.set(BashProgrammaticToolCallingDefinition.name, {
       name: BashProgrammaticToolCallingDefinition.name,

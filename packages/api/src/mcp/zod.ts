@@ -544,6 +544,15 @@ const GEMINI_UNSUPPORTED_KEYS = new Set([
   'contentSchema',
   /** OpenAPI keyword emitted beside `oneOf` (e.g. Pydantic `Field(discriminator=...)`). */
   'discriminator',
+  /** JSON Schema 2019-09+ applicators and conditionals with no Gemini `Schema` field. */
+  'unevaluatedProperties',
+  'unevaluatedItems',
+  'contains',
+  'minContains',
+  'maxContains',
+  'if',
+  'then',
+  'else',
 ]);
 
 /**
