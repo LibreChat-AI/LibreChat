@@ -6,6 +6,7 @@ import {
   redactMessage,
   stripHeavyErrorFields,
 } from './parsers';
+import { READS_PER_CHAR, reads } from './test-helpers';
 
 const SPLAT_SYMBOL = Symbol.for('splat');
 const MESSAGE_SYMBOL = Symbol.for('message');
@@ -99,7 +100,7 @@ describe('redactMessage', () => {
     expect(redactMessage('user jane/@example.com ok')).toBe('user [REDACTED_EMAIL] ok');
     expect(redactMessage('/home/jane@example.com/file.js')).toBe('[REDACTED_EMAIL]');
     expect(redactMessage('see https://social.example/@jane.doe ok')).toBe(
-      'see [REDACTED_EMAIL] ok',
+      'see https://[REDACTED_EMAIL] ok',
     );
   });
 
@@ -253,9 +254,7 @@ describe('redactMessage', () => {
     expect(redactMessage('-redis://:pw0rd@redis:6379')).not.toContain('pw0rd');
     expect(redactMessage('...postgresql://user:pw0rd@db/database')).not.toContain('pw0rd');
     for (const input of ['a-'.repeat(50000), '\\"a'.repeat(30000), 'u@['.repeat(30000)]) {
-      const started = Date.now();
-      redactMessage(input);
-      expect(Date.now() - started).toBeLessThan(500);
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
     }
   });
 
@@ -485,10 +484,9 @@ describe('redactMessage', () => {
     expect(redactMessage('GET /v1?email=jane%40example.com&x=1')).toBe(
       'GET /v1?email=[REDACTED_EMAIL]&x=1',
     );
-    const started = Date.now();
-    redactMessage('a'.repeat(100000));
-    redactMessage('a%40'.repeat(30000));
-    expect(Date.now() - started).toBeLessThan(500);
+    for (const input of ['a'.repeat(100000), 'a%40'.repeat(30000)]) {
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
+    }
     const wide = Object.fromEntries(
       Array.from({ length: 20000 }, (_, index) => [`n${index}`, index]),
     );
@@ -553,10 +551,9 @@ describe('redactMessage', () => {
     expect(redactMessage(`?e=${'a'.repeat(400)}%40${'b'.repeat(300)}.com&x=1`)).toBe(
       '?e=[REDACTED_EMAIL]&x=1',
     );
-    const started = Date.now();
-    redactMessage('a%40'.repeat(50000));
-    redactMessage('a'.repeat(100000));
-    expect(Date.now() - started).toBeLessThan(500);
+    for (const input of ['a%40'.repeat(50000), 'a'.repeat(100000)]) {
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
+    }
     const out = runRedactFormat({
       level: 'info',
       message: 'm',
@@ -619,11 +616,9 @@ describe('redactMessage', () => {
   });
 
   it('keeps encoded-email matching linear at repeated URL boundaries', () => {
-    const started = Date.now();
-    redactMessage('?a%40'.repeat(30000));
-    redactMessage('&a%40'.repeat(30000));
-    redactMessage('/a%40'.repeat(30000));
-    expect(Date.now() - started).toBeLessThan(500);
+    for (const input of ['?a%40'.repeat(30000), '&a%40'.repeat(30000), '/a%40'.repeat(30000)]) {
+      expect(reads(() => redactMessage(input))).toBeLessThan(input.length * READS_PER_CHAR);
+    }
   });
 
   it('shadows an inherited throwing serializer getter on nested errors', () => {
@@ -697,7 +692,7 @@ describe('redactMessage', () => {
     expect(JSON.stringify(out)).not.toContain('secretcanary');
   });
 
-  it('stays fast on adversarial 100k inputs for every redaction path', () => {
+  it('keeps adversarial 100k inputs linear on every redaction path', () => {
     const inputs = [
       'a@'.repeat(50000),
       `a@${'a.'.repeat(50000)}`,
@@ -708,10 +703,12 @@ describe('redactMessage', () => {
       'Bearer '.repeat(14000),
     ];
     for (const input of inputs) {
-      const started = Date.now();
-      runRedactFormat({ level: 'info', message: input });
-      runRedactFormat({ level: 'info', message: 'm', [input]: 1, nested: { [input]: input } });
-      expect(Date.now() - started).toBeLessThan(1000);
+      const work = reads(() => {
+        runRedactFormat({ level: 'info', message: input });
+        runRedactFormat({ level: 'info', message: 'm', [input]: 1, nested: { [input]: input } });
+      });
+      /** The message, both keys and the nested value: four copies of the input at most. */
+      expect(work).toBeLessThan(4 * input.length * READS_PER_CHAR);
     }
   });
 
@@ -1087,6 +1084,162 @@ describe('redactFormat', () => {
     expect(splat[0].cause?.message).toBe('Bearer [REDACTED]');
     expect(Object.prototype.propertyIsEnumerable.call(splat[0], 'cause')).toBe(false);
     expect(cause.message).toBe('Bearer cause-secret');
+  });
+});
+
+describe('long strings keep every address whole across the cut', () => {
+  const CAP = 8192;
+  const addresses = [
+    'janedoe@example.com',
+    '"jane doe"@example.com',
+    JSON.stringify('"jane doe"@example.com'),
+    JSON.stringify('"jane\\"doe x"@example.com'),
+    JSON.stringify(JSON.stringify('"jane doe"@example.com')),
+    'jane%2540example.com',
+    'jane@[192.0.2.1]',
+    'ja\u200bne@example.com',
+  ];
+
+  it.each(addresses)('masks %j at every offset around the cut', (address) => {
+    for (let offset = CAP - address.length - 1; offset <= CAP + 1; offset++) {
+      for (const lead of [' '.repeat(offset), `note: " ${' '.repeat(offset - 8)}`]) {
+        for (const tail of [` ${'y '.repeat(3000)}`, `/${'x'.repeat(20000)}`]) {
+          const out = String(
+            runRedactFormat({ level: 'info', message: lead + address + tail }).message,
+          );
+          expect(out).not.toMatch(/ja\u200b?ne|doe/);
+          expect(out).toContain('truncated');
+        }
+      }
+    }
+  });
+
+  it('keeps an address whose quoted local part holds the token the window edge splits', () => {
+    const input = `${' '.repeat(CAP - 40)}"jane doe"@example.com/${'x'.repeat(20000)}`;
+    const out = String(runRedactFormat({ level: 'info', message: input }).message);
+    expect(out).not.toMatch(/jane|doe/);
+    expect(out).toContain('[REDACTED_EMAIL]');
+  });
+
+  it('masks an address that a shrunken token mask pulls into the kept text', () => {
+    const input = `x sk-${'a'.repeat(11000)} "jane doe"@example.com/${'z'.repeat(5000)} ${'w '.repeat(5000)}`;
+    const out = String(runRedactFormat({ level: 'info', message: input }).message);
+    expect(out).not.toMatch(/jane|doe|aaaa/);
+  });
+
+  it('reads on past a shrunken window so the kept text still fills the cap', () => {
+    const input = `Cookie: ${'c'.repeat(5000)}\n${'word '.repeat(4000)}`;
+    const out = String(runRedactFormat({ level: 'info', message: input }).message);
+    expect(out).not.toContain('cccc');
+    expect(out.indexOf('... [truncated')).toBe(CAP);
+  });
+});
+
+describe('redaction fails closed', () => {
+  it('returns the placeholder for a value that is not a string', () => {
+    const value = { toString: () => 'jane@example.com' } as unknown as string;
+    expect(redactMessage(value)).toBe('[REDACTED]');
+    expect(redactMessage(42 as unknown as string)).toBe('[REDACTED]');
+  });
+
+  it('returns the placeholder when a scan throws', () => {
+    const replace = String.prototype.replace;
+    const spy = jest.spyOn(String.prototype, 'replace').mockImplementation(function (
+      this: string,
+      ...args: Parameters<typeof replace>
+    ) {
+      if (this.includes('canary')) {
+        throw new RangeError('Invalid string length');
+      }
+      return replace.apply(this, args);
+    });
+    try {
+      expect(redactMessage('canary jane@example.com')).toBe('[REDACTED]');
+      const long = `canary ${'x '.repeat(5000)}jane@example.com`;
+      const info = runRedactFormat({ level: 'info', message: long });
+      expect(info.message).toBe('[REDACTED]');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('redacts a non-string Error message as a value and keeps the node budget', () => {
+    const error = new Error('boom');
+    Object.defineProperty(error, 'message', { value: { contact: 'jane@example.com' } });
+    const row = () =>
+      Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`n${index}`, 'x']));
+    const wide = Array.from({ length: 40 }, () =>
+      Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`k${index}`, row()])),
+    );
+    const info = runRedactFormat({ level: 'info', message: 'm', [SPLAT_SYMBOL]: [error, wide] });
+    const [redacted, bounded] = info[SPLAT_SYMBOL] as [Error, unknown];
+    expect(redacted).toBeInstanceOf(Error);
+    expect(redacted.message).toEqual({ contact: '[REDACTED_EMAIL]' });
+    expect(JSON.stringify(bounded)).toContain('[REDACTED]');
+  });
+
+  it('replaces an object with nothing readable left by the placeholder', () => {
+    const info = runRedactSplatFormat({
+      level: 'info',
+      message: 'result %O',
+      [SPLAT_SYMBOL]: [Promise.resolve('jane@example.com')],
+    });
+    expect(info.message).not.toContain('jane');
+    expect(info.message).toContain('[REDACTED]');
+  });
+
+  it('keeps only a redacted description of a symbol', () => {
+    const info = runRedactSplatFormat({
+      level: 'info',
+      message: 'kind %s',
+      [SPLAT_SYMBOL]: [Symbol('jane@example.com')],
+    });
+    expect(info.message).toBe('kind Symbol([REDACTED_EMAIL])');
+  });
+
+  it('replaces a reference back up the path with [Circular]', () => {
+    const loop: Record<string, unknown> = { contact: 'jane@example.com' };
+    loop.self = loop;
+    const map = new Map<string, unknown>([['contact', 'jane@example.com']]);
+    map.set('self', map);
+    const error = new Error('lookup failed for jane@example.com');
+    Object.defineProperty(error, 'cause', { value: error, enumerable: false });
+    const shared = { contact: 'bob@example.com' };
+    const info = runRedactFormat({
+      level: 'debug',
+      message: 'm',
+      loop,
+      shared: { a: shared, b: shared },
+      [SPLAT_SYMBOL]: [map, error],
+    });
+    const out = info.loop as Record<string, unknown>;
+    expect(out).toEqual({ contact: '[REDACTED_EMAIL]', self: '[Circular]' });
+    const [mapOut, errorOut] = info[SPLAT_SYMBOL] as [Map<string, unknown>, Error];
+    expect(mapOut.get('self')).toBe('[Circular]');
+    expect((errorOut as Error & { cause: unknown }).cause).toBe('[Circular]');
+    const sharedOut = info.shared as { a: unknown; b: unknown };
+    expect(sharedOut.a).toBe(sharedOut.b);
+    expect(sharedOut.a).toEqual({ contact: '[REDACTED_EMAIL]' });
+    expect(() => JSON.stringify(info)).not.toThrow();
+    const line = runFormatter({
+      ...(info as FormatterInfo),
+      [SPLAT_SYMBOL]: [{ loop: info.loop }],
+    });
+    expect(line).not.toContain('LOGGER PARSING ERROR');
+    expect(line).not.toContain('jane');
+  });
+
+  it('turns a record whose redaction throws into its level and a placeholder', () => {
+    const record = new Proxy(
+      { level: 'warn', message: 'login failed for jane@example.com' },
+      {
+        ownKeys() {
+          throw new Error('nope');
+        },
+      },
+    );
+    const out = redactFormat().transform(record as unknown as RedactInfo) as RedactInfo;
+    expect(out).toEqual({ level: 'warn', message: '[REDACTED]' });
   });
 });
 

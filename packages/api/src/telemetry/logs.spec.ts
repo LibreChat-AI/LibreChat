@@ -47,6 +47,26 @@ describe('logs transport lifecycle', () => {
     );
   });
 
+  it('redacts email addresses and tokens before a record is exported', () => {
+    attachLogsTransport(getTelemetryConfig({ OTEL_LOGS_ENABLED: 'true' }));
+    const transport = getOtelTransports()[0];
+    const record = transport?.format?.transform(
+      {
+        level: 'error',
+        [Symbol.for('level')]: 'error',
+        message: 'login failed for jane.doe@example.com',
+        contact: '"jane doe"@example.com',
+        url: '/v1?e=jane%2540example.com',
+        auth: 'Bearer secretcanary',
+      },
+      {},
+    );
+
+    expect(record).toBeTruthy();
+    expect(JSON.stringify(record)).not.toMatch(/jane|secretcanary/);
+    expect(JSON.stringify(record)).toContain('[REDACTED_EMAIL]');
+  });
+
   it('removes the transport from the shared logger on detach', () => {
     attachLogsTransport(getTelemetryConfig({ OTEL_LOGS_ENABLED: 'true' }));
     const transport = getOtelTransports()[0];
