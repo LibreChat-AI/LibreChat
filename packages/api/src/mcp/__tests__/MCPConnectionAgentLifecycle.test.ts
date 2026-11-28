@@ -23,6 +23,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { Server as McpServerCore } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Socket } from 'net';
 import { MCPConnection } from '~/mcp/connection';
@@ -97,6 +98,16 @@ interface TestServer {
   close: () => Promise<void>;
 }
 
+const SESSION_ID_LESS_TEST_TOOL = {
+  name: 'sessionless-post-tool',
+  description: 'Proves the Streamable HTTP POST channel remains usable',
+  inputSchema: { type: 'object' as const, properties: {} },
+};
+
+function createStreamableClientTransport(sessionId?: string) {
+  return new StreamableHTTPClientTransport(new URL('http://127.0.0.1:1/mcp'), { sessionId });
+}
+
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -157,6 +168,80 @@ async function createStreamableServer(): Promise<TestServer> {
       await Promise.all(closing);
       await destroySockets();
     },
+  };
+}
+
+async function createSessionIdLessStreamableServer({
+  getStatus = 502,
+  hangGet = false,
+  toolsListErrorBody,
+  toolsListErrorStatus = 502,
+}: {
+  getStatus?: number;
+  hangGet?: boolean;
+  toolsListErrorBody?: string;
+  toolsListErrorStatus?: number;
+} = {}): Promise<TestServer> {
+  const httpServer = http.createServer(async (req, res) => {
+    if (req.method === 'GET') {
+      if (hangGet) {
+        return;
+      }
+      res.writeHead(getStatus, { 'Content-Type': 'text/plain' }).end('optional SSE unavailable');
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.writeHead(405).end();
+      return;
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const message = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+      id?: string | number;
+      method?: string;
+      params?: { protocolVersion?: string };
+    };
+
+    if (message.method === 'notifications/initialized') {
+      res.writeHead(202).end();
+      return;
+    }
+
+    if (message.method === 'tools/list' && toolsListErrorBody != null) {
+      res.writeHead(toolsListErrorStatus, { 'Content-Type': 'text/plain' }).end(toolsListErrorBody);
+      return;
+    }
+
+    const result = (() => {
+      if (message.method === 'initialize') {
+        return {
+          protocolVersion: message.params?.protocolVersion ?? '2025-03-26',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'test-sessionless', version: '0.0.1' },
+        };
+      }
+      if (message.method === 'ping') {
+        return {};
+      }
+      return { tools: [SESSION_ID_LESS_TEST_TOOL] };
+    })();
+
+    res
+      .writeHead(200, { 'Content-Type': 'application/json' })
+      .end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+  });
+
+  const destroySockets = trackSockets(httpServer);
+  const port = await getFreePort();
+  await new Promise<void>((resolve) => httpServer.listen(port, '127.0.0.1', resolve));
+
+  return {
+    url: `http://127.0.0.1:${port}/`,
+    close: destroySockets,
   };
 }
 
@@ -524,7 +609,7 @@ describe('Regression: old per-request Agent pattern leaks agents', () => {
   });
 });
 
-describe('MCPConnection SSE 404 handling – session-aware', () => {
+describe('MCPConnection session-ID-aware SSE failure handling', () => {
   function makeTransportStub(sessionId?: string) {
     return {
       ...(sessionId != null ? { sessionId } : {}),
@@ -547,13 +632,16 @@ describe('MCPConnection SSE 404 handling – session-aware', () => {
 
   function fireSSEError(
     conn: MCPConnection,
-    transport: ReturnType<typeof makeTransportStub>,
+    transport: ReturnType<typeof makeTransportStub> | StreamableHTTPClientTransport,
     code = 404,
   ): Error {
     (
       conn as unknown as { setupTransportErrorHandlers: (t: unknown) => void }
     ).setupTransportErrorHandlers(transport);
-    const sseError = Object.assign(new Error('Failed to open SSE stream'), { code });
+    const sseError = Object.assign(
+      new Error('Streamable HTTP error: Failed to open SSE stream: test failure'),
+      { code },
+    );
     transport.onerror?.(sseError);
     return sseError;
   }
@@ -563,18 +651,20 @@ describe('MCPConnection SSE 404 handling – session-aware', () => {
     mockLogger.error.mockClear();
   });
 
-  it('silently ignores a 404 when no session is established (backwards-compat probe)', () => {
+  it('silently ignores a 404 when no session ID is assigned (backwards-compat probe)', () => {
     const conn = makeConn();
     const transport = makeTransportStub();
     const emitSpy = jest.spyOn(conn, 'emit');
 
     fireSSEError(conn, transport);
 
-    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('no session'));
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no server-assigned session ID'),
+    );
     expect(emitSpy).not.toHaveBeenCalledWith('connectionChange', 'error');
   });
 
-  it('falls through on a 404 when a session already exists, triggering reconnection', () => {
+  it('falls through on a 404 when a session ID exists, triggering reconnection', () => {
     const conn = makeConn();
     const transport = makeTransportStub('existing-session-id');
     const emitSpy = jest.spyOn(conn, 'emit');
@@ -585,7 +675,7 @@ describe('MCPConnection SSE 404 handling – session-aware', () => {
     expect(emitSpy).toHaveBeenCalledWith('connectionChange', 'error');
   });
 
-  it('treats an empty-string sessionId as no session (guards against falsy sessionId)', () => {
+  it('treats an empty-string sessionId as no assigned session ID', () => {
     const conn = makeConn();
     const transport = makeTransportStub('');
     const emitSpy = jest.spyOn(conn, 'emit');
@@ -595,18 +685,20 @@ describe('MCPConnection SSE 404 handling – session-aware', () => {
     expect(emitSpy).not.toHaveBeenCalledWith('connectionChange', 'error');
   });
 
-  it('treats a 406 before session establishment as an unsupported optional SSE stream', () => {
+  it('treats a 406 before a session ID is assigned as an unsupported optional SSE stream', () => {
     const conn = makeConn();
     const transport = makeTransportStub();
     const emitSpy = jest.spyOn(conn, 'emit');
 
     fireSSEError(conn, transport, 406);
 
-    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('no session'));
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no server-assigned session ID'),
+    );
     expect(emitSpy).not.toHaveBeenCalledWith('connectionChange', 'error');
   });
 
-  it('falls through on a 406 when a session already exists', () => {
+  it('falls through on a 406 when a session ID exists', () => {
     const conn = makeConn();
     const transport = makeTransportStub('existing-session-id');
     const emitSpy = jest.spyOn(conn, 'emit');
@@ -616,6 +708,40 @@ describe('MCPConnection SSE 404 handling – session-aware', () => {
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('session lost'));
     expect(emitSpy).toHaveBeenCalledWith('connectionChange', 'error');
   });
+  it('does not suppress an OAuth challenge on an optional stream before a session ID is assigned', async () => {
+    const conn = makeConn();
+    const transport = createStreamableClientTransport();
+    conn.emit('connectionChange', 'connected');
+    const emitSpy = jest.spyOn(conn, 'emit');
+
+    const oauthError = fireSSEError(conn, transport, 401);
+
+    expect(emitSpy).toHaveBeenCalledWith('oauthError', expect.any(Error));
+    expect(emitSpy).not.toHaveBeenCalledWith('connectionChange', 'error');
+    expect(await conn.isConnected()).toBe(false);
+    expect(conn.getLastConnectionCheckError()).toBe(oauthError);
+  });
+
+  it('still reconnects when a 502 SSE failure belongs to an active session ID', () => {
+    const conn = makeConn();
+    const transport = createStreamableClientTransport('existing-session-id');
+    const emitSpy = jest.spyOn(conn, 'emit');
+
+    fireSSEError(conn, transport, 502);
+
+    expect(emitSpy).toHaveBeenCalledWith('connectionChange', 'error');
+  });
+
+  it('does not suppress a 502 failure for the legacy SSE transport', () => {
+    const conn = makeConn();
+    const transport = makeTransportStub();
+    const emitSpy = jest.spyOn(conn, 'emit');
+
+    fireSSEError(conn, transport, 502);
+
+    expect(emitSpy).toHaveBeenCalledWith('connectionChange', 'error');
+  });
+
   it('marks an OAuth-challenged connection unusable without blindly reconnecting', async () => {
     const conn = makeConn();
     const transport = makeTransportStub();
@@ -651,7 +777,18 @@ describe('MCPConnection SSE stream disconnect handling', () => {
     });
   }
 
-  function bindErrorHandler(conn: MCPConnection, transport: ReturnType<typeof makeTransportStub>) {
+  function makeStreamableConn() {
+    return new MCPConnection({
+      serverName: 'test-streamable-post-failure',
+      serverConfig: { url: 'http://127.0.0.1:1/mcp', type: 'streamable-http' },
+      useSSRFProtection: false,
+    });
+  }
+
+  function bindErrorHandler(
+    conn: MCPConnection,
+    transport: ReturnType<typeof makeTransportStub> | StreamableHTTPClientTransport,
+  ) {
     (
       conn as unknown as { setupTransportErrorHandlers: (t: unknown) => void }
     ).setupTransportErrorHandlers(transport);
@@ -704,12 +841,88 @@ describe('MCPConnection SSE stream disconnect handling', () => {
   });
 
   it('still escalates non-SSE-stream errors (e.g. POST failures)', () => {
-    const conn = makeConn();
-    const transport = makeTransportStub();
+    const conn = makeStreamableConn();
+    const transport = createStreamableClientTransport();
     const emitSpy = jest.spyOn(conn, 'emit');
     bindErrorHandler(conn, transport);
 
     transport.onerror?.(new Error('Streamable HTTP error: Error POSTing to endpoint: 500'));
+
+    expect(emitSpy).toHaveBeenCalledWith('connectionChange', 'error');
+  });
+});
+
+describe('MCPConnection optional session-ID-less SSE GET failures', () => {
+  let server: TestServer;
+  let conn: MCPConnection | null;
+
+  afterEach(async () => {
+    MCPConnection.clearCooldown('test-sessionless-sse');
+    await safeDisconnect(conn);
+    conn = null;
+    jest.restoreAllMocks();
+    await server.close();
+  });
+
+  beforeEach(() => {
+    mockLogger.warn.mockClear();
+    mockLogger.error.mockClear();
+  });
+
+  it('keeps the POST channel usable when the optional GET returns 502 without a session ID', async () => {
+    server = await createSessionIdLessStreamableServer();
+    conn = new MCPConnection({
+      serverName: 'test-sessionless-sse',
+      serverConfig: { type: 'streamable-http', url: server.url },
+      useSSRFProtection: false,
+    });
+    const emitSpy = jest.spyOn(conn, 'emit');
+
+    await conn.connect();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no server-assigned session ID'),
+    );
+    expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+    expect(emitSpy).not.toHaveBeenCalledWith('connectionChange', 'error');
+    await expect(conn.fetchTools()).resolves.toEqual([SESSION_ID_LESS_TEST_TOOL]);
+  });
+
+  it('keeps the POST channel usable when the optional GET times out before response headers', async () => {
+    server = await createSessionIdLessStreamableServer({ hangGet: true });
+    conn = new MCPConnection({
+      serverName: 'test-sessionless-sse',
+      serverConfig: { type: 'streamable-http', url: server.url, timeout: 100 },
+      useSSRFProtection: false,
+    });
+    const emitSpy = jest.spyOn(conn, 'emit');
+
+    await conn.connect();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no server-assigned session ID'),
+    );
+    expect(emitSpy).not.toHaveBeenCalledWith('connectionChange', 'error');
+    await expect(conn.fetchTools()).resolves.toEqual([SESSION_ID_LESS_TEST_TOOL]);
+  });
+
+  it('does not mistake a POST error body for an optional SSE GET failure', async () => {
+    server = await createSessionIdLessStreamableServer({
+      getStatus: 405,
+      toolsListErrorBody: 'Failed to open SSE stream',
+      toolsListErrorStatus: 400,
+    });
+    conn = new MCPConnection({
+      serverName: 'test-sessionless-sse',
+      serverConfig: { type: 'streamable-http', url: server.url },
+      useSSRFProtection: false,
+    });
+    const emitSpy = jest.spyOn(conn, 'emit');
+
+    await conn.connect();
+    await expect(conn.fetchTools()).resolves.toEqual([]);
 
     expect(emitSpy).toHaveBeenCalledWith('connectionChange', 'error');
   });
