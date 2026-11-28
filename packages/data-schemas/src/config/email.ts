@@ -281,30 +281,42 @@ function quoted(text: string, close: number, bound: number): Word | undefined {
 }
 
 /**
- * Start of the comment closed at `close`, which may hold an at sign, or -1 at a quote, a line
- * break or another closing parenthesis. Nesting is not followed, so each scan stops at the
- * previous one; a nested comment is masked through the token fallback in `findEmails`.
+ * The opening parenthesis of every closing one, nested comments included, in one forward pass.
+ * A comment may hold an at sign or whitespace but not a quote or a line break, so it never
+ * pairs parentheses across JSON strings or lines.
  */
-function comment(text: string, close: number, bound: number): number {
-  for (let cursor = close - 1; cursor >= bound; cursor--) {
-    const code = text.charCodeAt(cursor);
+function comments(text: string): Map<number, number> {
+  const pairs = new Map<number, number>();
+  const opens: number[] = [];
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
     if (code === OPEN) {
-      return cursor;
-    }
-    if (code === CLOSE || code === QUOTE || code === CR || code === LF) {
-      return -1;
+      opens.push(index);
+    } else if (code === CLOSE) {
+      const open = opens.pop();
+      if (open !== undefined) {
+        pairs.set(index, open);
+      }
+    } else if (code === QUOTE || code === CR || code === LF) {
+      opens.length = 0;
     }
   }
-  return -1;
+  return pairs;
 }
 
 /**
  * Where the local part that ends at `at` starts. Plain characters are read back to `floor` (the
- * previous at sign or mask) and at most MAX_PART units; a quoted word or comment may reach
- * further, since quotes can hold an at sign. `units` counts what was read besides format
- * characters, so 0 means the part is empty.
+ * previous at sign or mask) and at most MAX_PART units; a quoted word or a comment (`opening`
+ * gives its opening parenthesis) may reach further, since either can hold an at sign. `units`
+ * counts what was read besides format characters, so 0 means the part is empty.
  */
-function local(text: string, at: number, floor: number, encoded: boolean): Part {
+function local(
+  text: string,
+  at: number,
+  floor: number,
+  encoded: boolean,
+  opening: (close: number) => number,
+): Part {
   const bound = Math.max(0, at - MAX_PART);
   /** Once a quoted word or comment reads past the floor, the part may run on to the bound. */
   let limit = Math.max(floor, bound);
@@ -344,8 +356,8 @@ function local(text: string, at: number, floor: number, encoded: boolean): Part 
       continue;
     }
     if (point === CLOSE) {
-      const open = comment(text, start - 1, bound);
-      if (open < 0) {
+      const open = opening(start - 1);
+      if (open < bound) {
         break;
       }
       start = open;
@@ -584,6 +596,11 @@ export function findEmails(text: string): Span[] {
   if (!hasAtSign(text)) {
     return spans;
   }
+  let pairs: Map<number, number> | undefined;
+  const opening = (close: number): number => {
+    pairs ??= comments(text);
+    return pairs.get(close) ?? -1;
+  };
   /** End of the previous at sign, the start of its local part, and whether it was masked. */
   let mark = 0;
   let origin = 0;
@@ -599,7 +616,7 @@ export function findEmails(text: string): Span[] {
     const end = index + size;
     const last = spans.length > 0 ? spans[spans.length - 1] : undefined;
     const floor = masked ? (last?.end ?? 0) : mark;
-    const part = local(text, index, floor, encoded);
+    const part = local(text, index, floor, encoded, opening);
     let start = part.start;
     let units = part.units;
     /** Nothing the grammar reads as a local part (a stray parenthesis, a nested comment, a colon):

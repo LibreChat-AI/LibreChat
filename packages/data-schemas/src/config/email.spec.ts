@@ -168,6 +168,10 @@ describe('maskEmails coverage contract', () => {
     expect(maskEmails(input)).toBe(expected);
   });
 
+  it('never pairs comment parentheses across JSON strings', () => {
+    expect(maskEmails('{"a":"(x","b":"y)@example.com"}')).toBe(`{"a":"(x","b":"${MASK}"}`);
+  });
+
   it('keeps the separator of a comma or semicolon separated list', () => {
     expect(maskEmails('a@b.com,c.d@e.com;f@g.com')).toBe(`${MASK},${MASK};${MASK}`);
   });
@@ -195,6 +199,8 @@ describe('maskEmails coverage contract', () => {
     ['an at sign in a comment', 'alice(work@home)@example.com', MASK],
     ['an address in a comment', 'alice(work@home.com)@example.com', MASK],
     ['an at sign in a nested comment', 'alice(a(b@c)d)@example.com', MASK],
+    ['a nested comment with spaces', 'jane(outer (inner))@example.com', MASK],
+    ['a comment with spaces and an at sign', 'jane(a (b@c) d)@example.com ok', `${MASK} ok`],
     ['a colon before an at sign glued to the next', 'alice:work@home)@example.com', MASK],
   ])('never leaves text glued to an address outside the mask: %s', (_label, input, expected) => {
     expect(maskEmails(input)).toBe(expected);
@@ -264,6 +270,7 @@ describe('maskEmails bounds', () => {
       '(a)@'.repeat(30_000),
       'a)@'.repeat(30_000),
       `${'(a@'.repeat(30_000)})@example.com`,
+      `${'('.repeat(30_000)}${')@'.repeat(30_000)}`,
       'a%40'.repeat(50_000),
       '?a%40'.repeat(30_000),
       'a%2540'.repeat(20_000),
