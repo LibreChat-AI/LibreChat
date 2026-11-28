@@ -1,16 +1,19 @@
 import { klona } from 'klona';
 import winston from 'winston';
 import type { TraverseContext } from '../utils/object-traverse';
+import { MAX_SPAN, findEmails, hasAtSign, maskEmails, maskSpans } from './email';
 import { appendLogContext } from './requestLogContext';
 import { SYSTEM_TENANT_ID } from './tenantContext';
 import traverse from '../utils/object-traverse';
 
 const SPLAT_SYMBOL = Symbol.for('splat');
 const MESSAGE_SYMBOL = Symbol.for('message');
+const LEVEL_SYMBOL = Symbol.for('level');
 const CONSOLE_JSON_STRING_LENGTH: number =
   parseInt(process.env.CONSOLE_JSON_STRING_LENGTH || '', 10) || 255;
 const DEBUG_MESSAGE_LENGTH: number = parseInt(process.env.DEBUG_MESSAGE_LENGTH || '', 10) || 150;
 const REDACTED_VALUE = '[REDACTED]';
+const CIRCULAR_VALUE = '[Circular]';
 const REDACTION_TRUNCATED_KEY = '__redaction_truncated__';
 const MAX_REDACTION_DEPTH = 8;
 const MAX_REDACTION_ENTRIES = 50;
@@ -58,28 +61,24 @@ const sensitiveKeys: RegExp[] = [
   /(:\/\/)[^/\s:@]*:[^/\s@]+(?=@)/g,
 ];
 
-/**
- * Matches a whole delimiter-bounded token that holds an address. The lookbehind lets the scan start
- * only at a token boundary, so long non-email text is scanned once instead of once per character.
- * An `@` between path separators (`node_modules/@scope/pkg/...`) names a scoped package in a file
- * path or stack frame, not an address, so frame locations survive.
- */
-const EMAIL_PATTERN =
-  /(?:(?<!\\)\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"|(?<!\\)"(?:[^"\\\r\n]|\\.)*"|(?<![^\s<>[\],;"])[^\s<>[\],;"]+)(?!(?<=[/\\])@[^\s<>[\],;"@/\\]+[/\\])@(?:\[[^\]\s@]+\]|[^\s<>[\],;"@]+\.[^\s<>[\],;"@]+)/gu;
 /** Set while redacting splat arguments at levels whose later format strips heavy error fields. */
 let skipHeavyErrorFields = false;
-/** URL-encoded addresses (`user%40host.tld`), anchored at a token start so scans stay linear. */
-const ENCODED_EMAIL_PATTERN =
-  /(?<![^\s<>"&=?/#])(?:(?!%(?:25)*40)[^\s<>"&=?/#])+%(?:25)*40[^\s<>"&=?/#]+(?:\.|%(?:25)*2e)[^\s<>"&=?/#]+/giu;
-const REDACTION_WINDOW_SLACK = 1024;
-const REDACTED_EMAIL_VALUE = '[REDACTED_EMAIL]';
+/** Objects being redacted on the current path, so a reference back to one becomes `[Circular]`. */
+const redactionPath = new Set<object>();
 
 const sensitiveMetadataKey =
   /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|appid|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password|assertion|client[-_]?assertion|client[-_]?secret|code[-_]?verifier|credential|signature|connection[-_]?string)$/i;
 const errorStringProperties = new Set(['name', 'message', 'stack']);
 
+function redactTokens(str: string): string {
+  return sensitiveKeys.reduce((current, pattern) => current.replace(pattern, '$1[REDACTED]'), str);
+}
+
 /**
  * Redacts sensitive information from a console message and trims it to a specified length if provided.
+ * Tokens, keys, cookies and URI userinfo go first, then email addresses (see `./email` for what
+ * that guarantees). It fails closed: a value that is not a string, or a scan that throws, yields
+ * `[REDACTED]` rather than the raw text.
  * @param str - The console message to be redacted.
  * @param trimLength - The optional length at which to trim the redacted message.
  * @returns The redacted and optionally trimmed console message.
@@ -89,10 +88,12 @@ function redactMessage(str: string, trimLength?: number): string {
     return '';
   }
 
-  const redacted = sensitiveKeys
-    .reduce((currentMessage, pattern) => currentMessage.replace(pattern, '$1[REDACTED]'), str)
-    .replace(EMAIL_PATTERN, REDACTED_EMAIL_VALUE)
-    .replace(ENCODED_EMAIL_PATTERN, REDACTED_EMAIL_VALUE);
+  let redacted: string;
+  try {
+    redacted = typeof str === 'string' ? maskEmails(redactTokens(str)) : REDACTED_VALUE;
+  } catch {
+    redacted = REDACTED_VALUE;
+  }
 
   if (trimLength !== undefined && redacted.length > trimLength) {
     return `${redacted.substring(0, trimLength)}...`;
@@ -101,57 +102,62 @@ function redactMessage(str: string, trimLength?: number): string {
   return redacted;
 }
 
-/** Whitespace and angle brackets only: commas, quotes and brackets can sit inside one token. */
-const EMAIL_TOKEN_DELIMITER = /[\s<>]/u;
-/** Completed addresses and escaped (serialized) quotes are skipped; only a lone plain quote is counted. */
-const QUOTE_OR_ADDRESS =
-  /\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"@|\\"|"(?:[^"\\\r\n]|\\.)*"@|"/gu;
+/** Whitespace and angle brackets end a token; one cut by the window edge is dropped. */
+const TOKEN_DELIMITER = /[\s<>]/u;
 
-/** Drops a token cut by the window edge: its terminator is unseen, so no pattern could match it. */
-function trimUnfinishedToken(full: string, window: string): string {
-  if (window.length === full.length) {
-    return window;
-  }
-  let end = window.length;
-  if (!EMAIL_TOKEN_DELIMITER.test(full[end])) {
-    while (end > 0 && !EMAIL_TOKEN_DELIMITER.test(window[end - 1])) {
-      end--;
+function lastTokenStart(text: string): number {
+  for (let index = text.length - 1; index >= 0; index--) {
+    if (TOKEN_DELIMITER.test(text[index])) {
+      return index + 1;
     }
   }
-  const trimmed = window.substring(0, end);
-  let quotes = 0;
-  let lastOpen = -1;
-  for (const match of trimmed.matchAll(QUOTE_OR_ADDRESS)) {
-    if (match[0] === '"') {
-      quotes++;
-      lastOpen = match.index;
+  return 0;
+}
+
+/**
+ * Redacts a string longer than the cap. The window reaches MAX_SPAN past the cap, the widest one
+ * address can be, so every address that reaches the kept text is masked whole. Past that point
+ * only complete text is kept: the window's last MAX_SPAN units and the token its edge splits are
+ * dropped, unless a mask that starts earlier covers them. Token masks shrink the window, so it is
+ * read on once by what they removed.
+ */
+function redactLongString(str: string): string {
+  let size = MAX_REDACTION_STRING_LENGTH + MAX_SPAN;
+  let tokens = redactTokens(str.substring(0, size));
+  if (tokens.length < size && str.length > size) {
+    size += size - tokens.length;
+    tokens = redactTokens(str.substring(0, size));
+  }
+  const spans = findEmails(tokens);
+  let cut = tokens.length;
+  if (str.length > size) {
+    cut = Math.max(0, tokens.length - MAX_SPAN);
+    if (!TOKEN_DELIMITER.test(str[size])) {
+      cut = Math.min(cut, lastTokenStart(tokens));
+    }
+    const split = spans.find((span) => span.start < cut && cut < span.end);
+    if (split !== undefined) {
+      cut = split.end;
     }
   }
-  /** An odd count of quotes outside completed addresses means the cut fell inside a quoted local. */
-  return quotes % 2 === 1 ? trimmed.substring(0, lastOpen) : trimmed;
+  const kept = maskSpans(tokens, spans, cut).substring(0, MAX_REDACTION_STRING_LENGTH);
+  return `${kept}... [truncated ${str.length - kept.length} chars]`;
 }
 
 function redactLogString(str: string): string {
+  if (typeof str !== 'string') {
+    return REDACTED_VALUE;
+  }
   /** A string costs one node plus one per 512 scanned characters, so wide payloads stay bounded. */
   redactionNodeBudget -= 1 + Math.floor(Math.min(str.length, MAX_REDACTION_STRING_LENGTH) / 512);
   if (redactionNodeBudget < 0) {
     return REDACTED_VALUE;
   }
-  if (str.length <= MAX_REDACTION_STRING_LENGTH) {
-    return redactMessage(str);
+  try {
+    return str.length <= MAX_REDACTION_STRING_LENGTH ? redactMessage(str) : redactLongString(str);
+  } catch {
+    return REDACTED_VALUE;
   }
-
-  /**
-   * Redacts a bounded window past the cutoff before cutting, so an address that straddles the limit
-   * is matched whole. The unfinished token at the window edge is dropped rather than kept unmatched.
-   */
-  const window = trimUnfinishedToken(
-    str,
-    str.substring(0, MAX_REDACTION_STRING_LENGTH + REDACTION_WINDOW_SLACK),
-  );
-  const redacted = redactMessage(window);
-  const kept = redacted.substring(0, MAX_REDACTION_STRING_LENGTH);
-  return `${kept}... [truncated ${str.length - kept.length} chars]`;
 }
 
 function isPlainRecord(value: object): value is Record<string, unknown> {
@@ -165,7 +171,7 @@ function redactLogKey(
   isUsed: (candidate: string) => boolean,
   cursors: Map<string, number>,
 ): string {
-  const base = /@|%(?:25)*40/i.test(key) ? redactLogString(key) : key;
+  const base = hasAtSign(key) ? redactLogString(key) : key;
   let candidate = base;
   let suffix = cursors.get(base) ?? 2;
   while (isUsed(candidate)) {
@@ -191,17 +197,20 @@ function redactRecordValue(
   return isSensitiveMetadataKey(key) ? REDACTED_VALUE : redactLogValue(value, seen, depth);
 }
 
+/** `name`, `message` and `stack` are strings by contract; anything else is redacted as a value. */
 function defineRedactedErrorProperty(
   error: Error & Record<string, unknown>,
   key: 'name' | 'message' | 'stack',
-  value: string | undefined,
+  value: unknown,
+  seen: WeakMap<object, unknown>,
+  depth: number,
 ): void {
   if (value === undefined) {
     return;
   }
 
   Object.defineProperty(error, key, {
-    value: redactLogString(value),
+    value: typeof value === 'string' ? redactLogString(value) : redactLogValue(value, seen, depth),
     writable: true,
     enumerable: false,
     configurable: true,
@@ -236,9 +245,9 @@ function redactErrorValue(error: Error, seen: WeakMap<object, unknown>, depth: n
   const cursors = new Map<string, number>();
   neutralizeSerializer(redacted);
 
-  defineRedactedErrorProperty(redacted, 'name', error.name);
-  defineRedactedErrorProperty(redacted, 'message', error.message);
-  defineRedactedErrorProperty(redacted, 'stack', error.stack);
+  defineRedactedErrorProperty(redacted, 'name', error.name, seen, depth + 1);
+  defineRedactedErrorProperty(redacted, 'message', error.message, seen, depth + 1);
+  defineRedactedErrorProperty(redacted, 'stack', error.stack, seen, depth + 1);
 
   Reflect.ownKeys(error).forEach((key) => {
     if (typeof key === 'string' && (errorStringProperties.has(key) || key === 'toJSON')) {
@@ -492,10 +501,17 @@ function redactNonPlainValue(
     return redactedEntries;
   }
 
+  /** Nothing readable is left (a Promise, an ArrayBuffer, an instance with only private state), and
+   * an inspector would still print its contents, so it becomes a placeholder. */
   const stringValue = getCustomStringValue(value);
-  return stringValue !== undefined ? redactLogString(stringValue) : value;
+  return stringValue !== undefined ? redactLogString(stringValue) : REDACTED_VALUE;
 }
 
+/**
+ * Redacts any value the logger may serialize. It fails closed: an error while reading becomes
+ * `[Unreadable]`, a reference back up the path `[Circular]`, a value past the depth or node budget
+ * `[REDACTED]`; numbers, booleans and bigints pass, and a symbol keeps only a redacted description.
+ */
 function redactLogValue(value: unknown, seen = new WeakMap<object, unknown>(), depth = 0): unknown {
   if (typeof value === 'string') {
     return redactLogString(value);
@@ -506,8 +522,16 @@ function redactLogValue(value: unknown, seen = new WeakMap<object, unknown>(), d
     return '[Function]';
   }
 
+  if (typeof value === 'symbol') {
+    return Symbol(redactLogString(value.description ?? ''));
+  }
+
   if (value === null || typeof value !== 'object') {
     return value;
+  }
+
+  if (redactionPath.has(value)) {
+    return CIRCULAR_VALUE;
   }
 
   const cached = seen.get(value);
@@ -519,11 +543,14 @@ function redactLogValue(value: unknown, seen = new WeakMap<object, unknown>(), d
     return REDACTED_VALUE;
   }
 
+  redactionPath.add(value);
   try {
     return redactObjectValue(value, seen, depth);
   } catch {
     /* revoked proxies and throwing traps must not abort the log call */
     return '[Unreadable]';
+  } finally {
+    redactionPath.delete(value);
   }
 }
 
@@ -595,14 +622,48 @@ function sanitizedCopy(
   return Object.assign(copy, fields) as winston.Logform.TransformableInfo;
 }
 
+/** What a record becomes when redaction itself fails: its level and a placeholder message. */
+function failedRecord(info: winston.Logform.TransformableInfo): winston.Logform.TransformableInfo {
+  const record: Record<string | symbol, unknown> = { level: 'error', message: REDACTED_VALUE };
+  try {
+    const { level } = info;
+    const symbolLevel = (info as Record<string | symbol, unknown>)[LEVEL_SYMBOL];
+    if (typeof level === 'string') {
+      record.level = level;
+    }
+    if (typeof symbolLevel === 'string') {
+      record[LEVEL_SYMBOL] = symbolLevel;
+    }
+  } catch {
+    /* an unreadable level keeps the error default */
+  }
+  return record as winston.Logform.TransformableInfo;
+}
+
+type Transform = (info: winston.Logform.TransformableInfo) => winston.Logform.TransformableInfo;
+
+/** Runs a redaction step; when it throws, the budget is restored and a placeholder record returned. */
+function failClosed(transform: Transform): Transform {
+  return (info) => {
+    const budget = redactionNodeBudget;
+    try {
+      return transform(info);
+    } catch {
+      redactionNodeBudget = budget;
+      return failedRecord(info);
+    }
+  };
+}
+
 /**
  * Redacts sensitive information from log messages at every level.
- * Note: Intentionally mutates the object.
+ * Note: Intentionally mutates the object. If redaction throws, the record becomes its level and a
+ * placeholder message (see `failClosed`) instead of reaching a transport, or the caller, unredacted.
  * @param info - The log information object.
  * @returns The modified log information object.
  */
 const redactFormat: winston.Logform.FormatWrap = winston.format(
-  (info: winston.Logform.TransformableInfo) => {
+  failClosed((info: winston.Logform.TransformableInfo) => {
     const infoRecord = info as Record<string | symbol, unknown>;
     const stripsHeavyFields = info.level === 'error' || info.level === 'warn';
     const outerBudget = redactionNodeBudget;
@@ -733,7 +794,7 @@ const redactFormat: winston.Logform.FormatWrap = winston.format(
       replaceFailed = true;
     }
     return replaceFailed ? sanitizedCopy(infoRecord, fields, redactedStack, redactedMessage) : info;
-  },
+  }),
 );
 
 /**

@@ -1,6 +1,7 @@
 import winston from 'winston';
 import 'winston-daily-rotate-file';
 import { getLogDirectory, logLevels, resolveConsoleLevel } from './utils';
+import { redactFormat } from './parsers';
 
 const { NODE_ENV, DEBUG_LOGGING = 'false', LOG_TO_FILE } = process.env;
 
@@ -23,7 +24,9 @@ const level = (): string => {
   return isDevelopment ? 'debug' : 'warn';
 };
 
+/** Meili errors can echo document fields, so both transports redact like the shared logger. */
 const fileFormat = winston.format.combine(
+  redactFormat(),
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.errors({ stack: true }),
   winston.format.splat(),
@@ -49,6 +52,7 @@ if (useFileLogging) {
 }
 
 const consoleFormat = winston.format.combine(
+  redactFormat(),
   winston.format.colorize({ all: true }),
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.printf((info) => `${info.timestamp} ${info.level}: ${info.message}`),
