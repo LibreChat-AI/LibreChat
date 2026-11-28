@@ -134,11 +134,11 @@ describe('Conversation row pull request', () => {
     expect(mark.parentElement?.parentElement).toBe(screen.getByTestId('convo-item'));
   });
 
-  it('places the pull request before the conversation title', () => {
+  it('places the pull request after the conversation title', () => {
     renderRow();
     const mark = screen.getByTestId('convo-pull-request');
     expect(
-      mark.compareDocumentPosition(rowButton()) & Node.DOCUMENT_POSITION_FOLLOWING,
+      mark.compareDocumentPosition(rowButton()) & Node.DOCUMENT_POSITION_PRECEDING,
     ).toBeTruthy();
   });
 
@@ -151,13 +151,13 @@ describe('Conversation row pull request', () => {
     expect(screen.getByTestId('convo-item').firstElementChild?.firstElementChild).toBe(badge);
   });
 
-  it('places the pull request immediately after the project badge', () => {
+  it('places the pull request immediately before the menu even with a project badge', () => {
     renderRow({
       convo: { ...conversation, chatProjectId: 'project-1' },
       showProjectBadge: true,
     });
-    expect(screen.getByTestId('convo-project-badge').nextElementSibling).toBe(
-      screen.getByTestId('convo-pull-request'),
+    expect(screen.getByTestId('convo-pull-request').parentElement?.nextElementSibling).toBe(
+      screen.getByTestId('convo-options').parentElement,
     );
   });
 

@@ -392,23 +392,9 @@ function Conversation({
       style={{ cursor: renaming ? 'default' : 'pointer' }}
       data-testid="convo-item"
     >
-      <span
-        className={cn(
-          'flex shrink-0 items-center',
-          (projectBadgeProjectId || (showPullRequest && pullRequestDescribed)) && 'ps-2',
-        )}
-      >
+      <span className={cn('flex shrink-0 items-center', projectBadgeProjectId && 'ps-2')}>
         {projectBadgeProjectId && (
           <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
-        )}
-        {showPullRequest && (
-          <PullRequestRowMark
-            conversationId={conversationId ?? ''}
-            labelId={pullRequestLabelId}
-            onDescribed={setPullRequestDescribed}
-            rowRef={containerRef}
-            selected={isActiveConvo || isPopoverActive}
-          />
         )}
       </span>
       {renaming ? (
@@ -492,6 +478,17 @@ function Conversation({
           }}
         />
       )}
+      <span className="flex shrink-0 items-center">
+        {showPullRequest && (
+          <PullRequestRowMark
+            conversationId={conversationId ?? ''}
+            labelId={pullRequestLabelId}
+            onDescribed={setPullRequestDescribed}
+            rowRef={containerRef}
+            selected={isActiveConvo || isPopoverActive}
+          />
+        )}
+      </span>
       <div
         className={cn(
           'me-1 flex shrink-0 origin-left items-center justify-center rtl:origin-right',
